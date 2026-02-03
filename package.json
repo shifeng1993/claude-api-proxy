@@ -1,0 +1,33 @@
+{
+    "name": "claude-api-proxy",
+    "version": "1.0.0",
+    "description": "Claude API 代理服务 - 将 Claude API 请求转换为 OpenAI 格式",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "debug": "cross-env LOG_LEVEL=DEBUG node src/index.js",
+        "dev": "node --watch src/index.js"
+    },
+    "dependencies": {
+        "cross-env": "^7.0.3"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "keywords": [
+        "claude",
+        "claude code",
+        "claude-code-router",
+        "openai",
+        "api",
+        "proxy"
+    ],
+    "author": "Feng Shi",
+    "email": "shifeng199307@gmail.com",
+    "repository": {
+        "type": "git",
+        "url": "git@github.com:shifeng1993/claude-api-proxy.git"
+    },
+    "license": "MIT"
+}
