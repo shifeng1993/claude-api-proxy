@@ -10,6 +10,7 @@ import { getTransformer } from './transformer/index.js';
 import { readBody, request } from './utils/http-client.js';
 import { buildUrl } from './utils/helpers.js';
 import logger from './utils/logger.js';
+import { routeCopilotRequest } from './routes/copilot.js';
 
 /**
  * 解析请求体为 JSON
@@ -171,6 +172,18 @@ export function createServer() {
             return;
         }
 
+        // Copilot 路由
+        if (req.url.startsWith('/copilot')) {
+            try {
+                await routeCopilotRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Copilot route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
         // 根路径欢迎信息
         if (req.method === 'GET' && req.url === '/') {
             sendJson(res, 200, {
@@ -179,13 +192,14 @@ export function createServer() {
                 description: 'Proxy service for converting Claude API requests to OpenAI format',
                 endpoints: {
                     health: '/health',
-                    proxy: '/{type}/{provider_url}/v1/messages'
+                    proxy: '/{type}/{provider_url}/v1/messages',
+                    copilot: '/copilot - GitHub Copilot API proxy'
                 }
             });
             return;
         }
 
-        // 只允许 POST 请求
+        // 只允许 POST 请求（对于非 Copilot 路由）
         if (req.method !== 'POST') {
             sendError(res, 405, 'Method not allowed');
             return;

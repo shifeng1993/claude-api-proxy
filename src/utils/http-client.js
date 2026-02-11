@@ -8,6 +8,8 @@ import https from 'https';
 import http from 'http';
 import {URL} from 'url';
 import {createGunzip, createInflate} from 'zlib';
+import {HttpsProxyAgent} from 'https-proxy-agent';
+import {SocksProxyAgent} from 'socks-proxy-agent';
 import logger from './logger.js';
 
 /**
@@ -35,6 +37,24 @@ export function request(url, options = {}) {
         // 准备请求头，明确禁用压缩以避免解压问题
         const headers = {...options.headers};
 
+        // 代理配置
+        let agent = null;
+        const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+        
+        if (proxyUrl) {
+            try {
+                if (proxyUrl.startsWith('socks')) {
+                    agent = new SocksProxyAgent(proxyUrl);
+                    logger.debug(`使用 SOCKS 代理: ${proxyUrl}`);
+                } else {
+                    agent = new HttpsProxyAgent(proxyUrl);
+                    logger.debug(`使用 HTTP 代理: ${proxyUrl}`);
+                }
+            } catch (err) {
+                logger.warn(`代理配置失败: ${err.message}`);
+            }
+        }
+
         // 只有当用户没有设置 Accept-Encoding 时才设置默认值
         let hasAcceptEncoding = false;
         for (const key in headers) {
@@ -52,7 +72,8 @@ export function request(url, options = {}) {
             port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
             path: parsedUrl.pathname + parsedUrl.search,
             method: options.method || 'GET',
-            headers
+            headers,
+            agent: agent || undefined
         };
 
         logger.debug(`发送请求: ${options.method || 'GET'} ${url}`);
