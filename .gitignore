@@ -1,4 +1,6 @@
 node_modules/
-.env
 *.log
 .DS_Store
+
+# Copilot token 存储目录
+.copilot/

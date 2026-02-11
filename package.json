@@ -10,7 +10,10 @@
         "dev": "node --watch src/index.js"
     },
     "dependencies": {
-        "cross-env": "^7.0.3"
+        "cross-env": "^7.0.3",
+        "dotenv": "^17.2.4",
+        "https-proxy-agent": "^7.0.6",
+        "socks-proxy-agent": "^8.0.5"
     },
     "engines": {
         "node": ">=18.0.0"
