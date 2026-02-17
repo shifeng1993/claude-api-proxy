@@ -47,7 +47,8 @@ npm start  # 首次运行会自动引导 GitHub 认证
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4.1",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-4.1",
         "API_TIMEOUT_MS": "60000",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
     }
 }
 
@@ -108,7 +109,8 @@ URL 格式: `{服务地址}/{transformer类型}/{目标API地址}/v1/messages`
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-chat",
         "API_TIMEOUT_MS": "60000",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
     }
 }
 ```

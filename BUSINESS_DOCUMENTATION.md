@@ -208,10 +208,9 @@ Claude Code → 本地代理 (3080) → 协议转换 → 目标 AI 服务
 
 ```
 src/
-├── index.js                    # 应用入口，服务启动
+├── index.js                    # 应用入口，服务启动（包含.env加载）
 ├── server.js                   # HTTP 服务器创建
 ├── router.js                   # 路由解析器
-├── start.js                    # 启动脚本
 │
 ├── routes/
 │   └── copilot.js             # Copilot 模式路由处理

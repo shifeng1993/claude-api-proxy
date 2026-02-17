@@ -1,11 +1,41 @@
+#!/usr/bin/env node
+
 /**
  * 应用入口
  * @module index
  */
 
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import {createServer} from './server.js';
 import {authenticateGitHub, isAuthenticated, refreshCopilotToken} from './services/copilot/auth.js';
 import logger from './utils/logger.js';
+
+// 加载 .env 配置文件
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const envFile = join(__dirname, '..', '.env');
+
+try {
+    const envContent = readFileSync(envFile, 'utf8');
+    envContent.split('\n').forEach(line => {
+        line = line.trim();
+        if (!line || line.startsWith('#')) return;
+        
+        const [key, ...valueParts] = line.split('=');
+        if (key && valueParts.length > 0) {
+            const value = valueParts.join('=').trim();
+            process.env[key.trim()] = value;
+        }
+    });
+    console.log('✓ 已加载 .env 配置');
+    if (process.env.HTTP_PROXY) {
+        console.log(`✓ HTTP 代理: ${process.env.HTTP_PROXY}`);
+    }
+} catch (err) {
+    console.log('⚠ 未找到 .env 文件，使用默认配置');
+}
 
 // 配置
 const PORT = parseInt(process.env.PORT, 10) || 3080;
@@ -84,20 +114,3 @@ async function initializeCopilot() {
         process.exit(1);
     }
 })();
-
-// 优雅关闭
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, shutting down gracefully...');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
-});
-
-process.on('SIGINT', () => {
-    console.log('SIGINT received, shutting down gracefully...');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
-});
