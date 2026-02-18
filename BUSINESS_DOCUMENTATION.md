@@ -2,7 +2,7 @@
 
 > **版本**: v1.0.0
 > **作者**: Feng Shi
-> **最后更新**: 2024-02-12
+> **最后更新**: 2026-02-18
 
 ---
 
@@ -273,13 +273,16 @@ class ClaudeStreamState {
 ```javascript
 class CopilotState {
     - githubToken
-    - copilotToken, expiresAt
+    - copilotToken, copilotTokenExpiresAt  // 文件存储键为 expires_at
     - userInfo
+    - accountType, vsCodeVersion, models
 
     + saveGithubToken(token)
     + saveCopilotToken(token, expiresAt)
+    + saveUserInfo(userInfo)
     + isCopilotTokenExpired()
-    + loadState() / saveState()
+    + loadState()
+    + clearState()
 }
 ```
 
@@ -458,9 +461,9 @@ for (const line of lines) {
 
 ```javascript
 isCopilotTokenExpired() {
-    if (!this.copilotToken || !this.expiresAt) return true;
+    if (!this.copilotToken || !this.copilotTokenExpiresAt) return true;
     const buffer = 5 * 60 * 1000; // 5 分钟缓冲
-    return Date.now() >= (this.expiresAt - buffer);
+    return Date.now() >= (this.copilotTokenExpiresAt - buffer);
 }
 
 async ensureCopilotToken() {
@@ -477,25 +480,49 @@ async ensureCopilotToken() {
 
 **解决方案**: 递归清理不兼容字段
 
+移除的字段：
+- `$schema` - JSON Schema 声明标识符
+- `additionalProperties` - OpenAI 不支持该约束
+- `title` - 字段标题（OpenAI 工具调用不使用）
+- `examples` - 示例值数组
+- `format`（仅当 `type === 'string'` 时）- 字符串格式约束
+
 ```javascript
 cleanJsonSchema(schema) {
     const cleaned = {...schema};
     delete cleaned.$schema;
-    delete cleaned.$comment;
+    delete cleaned.additionalProperties;
+    delete cleaned.title;
+    delete cleaned.examples;
+    if (schema.type === 'string') delete cleaned.format;
 
-    // 递归处理嵌套对象
+    // 递归处理嵌套对象（properties / items / 其他对象属性）
     if (cleaned.properties) {
         for (const key in cleaned.properties) {
             cleaned.properties[key] = cleanJsonSchema(cleaned.properties[key]);
         }
     }
+    if (cleaned.items) {
+        cleaned.items = cleanJsonSchema(cleaned.items);
+    }
     return cleaned;
 }
 ```
 
+#### 6.2.5 两种模式的流式策略差异
+
+两种工作模式采用了不同的流式转换策略：
+
+| 对比项 | Copilot 模式（`anthropic-translator.js`） | OpenAI 模式（`claude-to-openai.js`） |
+|--------|------------------------------------------|--------------------------------------|
+| 策略 | **即时发送** | **缓冲后发送** |
+| 行为 | 每收到一个 OpenAI delta chunk，立即转换并发送对应的 Anthropic SSE 事件 | 将文本内容缓冲到 `finish_reason` 出现后，一次性作为完整内容块发送 |
+| 优势 | 响应延迟低，流式体验更好 | 避免因分片导致的重复输出或内容乱序问题 |
+| 适用原因 | Copilot API 流式分片较规整，直接转发可靠 | 部分 OpenAI 兼容 API 分片方式不一，缓冲可解决重复输出 |
+
 ---
 
-## API 接口文档
+
 
 ### 7.1 Copilot 模式端点
 
@@ -896,15 +923,14 @@ module.exports = {
     apps: [{
         name: 'ClaudeApiProxy',
         script: 'src/index.js',
-        instances: 1,
-        autorestart: true,
-        watch: false,
-        max_memory_restart: '500M',
+        interpreter: 'node',
         env: {
             NODE_ENV: 'production',
-            PORT: 3080,
-            HOST: '0.0.0.0',
-            LOG_LEVEL: 'INFO'
+            LOG_LEVEL: 'info'
+        },
+        env_production: {
+            NODE_ENV: 'production',
+            LOG_LEVEL: 'info'
         }
     }]
 };
@@ -1049,7 +1075,7 @@ curl -X POST http://127.0.0.1:3080/copilot/v1/messages \
 cat .copilot/github_token
 
 # 4. 检查 Copilot Token 过期时间
-cat .copilot/state.json | jq '.expiresAt'
+cat .copilot/copilot_token | jq '.expires_at'
 
 # 5. 查看 PM2 日志
 pm2 logs ClaudeApiProxy --lines 50
@@ -1180,8 +1206,8 @@ pm2 start ecosystem.config.cjs
 
 | 版本 | 日期 | 修订内容 | 作者 |
 |------|------|---------|------|
-| v1.0.0 | 2024-02-12 | 初始版本，完整业务文档 | Feng Shi |
+| v1.0.0 | 2026-02-18 | 初始版本，完整业务文档 | Feng Shi |
 
 ---
 
-**© 2024 Claude API Proxy Project | MIT License**
+**© 2026 Claude API Proxy Project | MIT License**
