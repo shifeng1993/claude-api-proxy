@@ -14,7 +14,7 @@ Claude Code 默认调用 Anthropic 的 Claude API。本项目作为中间代理�
 - ✅ **双模式支持** - 自由选择 OpenAI 兼容 API 或 GitHub Copilot
 - ✅ **完全兼容 Claude Code** - 无需修改 Claude Code,只需配置环境变量
 - ✅ **流式响应** - 完整 SSE 支持
-- ✅ **零外部依赖** - 纯 Node.js 原生实现(OpenAI 模式)
+- ✅ **轻量依赖** - 核心逻辑使用 Node.js 原生实现，仅代理功能依赖少量外部包
 - ✅ **自动 Token 管理** - Copilot Token 自动获取和刷新
 - ✅ **易于扩展** - 基于 Transformer 架构
 
@@ -208,18 +208,18 @@ pm2 delete ClaudeApiProxy
 
 ## 📦 项目架构
 
-本项目包含两个核心模块:
+本项目采用单一 Node.js 服务架构，通过路由前缀区分两种工作模式：
 
-- **根目录 (OpenAI 模式)** - 纯 Node.js 实现的 Claude 到 OpenAI 格式转换器
-  - 轻量级,无外部依赖
-  - 支持任何 OpenAI 兼容 API
-  
-- **copilot-api 子模块 (Copilot 模式)** - GitHub Copilot API 反向代理
-  - 基于 Bun 运行时
-  - 提供完整的 Copilot API 兼容层
-  - 自动 Token 管理和刷新
+- **OpenAI 模式** (`/openai/*`) - 将 Anthropic 格式请求转换为 OpenAI 格式，转发到任何 OpenAI 兼容 API
+  - 使用 `ClaudeToOpenAITransformer` 进行协议转换
+  - 支持 DeepSeek、OpenAI 等任意兼容服务
 
-两种模式共享同一服务端口(3080),通过不同的路由前缀区分(`/copilot` vs `/openai`)。
+- **Copilot 模式** (`/copilot/*`) - 集成 GitHub Copilot API
+  - 完整的 GitHub OAuth 设备流认证
+  - Copilot Token 自动获取与刷新（30 分钟过期）
+  - 状态持久化存储在 `.copilot/` 目录
+
+两种模式共享同一服务端口（3080），通过不同的路由前缀区分（`/copilot` vs `/openai`）。
 
 ---
 
