@@ -118,7 +118,9 @@ class CopilotState {
             return true;
         }
         // 提前 5 分钟刷新
-        return Date.now() >= this.copilotTokenExpiresAt - 5 * 60 * 1000;
+        // Copilot API 返回的 expires_at 是秒级 Unix 时间戳，需要统一单位
+        const nowInSeconds = Math.floor(Date.now() / 1000);
+        return nowInSeconds >= this.copilotTokenExpiresAt - 5 * 60;
     }
 
     /**

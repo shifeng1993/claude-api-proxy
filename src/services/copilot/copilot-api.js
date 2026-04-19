@@ -42,8 +42,8 @@ export async function createChatCompletions(copilotToken, vsCodeVersion, payload
 
     // 检查是否启用 vision
     const enableVision = payload.messages?.some(
-        msg => typeof msg.content !== 'string' && 
-               msg.content?.some(c => c.type === 'image_url')
+        msg => Array.isArray(msg.content) &&
+               msg.content.some(c => c.type === 'image_url')
     );
 
     // 检查是否为 agent 调用
@@ -55,8 +55,6 @@ export async function createChatCompletions(copilotToken, vsCodeVersion, payload
         ...copilotHeaders(copilotToken, vsCodeVersion, enableVision),
         'X-Initiator': isAgentCall ? 'agent' : 'user'
     };
-
-    logger.debug('Creating chat completions with payload:', JSON.stringify(payload).slice(0, 500));
 
     const response = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',

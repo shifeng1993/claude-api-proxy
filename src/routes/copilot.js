@@ -13,6 +13,10 @@ import {
     translateStreamChunk,
     createStreamState
 } from '../services/copilot/anthropic-translator.js';
+import {
+    estimateMessageTokens,
+    estimateContentBlockTokens
+} from '../utils/token-estimation.js';
 import logger from '../utils/logger.js';
 
 // 自动认证配置
@@ -86,11 +90,9 @@ async function handleMessages(req, res) {
         const anthropicPayload = JSON.parse(body);
 
         logger.info(`Messages request - model: ${anthropicPayload.model}, stream: ${anthropicPayload.stream}`);
-        logger.debug('Anthropic payload:', JSON.stringify(anthropicPayload).slice(0, 500));
 
         // 转换为 OpenAI 格式
         const openAIPayload = anthropicToOpenAI(anthropicPayload);
-        logger.debug('OpenAI payload:', JSON.stringify(openAIPayload).slice(0, 500));
 
         // 调用 Copilot API
         const response = await createChatCompletions(
@@ -112,65 +114,92 @@ async function handleMessages(req, res) {
             const state = createStreamState();
             let buffer = ''; // 用于累积不完整的行
 
+            // 处理缓冲区中的 SSE 行
+            const processLines = (lines) => {
+                for (const line of lines) {
+                    // 客户端已断开，停止处理
+                    if (res.destroyed) return;
+
+                    const trimmedLine = line.trim();
+                    if (trimmedLine.startsWith('data: ')) {
+                        const data = trimmedLine.slice(6);
+
+                        if (data === '[DONE]') {
+                            continue;
+                        }
+
+                        try {
+                            const openAIChunk = JSON.parse(data);
+
+                            // 转换为 Anthropic 事件
+                            const anthropicEvents = translateStreamChunk(openAIChunk, state);
+
+                            // 发送每个事件
+                            for (const event of anthropicEvents) {
+                                if (res.destroyed) return;
+                                res.write(`event: ${event.type}\n`);
+                                res.write(`data: ${JSON.stringify(event)}\n\n`);
+                            }
+                        } catch (e) {
+                            logger.error('Failed to parse chunk:', e);
+                            logger.error('Problematic data:', data);
+                        }
+                    }
+                }
+            };
+
             response.body.on('data', (chunk) => {
                 try {
+                    if (res.destroyed) return;
+
                     // 将新数据添加到缓冲区
                     buffer += chunk.toString('utf8');
-                    
+
                     // 按行分割，保留最后一个可能不完整的行
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || ''; // 保存最后一个不完整的行
 
-                    for (const line of lines) {
-                        const trimmedLine = line.trim();
-                        if (trimmedLine.startsWith('data: ')) {
-                            const data = trimmedLine.slice(6);
-
-                            if (data === '[DONE]') {
-                                continue;
-                            }
-
-                            try {
-                                const openAIChunk = JSON.parse(data);
-                                logger.debug('OpenAI chunk:', JSON.stringify(openAIChunk));
-
-                                // 转换为 Anthropic 事件
-                                const anthropicEvents = translateStreamChunk(openAIChunk, state);
-
-                                // 发送每个事件
-                                for (const event of anthropicEvents) {
-                                    logger.debug('Anthropic event:', JSON.stringify(event));
-                                    res.write(`event: ${event.type}\n`);
-                                    res.write(`data: ${JSON.stringify(event)}\n\n`);
-                                }
-                            } catch (e) {
-                                logger.error('Failed to parse chunk:', e);
-                                logger.error('Problematic data:', data);
-                            }
-                        }
-                    }
+                    processLines(lines);
                 } catch (error) {
                     logger.error('Stream processing error:', error);
                 }
             });
 
             response.body.on('end', () => {
-                res.end();
+                // 处理 buffer 中残留的最后一行数据
+                if (buffer.trim()) {
+                    try {
+                        processLines([buffer]);
+                    } catch (error) {
+                        logger.error('Failed to process remaining buffer:', error);
+                    }
+                    buffer = '';
+                }
+                if (!res.destroyed) {
+                    res.end();
+                }
             });
 
             response.body.on('error', (error) => {
                 logger.error('Stream error:', error);
-                res.end();
+                if (!res.destroyed) {
+                    res.end();
+                }
+            });
+
+            // 监听客户端断开连接，及时清理上游流
+            res.on('close', () => {
+                if (response.body && !response.body.destroyed) {
+                    response.body.destroy();
+                }
             });
         } else {
             // 非流式响应
             const responseBody = await readBody(response.body);
             const openAIResponse = JSON.parse(responseBody);
-            logger.debug('OpenAI response:', JSON.stringify(openAIResponse));
 
             // 转换为 Anthropic 格式
             const anthropicResponse = openAIToAnthropic(openAIResponse);
-            logger.debug('Anthropic response:', JSON.stringify(anthropicResponse));
 
             sendJson(res, 200, anthropicResponse);
         }
@@ -199,13 +228,41 @@ async function handleCountTokens(req, res) {
         const body = Buffer.concat(chunks).toString('utf8');
         const anthropicPayload = JSON.parse(body);
 
-        // 简单估算 tokens（Claude Code 会调用这个接口）
-        // 实际的 token 计数比较复杂，这里提供一个简化版本
-        const text = JSON.stringify(anthropicPayload.messages);
-        const estimatedTokens = Math.ceil(text.length / 4); // 粗略估算
+        // 使用 token 估算工具进行计数
+        let totalTokens = 0;
+
+        // 估算 messages 的 tokens
+        if (Array.isArray(anthropicPayload.messages)) {
+            totalTokens += estimateMessageTokens(anthropicPayload.messages);
+        }
+
+        // 估算 system 的 tokens（可以是字符串或内容块数组）
+        if (anthropicPayload.system) {
+            if (typeof anthropicPayload.system === 'string') {
+                totalTokens += Math.ceil(anthropicPayload.system.length / 4);
+            } else if (Array.isArray(anthropicPayload.system)) {
+                for (const block of anthropicPayload.system) {
+                    totalTokens += estimateContentBlockTokens(block);
+                }
+            }
+        }
+
+        // 估算 tools 的 tokens
+        if (Array.isArray(anthropicPayload.tools)) {
+            for (const tool of anthropicPayload.tools) {
+                // Tool name and description
+                totalTokens += Math.ceil((tool.name || '').length / 4);
+                totalTokens += Math.ceil((tool.description || '').length / 4);
+                // Tool input_schema (JSON structure)
+                if (tool.input_schema) {
+                    const schemaStr = JSON.stringify(tool.input_schema);
+                    totalTokens += Math.ceil(schemaStr.length / 2); // JSON has higher density
+                }
+            }
+        }
 
         sendJson(res, 200, {
-            input_tokens: estimatedTokens
+            input_tokens: totalTokens
         });
     } catch (error) {
         logger.error('Failed to count tokens:', error);
@@ -234,12 +291,13 @@ async function handleModels(req, res) {
             copilotState.accountType
         );
         
-        logger.info(`Retrieved ${modelsData.data?.length || 0} models`);
-        
+        const modelsList = modelsData.data || [];
+        logger.info(`Retrieved ${modelsList.length} models`);
+
         // 直接返回 Copilot API 的模型列表
         sendJson(res, 200, {
             object: 'list',
-            data: modelsData.data.map(model => ({
+            data: modelsList.map(model => ({
                 id: model.id,
                 object: 'model',
                 created: 0,

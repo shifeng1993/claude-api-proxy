@@ -71,11 +71,9 @@ export async function pollAccessToken(deviceCode, interval = 5, expiresIn = 900)
 
         if (data.error) {
             if (data.error === 'authorization_pending') {
-                logger.debug('Authorization pending, continuing to poll...');
                 continue;
             } else if (data.error === 'slow_down') {
                 interval += 5;
-                logger.debug(`Slow down requested, increasing interval to ${interval}s`);
                 continue;
             } else {
                 throw new Error(`Failed to get access token: ${data.error}`);
