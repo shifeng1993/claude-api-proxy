@@ -6,6 +6,7 @@
 import {generateId, cleanJsonSchema} from '../utils/helpers.js';
 import logger from '../utils/logger.js';
 import {convertFromAnthropic, convertToOpenAI} from '../utils/converter.js';
+import {injectBehaviorRules, prependThinkingHint, prependToolThinkingHint} from './shared-translator.js';
 
 /* ================= Utils ================= */
 
@@ -291,6 +292,25 @@ export class ClaudeToOpenAITransformer {
             }));
         }
 
+        // 注入行为规则到 system message
+        req.messages = injectBehaviorRules(req.messages);
+
+        // 在 tool_result 消息中注入中文思考引导，防止工具调用后思考语言漂移
+        req.messages = req.messages.map((m) => {
+            if (m.role === 'tool' && typeof m.content === 'string') {
+                return {...m, content: prependToolThinkingHint(m.content)};
+            }
+            return m;
+        });
+
+        // 在用户消息中注入中文思考引导，防止多轮对话后思考语言漂移
+        req.messages = req.messages.map((m) => {
+            if (m.role === 'user' && typeof m.content === 'string' && !m.content.startsWith('【请用中文思考】')) {
+                return {...m, content: prependThinkingHint(m.content)};
+            }
+            return m;
+        });
+
         return req;
     }
 
@@ -392,5 +412,61 @@ export class ClaudeToOpenAITransformer {
 
     isStreamResponse(headers) {
         return (headers['content-type'] || '').includes('text/event-stream');
+    }
+
+    /**
+     * 将 OpenAI 响应转换为 Claude 响应格式（非流式）
+     * @param {Object} openaiData - OpenAI 格式的响应数据
+     * @returns {Object} Claude 格式的响应数据
+     */
+    transformResponseIn(openaiData) {
+        const choice = openaiData.choices?.[0];
+        const message = choice?.message;
+
+        // 构建 Claude 格式的 content 数组
+        const content = [];
+
+        // 添加文本内容
+        if (message?.content) {
+            content.push({
+                type: 'text',
+                text: message.content
+            });
+        }
+
+        // 添加工具调用
+        if (message?.tool_calls && message.tool_calls.length > 0) {
+            for (const toolCall of message.tool_calls) {
+                if (toolCall.function) {
+                    content.push({
+                        type: 'tool_use',
+                        id: toolCall.id || generateId(),
+                        name: toolCall.function.name,
+                        input: safeJSONParse(toolCall.function.arguments) || {}
+                    });
+                }
+            }
+        }
+
+        // 转换 stop_reason
+        let stopReason = null;
+        if (choice?.finish_reason === 'stop') {
+            stopReason = 'end_turn';
+        } else if (choice?.finish_reason === 'tool_calls') {
+            stopReason = 'tool_use';
+        } else if (choice?.finish_reason === 'length') {
+            stopReason = 'max_tokens';
+        }
+
+        return {
+            id: openaiData.id || generateId(),
+            type: 'message',
+            role: 'assistant',
+            content,
+            model: openaiData.model || this.model,
+            stop_reason: stopReason,
+            stop_sequence: null,
+            usage: openaiData.usage || {input_tokens: 0, output_tokens: 0}
+        };
     }
 }

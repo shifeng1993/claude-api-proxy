@@ -9,14 +9,17 @@
  * @returns {Array<Object>} OpenAI 格式工具数组
  */
 export function convertToolsToOpenAI(tools) {
-    return tools.map((tool) => ({
-        type: 'function',
-        function: {
-            name: tool.function.name,
-            description: tool.function.description,
-            parameters: tool.function.parameters
-        }
-    }));
+    if (!Array.isArray(tools)) return [];
+    return tools
+        .filter((tool) => tool && tool.function)
+        .map((tool) => ({
+            type: 'function',
+            function: {
+                name: tool.function.name,
+                description: tool.function.description,
+                parameters: tool.function.parameters
+            }
+        }));
 }
 
 /**

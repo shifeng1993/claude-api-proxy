@@ -146,7 +146,21 @@ async function handleProxyRequest(req, res) {
         } else {
             // 非流式响应：读取响应体，转换格式后返回
             const responseBody = await readBody(upstreamResponse.body);
-            const openaiData = JSON.parse(responseBody);
+            let openaiData;
+            try {
+                openaiData = JSON.parse(responseBody);
+            } catch (parseErr) {
+                logger.error(`上游响应 JSON 解析失败，原始数据: "${responseBody.substring(0, 300)}"`);
+                res.writeHead(502, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    type: 'error',
+                    error: {
+                        type: 'api_error',
+                        message: `上游返回非法 JSON: ${parseErr.message}`
+                    }
+                }));
+                return;
+            }
             const claudeResponse = transformer.transformResponseIn(openaiData);
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -183,6 +197,8 @@ export function createServer() {
                 return;
             }
         }
+
+
 
         // 根路径欢迎信息
         if (req.method === 'GET' && req.url === '/') {

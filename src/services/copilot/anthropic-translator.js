@@ -4,28 +4,8 @@
  * @module services/copilot/anthropic-translator
  */
 
-import { randomBytes } from 'crypto';
 import logger from '../../utils/logger.js';
-
-/**
- * 生成唯一 ID
- */
-function generateId() {
-    return randomBytes(16).toString('hex');
-}
-
-/**
- * 映射 OpenAI stop reason 到 Anthropic 格式
- */
-function mapStopReason(finishReason) {
-    const mapping = {
-        'stop': 'end_turn',
-        'length': 'max_tokens',
-        'tool_calls': 'tool_use',
-        'content_filter': 'end_turn'
-    };
-    return mapping[finishReason] || null;
-}
+import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, openAIToAnthropic as sharedOpenAIToAnthropic} from '../../transformer/shared-translator.js';
 
 /**
  * 转换 Anthropic 请求到 OpenAI 格式
@@ -81,17 +61,26 @@ function translateModelName(model) {
 function translateMessages(anthropicMessages, system) {
     const messages = [];
 
-    // 处理 system message
+    // 处理 system message（不注入行为规则，最后统一注入）
     if (system) {
         if (typeof system === 'string') {
             messages.push({ role: 'system', content: system });
         } else if (Array.isArray(system)) {
-            const systemText = system.map(block => block.text).join('\n\n');
-            messages.push({ role: 'system', content: systemText });
+            const systemText = system
+                .map(block => block.text)
+                .filter(Boolean)
+                .join('\n\n');
+            if (systemText) {
+                messages.push({ role: 'system', content: systemText });
+            }
         }
     }
 
     // 处理其他消息
+    if (!Array.isArray(anthropicMessages)) {
+        return injectBehaviorRules(messages);
+    }
+
     for (const message of anthropicMessages) {
         if (message.role === 'user') {
             messages.push(...handleUserMessage(message));
@@ -100,7 +89,7 @@ function translateMessages(anthropicMessages, system) {
         }
     }
 
-    return messages;
+    return injectBehaviorRules(messages);
 }
 
 /**
@@ -110,26 +99,32 @@ function handleUserMessage(message) {
     const messages = [];
 
     if (typeof message.content === 'string') {
-        messages.push({ role: 'user', content: message.content });
+        messages.push({ role: 'user', content: prependThinkingHint(message.content) });
     } else if (Array.isArray(message.content)) {
         // 分离 tool_result 和其他内容
         const toolResults = message.content.filter(block => block.type === 'tool_result');
         const otherBlocks = message.content.filter(block => block.type !== 'tool_result');
 
-        // tool_result 必须先处理
+        // tool_result 必须先处理，注入中文思考引导
         for (const block of toolResults) {
+            let content = '';
+            if (typeof block.content === 'string') {
+                content = block.content;
+            } else if (block.content != null) {
+                content = JSON.stringify(block.content);
+            }
             messages.push({
                 role: 'tool',
                 tool_call_id: block.tool_use_id,
-                content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
+                content: prependToolThinkingHint(content)
             });
         }
 
-        // 处理其他内容
+        // 处理其他内容，注入思考引导
         if (otherBlocks.length > 0) {
             messages.push({
                 role: 'user',
-                content: mapContent(otherBlocks)
+                content: prependThinkingHint(mapContent(otherBlocks))
             });
         }
     }
@@ -181,100 +176,6 @@ function handleAssistantMessage(message) {
 }
 
 /**
- * 映射内容块
- */
-function mapContent(blocks) {
-    if (blocks.length === 1 && blocks[0].type === 'text') {
-        return blocks[0].text;
-    }
-
-    return blocks.map(block => {
-        if (block.type === 'text') {
-            return { type: 'text', text: block.text };
-        }
-        if (block.type === 'image') {
-            return {
-                type: 'image_url',
-                image_url: {
-                    url: block.source.type === 'base64' 
-                        ? `data:${block.source.media_type};base64,${block.source.data}`
-                        : block.source.url
-                }
-            };
-        }
-        return null;
-    }).filter(Boolean);
-}
-
-/**
- * 转换 tool_choice
- */
-function translateToolChoice(anthropicToolChoice) {
-    if (!anthropicToolChoice) {
-        return undefined;
-    }
-
-    if (anthropicToolChoice.type === 'auto') {
-        return 'auto';
-    }
-    if (anthropicToolChoice.type === 'any') {
-        return 'required';
-    }
-    if (anthropicToolChoice.type === 'tool') {
-        return {
-            type: 'function',
-            function: { name: anthropicToolChoice.name }
-        };
-    }
-
-    return undefined;
-}
-
-/**
- * 转换 OpenAI 响应到 Anthropic 格式
- */
-export function openAIToAnthropic(openAIResponse) {
-    const choice = openAIResponse.choices[0];
-    const message = choice.message;
-
-    const content = [];
-
-    // 添加文本内容
-    if (message.content) {
-        content.push({
-            type: 'text',
-            text: message.content
-        });
-    }
-
-    // 添加 tool_calls
-    if (message.tool_calls) {
-        for (const toolCall of message.tool_calls) {
-            content.push({
-                type: 'tool_use',
-                id: toolCall.id,
-                name: toolCall.function.name,
-                input: JSON.parse(toolCall.function.arguments)
-            });
-        }
-    }
-
-    return {
-        id: openAIResponse.id,
-        type: 'message',
-        role: 'assistant',
-        model: openAIResponse.model,
-        content: content,
-        stop_reason: mapStopReason(choice.finish_reason),
-        stop_sequence: null,
-        usage: {
-            input_tokens: openAIResponse.usage?.prompt_tokens || 0,
-            output_tokens: openAIResponse.usage?.completion_tokens || 0
-        }
-    };
-}
-
-/**
  * 创建流状态
  */
 export function createStreamState() {
@@ -282,7 +183,8 @@ export function createStreamState() {
         messageStartSent: false,
         contentBlockOpen: false,
         contentBlockIndex: 0,
-        toolCalls: {}
+        toolCalls: {},
+        currentBlockType: null
     };
 }
 
@@ -292,7 +194,7 @@ export function createStreamState() {
 export function translateStreamChunk(openAIChunk, state) {
     const events = [];
 
-    if (openAIChunk.choices.length === 0) {
+    if (!openAIChunk.choices || openAIChunk.choices.length === 0) {
         return events;
     }
 
@@ -438,3 +340,5 @@ export function translateStreamChunk(openAIChunk, state) {
 
     return events;
 }
+
+export {sharedOpenAIToAnthropic as openAIToAnthropic};

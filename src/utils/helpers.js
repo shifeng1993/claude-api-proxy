@@ -1,14 +1,18 @@
+import { randomBytes } from 'crypto';
+
 /**
  * 通用辅助函数模块
  * @module utils/helpers
  */
 
 /**
- * 生成随机 ID
+ * 生成随机 ID，支持可选前缀以兼容 Claude 格式
+ * @param {string} [prefix] - 可选前缀（如 'msg', 'toolu'）
  * @returns {string} 随机字符串 ID
  */
-export function generateId() {
-    return Math.random().toString(36).substring(2);
+export function generateId(prefix) {
+    const id = randomBytes(16).toString('hex');
+    return prefix ? `${prefix}_${id}` : id;
 }
 
 /**
