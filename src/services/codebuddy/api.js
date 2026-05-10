@@ -7,7 +7,6 @@ import {request, readBody} from '../../utils/http-client.js';
 import logger from '../../utils/logger.js';
 import {getCodebuddyApiUrl, codebuddyHeaders, DEFAULT_BASE_URL, CODEBUDDY_MODELS} from './config.js';
 import {randomBytes} from 'crypto';
-import {writeFileSync, mkdirSync, existsSync} from 'fs';
 
 // CodeBuddy 服务端会检测竞争对手关键词并触发 content_filter
 // 必须在所有消息和工具定义中替换，不能只替换 system 消息
@@ -160,26 +159,7 @@ export async function createChatCompletions(payload, options = {}) {
     // CodeBuddy 服务端会检测特定客户端标识字符串并触发内容审核拦截
     // 将 "X Code, Y's official CLI for X" 模式替换为不会触发审核的等价表述
     sanitizePayload(requestPayload);
-
-    // DEBUG: 拦截完整请求到本地文件，排查敏感内容拦截
-    try {
-        const debugDir = '.codebuddy/debug';
-        if (!existsSync(debugDir)) mkdirSync(debugDir, {recursive: true});
-        const debugFile = `${debugDir}/request_${Date.now()}.json`;
-        writeFileSync(debugFile, JSON.stringify(requestPayload, null, 2), 'utf8');
-        logger.info(`[DEBUG] Saved request payload to ${debugFile}`);
-    } catch (e) {
-        logger.warn(`[DEBUG] Failed to save request payload: ${e.message}`);
-    }
-
     const url = getCodebuddyApiUrl(baseUrl);
-    // DEBUG: 记录请求 payload 摘要，排查敏感内容拦截
-    const sysMsg = requestPayload.messages?.find(m => m.role === 'system');
-    const msgRoles = requestPayload.messages?.map(m => m.role).join(',') || '';
-    const toolCount = requestPayload.tools?.length || 0;
-    logger.info(
-        `[CodeBuddy]: ${url}, model: ${payload.model}, effort: ${requestPayload.reasoning_effort || 'N/A'}, userId: ${userId}, sysLen: ${sysMsg?.content?.length || 0}, msgCount: ${requestPayload.messages?.length || 0}, roles: ${msgRoles}, toolCount: ${toolCount}, payloadSize: ${JSON.stringify(requestPayload).length}`
-    );
 
     const response = await request(url, {
         method: 'POST',
