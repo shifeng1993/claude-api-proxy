@@ -8,30 +8,36 @@ import { copilotState } from './state.js';
 import logger from '../../utils/logger.js';
 
 /**
- * 执行 GitHub 设备认证流程
- * @returns {Promise<{githubToken: string, userInfo: object}>}
+ * 启动 GitHub 设备码认证，返回设备码信息供 FE 展示
+ * @returns {Promise<{device_code: string, user_code: string, verification_uri: string, expires_in: number, interval: number}>}
  */
-export async function authenticateGitHub() {
+export async function startDeviceAuth() {
     logger.info('Starting GitHub device authentication flow...');
 
-    // 获取设备代码
     const deviceCodeData = await getDeviceCode();
-    
-    logger.info('Please visit:', deviceCodeData.verification_uri);
-    logger.info('And enter code:', deviceCodeData.user_code);
-    logger.info('Waiting for authorization...');
 
-    // 轮询获取访问令牌
-    const tokenData = await pollAccessToken(
-        deviceCodeData.device_code,
-        deviceCodeData.interval,
-        deviceCodeData.expires_in
-    );
+    logger.info(`Device code generated: ${deviceCodeData.user_code}`);
+    logger.info(`Verification URI: ${deviceCodeData.verification_uri}`);
+
+    return deviceCodeData;
+}
+
+/**
+ * 轮询 GitHub 等待用户完成设备码授权
+ * 授权成功后自动保存 GitHub token 和用户信息到 copilotState
+ * @param {string} deviceCode - 设备代码
+ * @param {number} interval - 轮询间隔（秒）
+ * @param {number} expiresIn - 过期时间（秒）
+ * @returns {Promise<{githubToken: string, userInfo: object}>}
+ */
+export async function pollDeviceAuth(deviceCode, interval, expiresIn) {
+    logger.info('Polling for GitHub device authorization...');
+
+    const tokenData = await pollAccessToken(deviceCode, interval, expiresIn);
 
     const githubToken = tokenData.access_token;
     copilotState.saveGithubToken(githubToken);
 
-    // 获取用户信息
     const userInfo = await getUser(githubToken, copilotState.vsCodeVersion);
     copilotState.saveUserInfo(userInfo);
 
@@ -70,12 +76,10 @@ export async function refreshCopilotToken(proxyUrl) {
  * @returns {Promise<string>}
  */
 export async function ensureCopilotToken(proxyUrl) {
-    // 如果没有 GitHub token，需要先认证
     if (!copilotState.githubToken) {
-        throw new Error('Not authenticated. Please authenticate first via /copilot/auth endpoint.');
+        throw new Error('Not authenticated. Please visit /copilotFE to authenticate.');
     }
 
-    // 如果 Copilot token 过期，刷新它
     if (copilotState.isCopilotTokenExpired()) {
         await refreshCopilotToken(proxyUrl);
     }
