@@ -4,15 +4,39 @@
  */
 
 import { request, readBody } from '../../utils/http-client.js';
-import { 
-    GITHUB_API_BASE_URL, 
-    GITHUB_BASE_URL, 
-    GITHUB_CLIENT_ID, 
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import {
+    GITHUB_API_BASE_URL,
+    GITHUB_BASE_URL,
+    GITHUB_CLIENT_ID,
     GITHUB_APP_SCOPES,
     githubHeaders,
-    standardHeaders 
+    standardHeaders
 } from './config.js';
 import logger from '../../utils/logger.js';
+
+// ==================== 代理 Agent 缓存 ====================
+
+const proxyAgentCache = new Map();
+
+function createProxyAgent(proxyUrl) {
+    if (!proxyUrl) return undefined;
+    if (proxyAgentCache.has(proxyUrl)) return proxyAgentCache.get(proxyUrl);
+    let agent;
+    try {
+        if (proxyUrl.startsWith('socks')) {
+            agent = new SocksProxyAgent(proxyUrl);
+        } else {
+            agent = new HttpsProxyAgent(proxyUrl);
+        }
+        proxyAgentCache.set(proxyUrl, agent);
+        return agent;
+    } catch (err) {
+        logger.warn(`GitHub API: 代理配置失败: ${err.message}`);
+        return undefined;
+    }
+}
 
 /**
  * 获取设备代码
@@ -122,13 +146,18 @@ export async function getUser(githubToken, vsCodeVersion) {
  * 获取 Copilot token
  * @param {string} githubToken - GitHub token
  * @param {string} vsCodeVersion - VS Code 版本
+ * @param {string} [proxyUrl] - 代理地址
  * @returns {Promise<{token: string, expires_at: number, refresh_in: number}>}
  */
-export async function getCopilotToken(githubToken, vsCodeVersion) {
-    const response = await request(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
+export async function getCopilotToken(githubToken, vsCodeVersion, proxyUrl) {
+    const options = {
         method: 'GET',
         headers: githubHeaders(githubToken, vsCodeVersion)
-    });
+    };
+    const agent = createProxyAgent(proxyUrl);
+    if (agent) options.agent = agent;
+
+    const response = await request(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, options);
 
     if (response.status !== 200) {
         throw new Error(`Failed to get Copilot token: ${response.status}`);

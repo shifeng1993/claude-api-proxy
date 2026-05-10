@@ -1,5 +1,5 @@
 /**
- * Copilot 路由处理器 - Claude Code 兼容模式
+ * Copilot 路由处理器 - 支持 OpenAI 和 Anthropic 双格式的聊天补全和模型列表 API
  * @module routes/copilot
  */
 
@@ -17,45 +17,56 @@ import {
     estimateMessageTokens,
     estimateContentBlockTokens
 } from '../utils/token-estimation.js';
+import {aggregateStreamResponse} from '../services/codebuddy/api.js';
 import logger from '../utils/logger.js';
 
 // 自动认证配置
-const AUTO_AUTH = true; // 默认启用
+const AUTO_AUTH = true;
 
-/**
- * 发送 JSON 响应
- */
+/* ==================== 工具函数 ==================== */
+
+function extractProxyFromHeaders(req) {
+    const proxy = req.headers['x-copilot-proxy'];
+    // 仅信任来自本地的请求头
+    if (!proxy) return undefined;
+    const remoteAddr = req.socket?.remoteAddress || '';
+    if (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1') {
+        return proxy;
+    }
+    return undefined;
+}
+
 function sendJson(res, status, data) {
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
 }
 
-/**
- * 发送错误响应
- */
-function sendError(res, status, message) {
-    const errorResponse = {
-        type: 'error',
-        error: {
-            type: 'api_error',
-            message: message
-        }
-    };
-    sendJson(res, status, errorResponse);
+function sendOpenAIError(res, status, message, type = 'api_error') {
+    sendJson(res, status, {error: {message, type, code: status}});
 }
 
-/**
- * 确保已认证（支持自动认证）
- */
+function sendAnthropicError(res, status, message) {
+    const errorType = status === 401 ? 'authentication_error' : status === 503 ? 'overloaded_error' : 'api_error';
+    sendJson(res, status, {type: 'error', error: {type: errorType, message}});
+}
+
+async function parseBody(req) {
+    const chunks = [];
+    for await (const chunk of req) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+}
+
+/* ==================== 鉴权 ==================== */
+
 async function ensureAuthenticated() {
     if (isAuthenticated()) {
         return true;
     }
 
-    // 如果启用自动认证且未认证，提示用户
     if (AUTO_AUTH) {
         logger.warn('Not authenticated. Please run the service once to complete GitHub authentication.');
-        logger.warn('After authentication, the token will be saved to .copilot/github_token automatically.');
         return false;
     }
 
@@ -63,48 +74,192 @@ async function ensureAuthenticated() {
     return false;
 }
 
-/**
- * 处理 /v1/messages - Claude Code 主要端点
- */
-async function handleMessages(req, res) {
+async function authenticateAndGetToken(proxyUrl) {
+    if (!(await ensureAuthenticated())) {
+        return {error: {status: 401, message: 'Not authenticated. Please complete GitHub authentication first.'}};
+    }
+
     try {
-        // 确保已认证
-        if (!(await ensureAuthenticated())) {
-            sendError(
+        const copilotToken = await ensureCopilotToken(proxyUrl);
+        return {copilotToken};
+    } catch (error) {
+        return {error: {status: 503, message: error.message}};
+    }
+}
+
+/* ==================== OpenAI 模式 ==================== */
+
+/**
+ * 处理 OpenAI 格式的 /copilot/v1/chat/completions 请求
+ */
+async function handleOpenAIChatCompletions(req, res) {
+    try {
+        const proxyUrl = extractProxyFromHeaders(req);
+        const authResult = await authenticateAndGetToken(proxyUrl);
+        if (authResult.error) {
+            sendOpenAIError(
                 res,
-                401,
-                'Not authenticated. Please complete GitHub authentication first by running the service and following the prompts.'
+                authResult.error.status,
+                authResult.error.message,
+                authResult.error.status === 401 ? 'authentication_error' : 'api_error'
             );
             return;
         }
 
-        // 获取 Copilot token
-        const copilotToken = await ensureCopilotToken();
+        const body = await parseBody(req);
+        const openAIPayload = JSON.parse(body);
 
-        // 解析 Anthropic 格式的请求
-        const chunks = [];
-        for await (const chunk of req) {
-            chunks.push(chunk);
-        }
-        const body = Buffer.concat(chunks).toString('utf8');
-        const anthropicPayload = JSON.parse(body);
+        logger.info(`Copilot OpenAI request - model: ${openAIPayload.model}, stream: ${openAIPayload.stream}`);
 
-        logger.info(`Messages request - model: ${anthropicPayload.model}, stream: ${anthropicPayload.stream}`);
-
-        // 转换为 OpenAI 格式
-        const openAIPayload = anthropicToOpenAI(anthropicPayload);
-
-        // 调用 Copilot API
         const response = await createChatCompletions(
-            copilotToken,
+            copilotState.copilotToken,
             copilotState.vsCodeVersion,
             openAIPayload,
-            copilotState.accountType
+            copilotState.accountType,
+            proxyUrl
         );
 
-        // 判断是否为流式响应
+        if (response.status >= 400) {
+            const errorBody = await readBody(response.body);
+            sendOpenAIError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
+            return;
+        }
+
+        if (openAIPayload.stream) {
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                Connection: 'keep-alive'
+            });
+
+            let streamInputTokens = 0;
+            let streamOutputTokens = 0;
+            let lineBuffer = '';
+
+            response.body.on('data', (chunk) => {
+                res.write(chunk);
+                lineBuffer += chunk.toString('utf8');
+                const lines = lineBuffer.split('\n');
+                lineBuffer = lines.pop();
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('data: ')) continue;
+                    const raw = trimmed.slice(6).trim();
+                    if (raw === '[DONE]') continue;
+                    try {
+                        const data = JSON.parse(raw);
+                        if (data.usage) {
+                            streamInputTokens = data.usage.prompt_tokens || 0;
+                            streamOutputTokens = data.usage.completion_tokens || 0;
+                        }
+                    } catch {}
+                }
+            });
+
+            response.body.on('end', () => {
+                if (lineBuffer.trim()) {
+                    res.write(lineBuffer);
+                }
+                res.end();
+            });
+
+            response.body.on('error', (err) => {
+                logger.error('Copilot OpenAI stream error:', err);
+                res.end();
+            });
+
+            res.on('close', () => {
+                if (response.body && !response.body.destroyed) {
+                    response.body.destroy();
+                }
+            });
+        } else {
+            const responseBody = await readBody(response.body);
+            let parsed;
+            try {
+                parsed = JSON.parse(responseBody);
+            } catch {
+                sendOpenAIError(res, 502, 'Upstream returned invalid JSON');
+                return;
+            }
+            sendJson(res, 200, parsed);
+        }
+    } catch (error) {
+        logger.error('Copilot: Failed to handle OpenAI chat completions:', error);
+        sendOpenAIError(res, 500, error.message || 'Internal server error');
+    }
+}
+
+/**
+ * 处理 OpenAI 格式的 /copilot/v1/models 请求
+ */
+async function handleOpenAIModels(req, res) {
+    try {
+        const proxyUrl = extractProxyFromHeaders(req);
+        const authResult = await authenticateAndGetToken(proxyUrl);
+        if (authResult.error) {
+            sendOpenAIError(res, authResult.error.status, authResult.error.message);
+            return;
+        }
+
+        const modelsData = await getModels(
+            authResult.copilotToken,
+            copilotState.vsCodeVersion,
+            copilotState.accountType,
+            proxyUrl
+        );
+
+        sendJson(res, 200, {
+            object: 'list',
+            data: (modelsData.data || []).map((model) => ({
+                id: model.id,
+                object: 'model',
+                created: 0,
+                owned_by: model.vendor || 'copilot'
+            }))
+        });
+    } catch (error) {
+        logger.error('Copilot: Failed to get OpenAI models:', error);
+        sendOpenAIError(res, 500, error.message || 'Internal server error');
+    }
+}
+
+/* ==================== Anthropic 模式 ==================== */
+
+/**
+ * 处理 Anthropic 格式的 /copilot/anthropic/v1/messages 请求
+ */
+async function handleAnthropicMessages(req, res) {
+    try {
+        const proxyUrl = extractProxyFromHeaders(req);
+        const authResult = await authenticateAndGetToken(proxyUrl);
+        if (authResult.error) {
+            sendAnthropicError(res, authResult.error.status, authResult.error.message);
+            return;
+        }
+
+        const body = await parseBody(req);
+        const anthropicPayload = JSON.parse(body);
+
+        logger.info(`Copilot Anthropic request - model: ${anthropicPayload.model}, stream: ${anthropicPayload.stream}`);
+
+        const openAIPayload = anthropicToOpenAI(anthropicPayload);
+
+        const response = await createChatCompletions(
+            authResult.copilotToken,
+            copilotState.vsCodeVersion,
+            openAIPayload,
+            copilotState.accountType,
+            proxyUrl
+        );
+
+        if (response.status >= 400) {
+            const errorBody = await readBody(response.body);
+            sendAnthropicError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
+            return;
+        }
+
         if (anthropicPayload.stream) {
-            // 流式响应
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
@@ -112,12 +267,10 @@ async function handleMessages(req, res) {
             });
 
             const state = createStreamState();
-            let buffer = ''; // 用于累积不完整的行
+            let buffer = '';
 
-            // 处理缓冲区中的 SSE 行
             const processLines = (lines) => {
                 for (const line of lines) {
-                    // 客户端已断开，停止处理
                     if (res.destroyed) return;
 
                     const trimmedLine = line.trim();
@@ -130,11 +283,8 @@ async function handleMessages(req, res) {
 
                         try {
                             const openAIChunk = JSON.parse(data);
-
-                            // 转换为 Anthropic 事件
                             const anthropicEvents = translateStreamChunk(openAIChunk, state);
 
-                            // 发送每个事件
                             for (const event of anthropicEvents) {
                                 if (res.destroyed) return;
                                 res.write(`event: ${event.type}\n`);
@@ -142,7 +292,6 @@ async function handleMessages(req, res) {
                             }
                         } catch (e) {
                             logger.error('Failed to parse chunk:', e);
-                            logger.error('Problematic data:', data);
                         }
                     }
                 }
@@ -152,12 +301,9 @@ async function handleMessages(req, res) {
                 try {
                     if (res.destroyed) return;
 
-                    // 将新数据添加到缓冲区
                     buffer += chunk.toString('utf8');
-
-                    // 按行分割，保留最后一个可能不完整的行
                     const lines = buffer.split('\n');
-                    buffer = lines.pop() || ''; // 保存最后一个不完整的行
+                    buffer = lines.pop() || '';
 
                     processLines(lines);
                 } catch (error) {
@@ -166,7 +312,6 @@ async function handleMessages(req, res) {
             });
 
             response.body.on('end', () => {
-                // 处理 buffer 中残留的最后一行数据
                 if (buffer.trim()) {
                     try {
                         processLines([buffer]);
@@ -187,56 +332,44 @@ async function handleMessages(req, res) {
                 }
             });
 
-            // 监听客户端断开连接，及时清理上游流
             res.on('close', () => {
                 if (response.body && !response.body.destroyed) {
                     response.body.destroy();
                 }
             });
         } else {
-            // 非流式响应
             const responseBody = await readBody(response.body);
             const openAIResponse = JSON.parse(responseBody);
-
-            // 转换为 Anthropic 格式
             const anthropicResponse = openAIToAnthropic(openAIResponse);
-
             sendJson(res, 200, anthropicResponse);
         }
     } catch (error) {
-        logger.error('Failed to handle messages:', error);
-        sendError(res, 500, error.message || 'Internal server error');
+        logger.error('Copilot: Failed to handle Anthropic messages:', error);
+        sendAnthropicError(res, 500, error.message || 'Internal server error');
     }
 }
 
 /**
- * 处理 /v1/messages/count_tokens - Token 计数端点
+ * 处理 Anthropic 格式的 /copilot/anthropic/v1/messages/count_tokens
  */
-async function handleCountTokens(req, res) {
+async function handleAnthropicCountTokens(req, res) {
     try {
-        // 确保已认证
-        if (!(await ensureAuthenticated())) {
-            sendError(res, 401, 'Not authenticated. Please complete GitHub authentication first.');
+        const proxyUrl = extractProxyFromHeaders(req);
+        const authResult = await authenticateAndGetToken(proxyUrl);
+        if (authResult.error) {
+            sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
-        // 解析请求
-        const chunks = [];
-        for await (const chunk of req) {
-            chunks.push(chunk);
-        }
-        const body = Buffer.concat(chunks).toString('utf8');
+        const body = await parseBody(req);
         const anthropicPayload = JSON.parse(body);
 
-        // 使用 token 估算工具进行计数
         let totalTokens = 0;
 
-        // 估算 messages 的 tokens
         if (Array.isArray(anthropicPayload.messages)) {
             totalTokens += estimateMessageTokens(anthropicPayload.messages);
         }
 
-        // 估算 system 的 tokens（可以是字符串或内容块数组）
         if (anthropicPayload.system) {
             if (typeof anthropicPayload.system === 'string') {
                 totalTokens += Math.ceil(anthropicPayload.system.length / 4);
@@ -247,86 +380,79 @@ async function handleCountTokens(req, res) {
             }
         }
 
-        // 估算 tools 的 tokens
         if (Array.isArray(anthropicPayload.tools)) {
             for (const tool of anthropicPayload.tools) {
-                // Tool name and description
                 totalTokens += Math.ceil((tool.name || '').length / 4);
                 totalTokens += Math.ceil((tool.description || '').length / 4);
-                // Tool input_schema (JSON structure)
                 if (tool.input_schema) {
                     const schemaStr = JSON.stringify(tool.input_schema);
-                    totalTokens += Math.ceil(schemaStr.length / 2); // JSON has higher density
+                    totalTokens += Math.ceil(schemaStr.length / 2);
                 }
             }
         }
 
-        sendJson(res, 200, {
-            input_tokens: totalTokens
-        });
+        sendJson(res, 200, {input_tokens: totalTokens});
     } catch (error) {
-        logger.error('Failed to count tokens:', error);
-        sendError(res, 500, error.message || 'Internal server error');
+        logger.error('Copilot: Failed to count tokens:', error);
+        sendAnthropicError(res, 500, error.message || 'Internal server error');
     }
 }
 
 /**
- * 处理 /v1/models - 获取可用模型列表
+ * 处理 Anthropic 格式的 /copilot/anthropic/v1/models
  */
-async function handleModels(req, res) {
+async function handleAnthropicModels(req, res) {
     try {
-        // 确保已认证
-        if (!(await ensureAuthenticated())) {
-            sendError(res, 401, 'Not authenticated. Please complete GitHub authentication first.');
+        const proxyUrl = extractProxyFromHeaders(req);
+        const authResult = await authenticateAndGetToken(proxyUrl);
+        if (authResult.error) {
+            sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
-        // 获取 Copilot token
-        const copilotToken = await ensureCopilotToken();
-        
-        // 获取模型列表
         const modelsData = await getModels(
-            copilotToken, 
-            copilotState.vsCodeVersion, 
-            copilotState.accountType
+            authResult.copilotToken,
+            copilotState.vsCodeVersion,
+            copilotState.accountType,
+            proxyUrl
         );
-        
-        const modelsList = modelsData.data || [];
-        logger.info(`Retrieved ${modelsList.length} models`);
 
-        // 直接返回 Copilot API 的模型列表
         sendJson(res, 200, {
             object: 'list',
-            data: modelsList.map(model => ({
+            data: (modelsData.data || []).map((model) => ({
                 id: model.id,
                 object: 'model',
                 created: 0,
                 owned_by: model.vendor || 'copilot',
                 name: model.name,
-                version: model.version,
-                capabilities: model.capabilities
+                capabilities: model.capabilities || {}
             }))
         });
     } catch (error) {
-        logger.error('Failed to get models:', error);
-        sendError(res, 500, error.message || 'Internal server error');
+        logger.error('Copilot: Failed to get Anthropic models:', error);
+        sendAnthropicError(res, 500, error.message || 'Internal server error');
     }
 }
 
-/**
- * 处理根路径 - 服务信息
- */
+/* ==================== 根路径 ==================== */
+
 function handleRoot(req, res) {
     sendJson(res, 200, {
         name: 'GitHub Copilot API Proxy',
         version: '1.0.0',
-        mode: 'Claude Code Compatible',
+        modes: ['openai', 'anthropic'],
         authenticated: isAuthenticated(),
         user: copilotState.userInfo,
         endpoints: {
-            messages: 'POST /copilot/v1/messages - Claude Code messages endpoint',
-            countTokens: 'POST /copilot/v1/messages/count_tokens - Token counting',
-            models: 'GET /copilot/v1/models - List available models'
+            openai: {
+                chatCompletions: 'POST /copilot/v1/chat/completions - OpenAI format',
+                models: 'GET /copilot/v1/models - OpenAI format models'
+            },
+            anthropic: {
+                messages: 'POST /copilot/anthropic/v1/messages - Claude format',
+                countTokens: 'POST /copilot/anthropic/v1/messages/count_tokens',
+                models: 'GET /copilot/anthropic/v1/models - Claude format models'
+            }
         },
         configuration: {
             autoAuth: AUTO_AUTH,
@@ -335,34 +461,46 @@ function handleRoot(req, res) {
     });
 }
 
-/**
- * 主路由处理函数
- */
+/* ==================== 主路由 ==================== */
+
 export async function routeCopilotRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
+    const method = req.method;
 
-    logger.info(`Copilot request: ${req.method} ${pathname}`);
+    logger.info(`Copilot request: ${method} ${pathname}`);
 
-    // Claude Code 端点
-    if (pathname === '/copilot/v1/messages' && req.method === 'POST') {
-        return handleMessages(req, res);
+    // ========== Anthropic 模式 ==========
+    if (pathname.startsWith('/copilot/anthropic')) {
+        const anthropicPath = pathname.replace('/copilot/anthropic', '');
+
+        if (anthropicPath === '' || anthropicPath === '/') {
+            sendJson(res, 200, {
+                name: 'Copilot API Proxy - Anthropic Mode',
+                version: '1.0.0',
+                endpoints: {
+                    messages: 'POST /copilot/anthropic/v1/messages',
+                    countTokens: 'POST /copilot/anthropic/v1/messages/count_tokens',
+                    models: 'GET /copilot/anthropic/v1/models'
+                }
+            });
+            return;
+        }
+
+        if (anthropicPath === '/v1/messages' && method === 'POST') return handleAnthropicMessages(req, res);
+        if (anthropicPath === '/v1/messages/count_tokens' && method === 'POST') return handleAnthropicCountTokens(req, res);
+        if (anthropicPath === '/v1/models' && method === 'GET') return handleAnthropicModels(req, res);
+
+        sendAnthropicError(res, 404, 'Endpoint not found');
+        return;
     }
 
-    if (pathname === '/copilot/v1/messages/count_tokens' && req.method === 'POST') {
-        return handleCountTokens(req, res);
-    }
+    // ========== OpenAI 模式 ==========
+    if (pathname === '/copilot/v1/chat/completions' && method === 'POST') return handleOpenAIChatCompletions(req, res);
+    if (pathname === '/copilot/v1/models' && method === 'GET') return handleOpenAIModels(req, res);
 
-    // 模型列表端点
-    if (pathname === '/copilot/v1/models' && req.method === 'GET') {
-        return handleModels(req, res);
-    }
+    // ========== 根路径 ==========
+    if (pathname === '/copilot' || pathname === '/copilot/') return handleRoot(req, res);
 
-    // 根路径信息
-    if (pathname === '/copilot' || pathname === '/copilot/') {
-        return handleRoot(req, res);
-    }
-
-    // 未找到路由
-    sendError(res, 404, 'Endpoint not found');
+    sendOpenAIError(res, 404, 'Endpoint not found');
 }

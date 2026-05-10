@@ -4,3 +4,10 @@ node_modules/
 
 # Copilot token 存储目录
 .copilot/
+
+# CodeBuddy 凭证存储目录
+.codebuddy/
+
+# Relay 凭证存储目录
+.relay/
+

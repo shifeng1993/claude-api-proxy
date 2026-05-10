@@ -1,0 +1,1398 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>CodeBuddy 管理面板</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: #f5f7fa;
+                color: #333;
+                line-height: 1.6;
+            }
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+            }
+            header {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 20px 30px;
+                margin-bottom: 30px;
+                border-radius: 12px;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            header h1 {
+                font-size: 1.5rem;
+            }
+            .header-right {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+            }
+            .header-right span {
+                font-size: 0.9rem;
+                opacity: 0.9;
+            }
+            .logout-btn {
+                background: rgba(255, 255, 255, 0.2);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                padding: 6px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.85rem;
+                transition: background 0.2s;
+            }
+            .logout-btn:hover {
+                background: rgba(255, 255, 255, 0.3);
+            }
+            .card {
+                background: white;
+                border-radius: 12px;
+                padding: 24px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            }
+            .card h2 {
+                color: #667eea;
+                margin-bottom: 16px;
+                font-size: 1.15rem;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 8px;
+                font-size: 0.9rem;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                font-weight: 500;
+            }
+            .btn-primary {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .btn-primary:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            }
+            .btn-danger {
+                background: #ef4444;
+                color: white;
+            }
+            .btn-danger:hover {
+                background: #dc2626;
+            }
+            .btn-secondary {
+                background: #f3f4f6;
+                color: #374151;
+            }
+            .btn-secondary:hover {
+                background: #e5e7eb;
+            }
+            .btn-warning {
+                background: #f59e0b;
+                color: white;
+            }
+            .btn-warning:hover {
+                background: #d97706;
+            }
+            .btn:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+            .btn-small {
+                padding: 6px 12px;
+                font-size: 0.8rem;
+            }
+            .auth-box {
+                background: #f8fafc;
+                border: 2px dashed #cbd5e1;
+                border-radius: 12px;
+                padding: 30px;
+                text-align: center;
+            }
+            .auth-box.active {
+                border-color: #667eea;
+                background: #eef2ff;
+            }
+            .auth-link {
+                display: inline-block;
+                background: #667eea;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                text-decoration: none;
+                margin: 10px 0;
+                word-break: break-all;
+                font-size: 0.85rem;
+            }
+            .auth-link:hover {
+                background: #5a67d8;
+            }
+            .credential-list {
+                list-style: none;
+            }
+            .credential-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 14px 16px;
+                background: #f8fafc;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                border-left: 4px solid #667eea;
+            }
+            .credential-item.expired {
+                border-left-color: #ef4444;
+                opacity: 0.7;
+            }
+            .credential-item.disabled {
+                border-left-color: #f59e0b;
+                opacity: 0.6;
+            }
+            .credential-item.active-credential {
+                border-left-color: #10b981;
+                background: #f0fdf4;
+            }
+            .credential-info h4 {
+                color: #1f2937;
+                margin-bottom: 2px;
+                font-size: 0.95rem;
+            }
+            .credential-info p {
+                color: #6b7280;
+                font-size: 0.8rem;
+            }
+            .loading {
+                display: inline-block;
+                width: 18px;
+                height: 18px;
+                border: 3px solid #f3f3f3;
+                border-top: 3px solid #667eea;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+            }
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
+            .toast {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                padding: 14px 22px;
+                border-radius: 8px;
+                color: white;
+                font-weight: 500;
+                transform: translateY(100px);
+                opacity: 0;
+                transition: all 0.3s ease;
+                z-index: 1000;
+            }
+            .toast.show {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            .toast.success {
+                background: #10b981;
+            }
+            .toast.error {
+                background: #ef4444;
+            }
+            .empty-state {
+                text-align: center;
+                padding: 30px;
+                color: #9ca3af;
+            }
+            .config-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 0;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            .config-row:last-child {
+                border-bottom: none;
+            }
+            .config-label {
+                font-weight: 500;
+                color: #374151;
+            }
+            .config-label p {
+                color: #6b7280;
+                font-size: 0.8rem;
+                font-weight: normal;
+                margin-top: 2px;
+            }
+            .config-control {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .toggle-switch {
+                position: relative;
+                width: 48px;
+                height: 26px;
+                background: #d1d5db;
+                border-radius: 13px;
+                cursor: pointer;
+                transition: background 0.3s;
+            }
+            .toggle-switch.active {
+                background: #667eea;
+            }
+            .toggle-switch::after {
+                content: '';
+                position: absolute;
+                top: 3px;
+                left: 3px;
+                width: 20px;
+                height: 20px;
+                background: white;
+                border-radius: 50%;
+                transition: transform 0.3s;
+            }
+            .toggle-switch.active::after {
+                transform: translateX(22px);
+            }
+            .rotation-input {
+                width: 60px;
+                padding: 6px 10px;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                font-size: 0.9rem;
+                text-align: center;
+            }
+            .rotation-input:focus {
+                outline: none;
+                border-color: #667eea;
+            }
+            .api-key-display {
+                background: #f1f5f9;
+                padding: 14px 18px;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 0.9rem;
+                word-break: break-all;
+                border: 2px solid #667eea;
+                color: #374151;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .api-key-text {
+                flex: 1;
+                word-break: break-all;
+            }
+            .api-key-actions {
+                display: flex;
+                gap: 6px;
+                flex-shrink: 0;
+            }
+            .btn-icon {
+                padding: 6px 10px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.8rem;
+                transition: all 0.2s;
+                background: #e5e7eb;
+                color: #374151;
+            }
+            .btn-icon:hover {
+                background: #d1d5db;
+            }
+            .btn-icon.copy-success {
+                background: #10b981;
+                color: white;
+            }
+            .cred-count-badge {
+                background: #667eea;
+                color: white;
+                font-size: 0.75rem;
+                padding: 2px 10px;
+                border-radius: 12px;
+                margin-left: 8px;
+                vertical-align: middle;
+                font-weight: 600;
+            }
+            .cred-count-badge.zero {
+                background: #ef4444;
+            }
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+            }
+            .stat-item {
+                background: #f8fafc;
+                border-radius: 8px;
+                padding: 20px;
+                text-align: center;
+            }
+            .stat-value {
+                font-size: 2rem;
+                font-weight: 700;
+                color: #667eea;
+                line-height: 1.2;
+            }
+            .stat-label {
+                font-size: 0.85rem;
+                color: #6b7280;
+                margin-top: 6px;
+            }
+            .usage-card-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+            }
+            .usage-card-header h2 {
+                margin-bottom: 0;
+            }
+            .month-select {
+                padding: 6px 12px;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                font-size: 0.85rem;
+                color: #374151;
+                background: white;
+                cursor: pointer;
+                outline: none;
+            }
+            .month-select:focus {
+                border-color: #667eea;
+            }
+            .chart-container {
+                width: 100%;
+                height: 280px;
+                margin-top: 16px;
+            }
+
+            /* 使用指南样式 */
+            .guide-steps {
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+            .guide-step {
+                display: flex;
+                gap: 14px;
+                align-items: flex-start;
+            }
+            .guide-step-num {
+                width: 28px;
+                height: 28px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                font-weight: 700;
+                font-size: 0.85rem;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+            .guide-step-body {
+                flex: 1;
+            }
+            .guide-step-title {
+                font-weight: 600;
+                color: #1f2937;
+                margin-bottom: 4px;
+                font-size: 0.95rem;
+            }
+            .guide-step-desc {
+                font-size: 0.85rem;
+                color: #6b7280;
+                line-height: 1.5;
+            }
+            .guide-step-desc code {
+                background: #f1f5f9;
+                padding: 1px 6px;
+                border-radius: 4px;
+                font-size: 0.82rem;
+                color: #7c3aed;
+            }
+            .guide-code-block {
+                position: relative;
+                background: #1e293b;
+                border-radius: 8px;
+                margin-top: 8px;
+                overflow: hidden;
+            }
+            .guide-code-block pre {
+                margin: 0;
+                padding: 14px 18px;
+                padding-right: 48px;
+                color: #e2e8f0;
+                font-size: 0.82rem;
+                font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+                line-height: 1.6;
+                overflow-x: auto;
+                white-space: pre;
+            }
+            .guide-copy-btn {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                background: rgba(255,255,255,0.1);
+                color: #e2e8f0;
+                border: none;
+            }
+            .guide-copy-btn:hover {
+                background: rgba(255,255,255,0.2);
+            }
+        </style>
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>CodeBuddy 管理面板</h1>
+                <div class="header-right">
+                    <span>欢迎, CodeBuddy {{displayName}}</span>
+                    {{logoutButton}}
+                </div>
+            </header>
+
+            <div id="mainContent">
+                <div class="empty-state">
+                    <div class="loading"></div>
+                    <p>加载中...</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="toast" class="toast"></div>
+
+        <script>
+            const API_BASE = '/codebuddyFE';
+            let currentAuthState = null;
+            let pollInterval = null;
+            let rotationConfig = {autoRotationEnabled: true, rotationCount: 1, manualSelectedIndex: null};
+            let apiKeyVisible = false;
+            let apiKeyPlain = '';
+            let apiKeyMasked = '';
+            let currentMonth = '';
+            let apiCallsChartInstance = null;
+            let tokensChartInstance = null;
+
+            function showToast(message, type = 'success') {
+                const toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.className = 'toast ' + type;
+                toast.classList.add('show');
+                const duration = type === 'error' ? 8000 : 3000;
+                setTimeout(() => toast.classList.remove('show'), duration);
+            }
+
+            async function logout() {
+                try {
+                    await fetch(API_BASE + '/logout', {method: 'POST'});
+                    window.location.href = '/codebuddyFE';
+                } catch (error) {
+                    showToast('退出失败', 'error');
+                }
+            }
+
+            async function loadMyTenant() {
+                try {
+                    const response = await fetch(API_BASE + '/status');
+                    const data = await response.json();
+                    rotationConfig = {
+                        autoRotationEnabled: data.autoRotationEnabled,
+                        rotationCount: data.rotationCount,
+                        manualSelectedIndex: data.manualSelectedIndex
+                    };
+
+                    // Render the page with status data
+                    renderTenantPage({
+                        apiKeyPrefix: data.apiKeyPrefix,
+                        apiKeyPlain: data.apiKeyPlain,
+                        credentialCount: data.credentialCount,
+                        hasCredentials: data.hasCredentials,
+                        customApiCallCount: data.usage?.custom_api_call_count || 0,
+                        customInputTokens: data.usage?.custom_input_tokens || 0,
+                        customOutputTokens: data.usage?.custom_output_tokens || 0
+                    });
+
+                    loadCredentials();
+                    startStatsAutoRefresh();
+                    currentMonth = getCurrentMonth();
+                    loadAvailableMonths();
+                    await loadDailyChartData();
+
+                    // Update API key display
+                    const apiKeyEl = document.getElementById('apiKeyDisplay');
+                    if (apiKeyEl) apiKeyEl.textContent = data.apiKeyPrefix || 'N/A';
+                } catch (error) {
+                    showToast('加载信息失败: ' + error.message, 'error');
+                }
+            }
+
+            function formatStat(n) {
+                if (n >= 100000000) return (n / 100000000).toFixed(2) + '亿';
+                if (n >= 10000) return (n / 10000).toFixed(2) + '万';
+                return new Intl.NumberFormat('zh-CN').format(n);
+            }
+
+            function formatNumber(n) {
+                return new Intl.NumberFormat('zh-CN').format(n);
+            }
+
+            function getCurrentMonth() {
+                const now = new Date();
+                return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            }
+
+            function loadAvailableMonths() {
+                const select = document.getElementById('monthSelect');
+                if (!select) return;
+                const now = new Date();
+                const months = [];
+                for (let i = 0; i < 3; i++) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    months.push(key);
+                }
+                select.innerHTML = months
+                    .map((m) => {
+                        const [y, mo] = m.split('-');
+                        return `<option value="${m}"${m === currentMonth ? ' selected' : ''}>${y} - ${parseInt(mo)}月</option>`;
+                    })
+                    .join('');
+            }
+
+            async function onMonthChange() {
+                const select = document.getElementById('monthSelect');
+                if (select) {
+                    currentMonth = select.value;
+                }
+                await loadDailyChartData();
+            }
+
+            async function loadDailyChartData() {
+                if (!currentMonth) return;
+                try {
+                    const response = await fetch(
+                        `/codebuddyFE/stats/daily?month=${currentMonth}`
+                    );
+                    const result = await response.json();
+                    renderCharts(result.data || {}, currentMonth);
+                } catch (error) {
+                    console.error('加载每日数据失败:', error);
+                }
+            }
+
+            function getDaysInMonth(monthKey) {
+                const [year, month] = monthKey.split('-').map(Number);
+                return new Date(year, month, 0).getDate();
+            }
+
+            function renderCharts(dailyData, monthKey) {
+                let daysInMonth = getDaysInMonth(monthKey);
+                const now = new Date();
+                const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                if (monthKey === curMonth) {
+                    daysInMonth = Math.min(daysInMonth, now.getDate());
+                }
+                const dates = [];
+                const apiCallsData = [];
+                const inputTokensData = [];
+                const outputTokensData = [];
+
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const dayKey = String(d).padStart(2, '0');
+                    const dayData = dailyData[dayKey] || {api_calls: 0, input_tokens: 0, output_tokens: 0};
+                    dates.push(d);
+                    apiCallsData.push(dayData.api_calls);
+                    inputTokensData.push(dayData.input_tokens);
+                    outputTokensData.push(dayData.output_tokens);
+                }
+
+                // 按月份聚合更新统计卡片
+                const totalApiCalls = apiCallsData.reduce((s, v) => s + v, 0);
+                const totalInputTokens = inputTokensData.reduce((s, v) => s + v, 0);
+                const totalOutputTokens = outputTokensData.reduce((s, v) => s + v, 0);
+                const callEl = document.getElementById('apiCallCount');
+                if (callEl) {
+                    callEl.textContent = formatStat(totalApiCalls);
+                    callEl.title = new Intl.NumberFormat('zh-CN').format(totalApiCalls);
+                }
+                const inEl = document.getElementById('inputTokensCount');
+                if (inEl) {
+                    inEl.textContent = formatStat(totalInputTokens);
+                    inEl.title = new Intl.NumberFormat('zh-CN').format(totalInputTokens);
+                }
+                const outEl = document.getElementById('outputTokensCount');
+                if (outEl) {
+                    outEl.textContent = formatStat(totalOutputTokens);
+                    outEl.title = new Intl.NumberFormat('zh-CN').format(totalOutputTokens);
+                }
+
+                // 折线图 - API请求次数
+                const apiCallsEl = document.getElementById('apiCallsChart');
+                if (apiCallsEl) {
+                    if (!apiCallsChartInstance) {
+                        apiCallsChartInstance = echarts.init(apiCallsEl);
+                    }
+                    apiCallsChartInstance.setOption(
+                        {
+                            title: {text: 'API 请求次数', left: 'left', textStyle: {fontSize: 14, color: '#374151'}},
+                            tooltip: {
+                                trigger: 'axis',
+                                formatter: function (params) {
+                                    const p = params[0];
+                                    const day = String(p.dataIndex + 1).padStart(2, '0');
+                                    return `<b>${monthKey}-${day}</b><br/>请求次数 ${p.value}`;
+                                }
+                            },
+                            grid: {left: '50px', right: '30px', top: '70px', bottom: '30px'},
+                            xAxis: {type: 'category', data: dates, name: '日', axisLabel: {fontSize: 11}},
+                            yAxis: {type: 'value', name: '次', axisLabel: {fontSize: 11}, splitNumber: 2},
+                            series: [
+                                {
+                                    type: 'line',
+                                    data: apiCallsData,
+                                    smooth: true,
+                                    showSymbol: false,
+                                    emphasis: {focus: 'series', itemStyle: {color: '#667eea'}},
+                                    areaStyle: {opacity: 0.15},
+                                    lineStyle: {color: '#667eea', width: 2},
+                                    itemStyle: {color: '#667eea'}
+                                }
+                            ]
+                        },
+                        true
+                    );
+                }
+
+                // 柱状图 - Tokens
+                const tokensEl = document.getElementById('tokensChart');
+                if (tokensEl) {
+                    if (!tokensChartInstance) {
+                        tokensChartInstance = echarts.init(tokensEl);
+                    }
+                    tokensChartInstance.setOption(
+                        {
+                            title: {text: 'Tokens 使用量', left: 'left', textStyle: {fontSize: 14, color: '#374151'}},
+                            tooltip: {
+                                trigger: 'axis',
+                                extraCssText: 'min-width: 300px',
+                                formatter: function (params) {
+                                    const day = String(params[0].dataIndex + 1).padStart(2, '0');
+                                    const total = params.reduce((s, p) => s + p.value, 0);
+                                    let tip = `<div style="display:flex;justify-content:space-between"><b>${monthKey}-${day}</b><b>${formatNumber(total)} tokens</b></div>`;
+                                    const barColors = ['#93b5f6', '#3b5998'];
+                                    params.forEach((p, i) => {
+                                        tip += `<div style="display:flex;justify-content:space-between;align-items:center; color: '#666'"><span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${barColors[i]};margin-right:4px;vertical-align:middle"></span>${p.seriesName}</span><span>${formatNumber(p.value)} tokens</span></div>`;
+                                    });
+                                    return tip;
+                                }
+                            },
+                            legend: {data: ['输入', '输出'], top: '30px', right: '0', textStyle: {fontSize: 12}},
+                            grid: {left: '80px', right: '30px', top: '70px', bottom: '30px'},
+                            xAxis: {type: 'category', data: dates, name: '日', axisLabel: {fontSize: 11}},
+                            yAxis: {type: 'value', name: 'Tokens', axisLabel: {fontSize: 11}, splitNumber: 1},
+                            series: [
+                                {
+                                    name: '输入',
+                                    type: 'bar',
+                                    data: inputTokensData,
+                                    itemStyle: {color: '#93b5f6'}
+                                },
+                                {
+                                    name: '输出',
+                                    type: 'bar',
+                                    data: outputTokensData,
+                                    itemStyle: {color: '#3b5998'}
+                                }
+                            ]
+                        },
+                        true
+                    );
+                }
+            }
+
+            async function resetCustomStats() {
+                if (!confirm('确定要重置自定义统计数据吗？此操作不可撤销。')) return;
+                try {
+                    const response = await fetch(`/codebuddyFE/stats/custom-reset`, {
+                        method: 'POST'
+                    });
+                    if (response.ok) {
+                        showToast('自定义统计数据已重置');
+                        refreshApiStats();
+                    } else {
+                        throw new Error('重置失败');
+                    }
+                } catch (error) {
+                    showToast('重置失败: ' + error.message, 'error');
+                }
+            }
+
+            async function reloadAndRefreshStats() {
+                try {
+                    await fetch(`/codebuddyFE/stats/refresh`, {method: 'POST'});
+                    await Promise.all([refreshApiStats(), loadDailyChartData()]);
+                    showToast('数据已刷新');
+                } catch (error) {
+                    showToast('刷新失败: ' + error.message, 'error');
+                }
+            }
+
+            async function refreshApiStats() {
+                try {
+                    const response = await fetch('/codebuddyFE/status');
+                    const data = await response.json();
+                    const cCallEl = document.getElementById('customApiCallCount');
+                    if (cCallEl) {
+                        cCallEl.textContent = formatStat(data.usage?.custom_api_call_count || 0);
+                        cCallEl.title = new Intl.NumberFormat('zh-CN').format(data.usage?.custom_api_call_count || 0);
+                    }
+                    const cInEl = document.getElementById('customInputTokensCount');
+                    if (cInEl) {
+                        cInEl.textContent = formatStat(data.usage?.custom_input_tokens || 0);
+                        cInEl.title = new Intl.NumberFormat('zh-CN').format(data.usage?.custom_input_tokens || 0);
+                    }
+                    const cOutEl = document.getElementById('customOutputTokensCount');
+                    if (cOutEl) {
+                        cOutEl.textContent = formatStat(data.usage?.custom_output_tokens || 0);
+                        cOutEl.title = new Intl.NumberFormat('zh-CN').format(data.usage?.custom_output_tokens || 0);
+                    }
+                } catch {}
+            }
+
+            function startStatsAutoRefresh() {
+                refreshApiStats();
+                setInterval(refreshApiStats, 30000);
+            }
+
+            function renderTenantPage(data) {
+                apiKeyMasked = data.apiKeyPrefix || '****';
+                apiKeyPlain = data.apiKeyPlain || '';
+                apiKeyVisible = false;
+                document.getElementById('mainContent').innerHTML = `
+                <div class="card">
+                    <h2>添加凭证</h2>
+                    <div class="config-row" style="margin-bottom: 16px;">
+                        <div class="config-label">
+                            上游服务
+                            <p>选择认证的上游 CodeBuddy 服务地址</p>
+                        </div>
+                        <div class="config-control">
+                            <select id="baseUrlSelect" class="rotation-input" style="width: 240px; text-align: left; padding: 8px 10px;">
+                                <option value="https://copilot.tencent.com">copilot.tencent.com (国内站)</option>
+                                <option value="https://www.codebuddy.ai">www.codebuddy.ai (国际站)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="authBox" class="auth-box">
+                        <p>点击下方按钮开始 CodeBuddy OAuth2 认证流程</p>
+                        <button id="startAuthBtn" class="btn btn-primary" style="margin-top: 16px;">
+                            开始认证
+                        </button>
+                        <div id="authLinkContainer" style="display: none; margin-top: 20px;">
+                            <p style="margin-bottom: 10px;">请访问以下链接完成登录：</p>
+                            <a id="authLink" href="#" target="_blank" class="auth-link"></a>
+                            <p style="margin-top: 10px; color: #6b7280; font-size: 0.85rem;">
+                                正在等待认证... <span class="loading"></span>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>凭证列表 <span id="credCountBadge" class="cred-count-badge">${data.credentialCount || 0}</span></h2>
+                    <div id="credentialsList">
+                        <div class="empty-state"><p>加载中...</p></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>API Key</h2>
+                    <div class="api-key-display">
+                        <span id="apiKeyText" class="api-key-text">${apiKeyMasked}</span>
+                        <div class="api-key-actions">
+                            <button class="btn-icon" onclick="toggleApiKeyVisibility()" id="toggleKeyBtn" title="显示/隐藏">👁</button>
+                            <button class="btn-icon" onclick="copyApiKey()" id="copyKeyBtn" title="复制">📋</button>
+                            <button class="btn-icon" onclick="resetApiKey()" id="resetKeyBtn" title="重置">🔄</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>使用指南</h2>
+                    <div class="guide-steps">
+                        <div class="guide-step">
+                            <div class="guide-step-num">1</div>
+                            <div class="guide-step-body">
+                                <div class="guide-step-title">添加凭证</div>
+                                <div class="guide-step-desc">选好域名后点击「开始认证」，在 CodeBuddy 页面完成认证后，返回本页面（<code>${window.location.href}</code>）</div>
+                            </div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="guide-step-num">2</div>
+                            <div class="guide-step-body">
+                                <div class="guide-step-title">兼容 Anthropic 接口协议工具</div>
+                                <div class="guide-step-desc">如 Claude Code、Claude Desktop 等，编辑 <code>~/.claude/settings.json</code>：</div>
+                                <div class="guide-code-block">
+                                    <button class="btn-icon guide-copy-btn" onclick="copyGuideConfig()" title="复制">📋</button>
+                                    <pre id="guideConfigCode"></pre>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="guide-step-num">3</div>
+                            <div class="guide-step-body">
+                                <div class="guide-step-title">兼容 OpenAI 接口协议工具</div>
+                                <div class="guide-step-desc">如 Cursor、Continue、Cline 等，将 Base URL 设置为：</div>
+                                <div class="guide-code-block">
+                                    <button class="btn-icon guide-copy-btn" onclick="copyGuideOpenAIUrl()" title="复制">📋</button>
+                                    <pre id="guideOpenAIUrl"></pre>
+                                </div>
+                                <div class="guide-step-desc" style="margin-top:6px">API Key 使用上方显示的 Key</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="usage-card-header">
+                        <h2>使用统计</h2>
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <button class="btn-icon" onclick="reloadAndRefreshStats()" title="刷新">🔄</button>
+                            <select id="monthSelect" class="month-select" onchange="onMonthChange()"></select>
+                        </div>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="apiCallCount" title="0">0</div>
+                            <div class="stat-label">API 调用次数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="inputTokensCount" title="0">0</div>
+                            <div class="stat-label">输入 Tokens</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="outputTokensCount" title="0">0</div>
+                            <div class="stat-label">输出 Tokens</div>
+                        </div>
+                    </div>
+                    <div id="apiCallsChart" class="chart-container"></div>
+                    <div id="tokensChart" class="chart-container"></div>
+                </div>
+
+                <div class="card">
+                    <h2>自定义统计</h2>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="customApiCallCount" title="${new Intl.NumberFormat('zh-CN').format(data.customApiCallCount || 0)}">${formatStat(data.customApiCallCount || 0)}</div>
+                            <div class="stat-label">API 调用次数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="customInputTokensCount" title="${new Intl.NumberFormat('zh-CN').format(data.customInputTokens || 0)}">${formatStat(data.customInputTokens || 0)}</div>
+                            <div class="stat-label">输入 Tokens</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="customOutputTokensCount" title="${new Intl.NumberFormat('zh-CN').format(data.customOutputTokens || 0)}">${formatStat(data.customOutputTokens || 0)}</div>
+                            <div class="stat-label">输出 Tokens</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 12px;">
+                        <button class="btn btn-primary btn-small" onclick="reloadAndRefreshStats()">刷新</button>
+                        <button class="btn btn-primary btn-small" onclick="resetCustomStats()">重置</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>轮换配置</h2>
+                    <div class="config-row">
+                        <div class="config-label">
+                            自动轮换
+                            <p>自动在多个凭证之间轮换使用</p>
+                        </div>
+                        <div class="config-control">
+                            <div id="rotationToggle" class="toggle-switch ${rotationConfig.autoRotationEnabled ? 'active' : ''}" onclick="toggleRotation()"></div>
+                            <span id="rotationStatus">${rotationConfig.autoRotationEnabled ? '已启用' : '已禁用'}</span>
+                        </div>
+                    </div>
+                    <div id="rotationCountRow" class="config-row" style="display: ${rotationConfig.autoRotationEnabled ? 'flex' : 'none'};">
+                        <div class="config-label">
+                            轮换次数
+                            <p>每个凭证使用 N 次后切换到下一个</p>
+                        </div>
+                        <div class="config-control">
+                            <input type="number" id="rotationCountInput" class="rotation-input" value="${rotationConfig.rotationCount}" min="1" max="100" />
+                            <button class="btn btn-primary btn-small" onclick="saveRotationConfig()">保存</button>
+                        </div>
+                    </div>
+                    <div id="activeCredentialRow" class="config-row" style="display: ${rotationConfig.autoRotationEnabled ? 'none' : 'flex'};">
+                        <div class="config-label">
+                            活跃凭证
+                            <p>禁用轮换时固定使用的凭证</p>
+                        </div>
+                        <div class="config-control">
+                            <select id="activeCredentialSelect" class="rotation-input" style="width: 220px; text-align: left; padding: 8px 10px;" onchange="selectActiveCredential(this.value)">
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+                document.getElementById('startAuthBtn').addEventListener('click', startAuth);
+                document.getElementById('baseUrlSelect').addEventListener('change', resetAuthUI);
+                updateGuideConfig();
+            }
+
+            async function startAuth() {
+                const btn = document.getElementById('startAuthBtn');
+                const container = document.getElementById('authLinkContainer');
+                const link = document.getElementById('authLink');
+                const box = document.getElementById('authBox');
+
+                btn.disabled = true;
+                btn.innerHTML = '<span class="loading"></span> 启动中...';
+
+                try {
+                    const baseUrl = document.getElementById('baseUrlSelect').value;
+                    const response = await fetch(
+                        `/codebuddyFE/auth/start?base_url=${encodeURIComponent(baseUrl)}`
+                    );
+                    const data = await response.json();
+                    if (data.success) {
+                        currentAuthState = data.auth_state;
+                        box.classList.add('active');
+                        container.style.display = 'block';
+                        link.href = data.verification_uri_complete;
+                        link.textContent = data.verification_uri_complete;
+                        window.open(data.verification_uri_complete, '_blank');
+                        startPolling();
+                    } else {
+                        throw new Error(data.message || '启动失败');
+                    }
+                } catch (error) {
+                    let errorMsg = '启动认证失败: ' + error.message;
+                    if (
+                        error.message.includes('certificate') ||
+                        error.message.includes('TLS') ||
+                        error.message.includes('SSL')
+                    ) {
+                        errorMsg += '\\n\\n解决方案：设置环境变量 NODE_TLS_REJECT_UNAUTHORIZED=0 后重启服务';
+                    }
+                    showToast(errorMsg, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '开始认证';
+                }
+            }
+
+            function startPolling() {
+                if (pollInterval) clearInterval(pollInterval);
+                pollInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch('/codebuddyFE/auth/poll', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({auth_state: currentAuthState})
+                        });
+                        const data = await response.json();
+                        if (data.status === 'success') {
+                            clearInterval(pollInterval);
+                            showToast('认证成功！');
+                            resetAuthUI();
+                            loadCredentials();
+                        } else if (data.status === 'error') {
+                            clearInterval(pollInterval);
+                            showToast(data.message, 'error');
+                            resetAuthUI();
+                        }
+                    } catch (error) {
+                        console.error('轮询失败:', error);
+                    }
+                }, 5000);
+            }
+
+            function resetAuthUI() {
+                const btn = document.getElementById('startAuthBtn');
+                const container = document.getElementById('authLinkContainer');
+                const box = document.getElementById('authBox');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '开始认证';
+                }
+                if (container) container.style.display = 'none';
+                if (box) box.classList.remove('active');
+                currentAuthState = null;
+            }
+
+            async function loadCredentials() {
+                try {
+                    const response = await fetch(`/codebuddyFE/credentials`);
+                    const data = await response.json();
+                    const list = document.getElementById('credentialsList');
+                    const credCount = data.credentials ? data.credentials.length : 0;
+                    const badge = document.getElementById('credCountBadge');
+                    if (badge) {
+                        badge.textContent = credCount;
+                        badge.className = 'cred-count-badge' + (credCount === 0 ? ' zero' : '');
+                    }
+                    if (!data.credentials || data.credentials.length === 0) {
+                        list.innerHTML = '<div class="empty-state"><p>暂无凭证，请先添加</p></div>';
+                        return;
+                    }
+                    list.innerHTML =
+                        '<ul class="credential-list">' +
+                        data.credentials
+                            .map((cred) => {
+                                const shortUrl = cred.baseUrl ? new URL(cred.baseUrl).host : 'unknown';
+                                const statusParts = [];
+                                if (cred.isDisabled) statusParts.push('已禁用');
+                                else if (cred.isExpired) statusParts.push('已过期');
+                                else statusParts.push('有效');
+                                statusParts.push('剩余: ' + cred.timeRemainingStr);
+                                statusParts.push('上游: ' + shortUrl);
+                                const isActive =
+                                    !rotationConfig.autoRotationEnabled &&
+                                    !cred.isDisabled &&
+                                    !cred.isExpired &&
+                                    cred.index === rotationConfig.manualSelectedIndex;
+                                let itemClass = cred.isDisabled ? 'disabled' : cred.isExpired ? 'expired' : '';
+                                if (isActive) itemClass = 'active-credential';
+                                const toggleBtn = cred.isDisabled
+                                    ? '<button class="btn btn-secondary btn-small" onclick="toggleCredentialDisable(' +
+                                      cred.index +
+                                      ')">启用</button>'
+                                    : '<button class="btn btn-warning btn-small" onclick="toggleCredentialDisable(' +
+                                      cred.index +
+                                      ')">禁用</button>';
+                                let activeBtn = '';
+                                if (
+                                    !rotationConfig.autoRotationEnabled &&
+                                    !cred.isDisabled &&
+                                    !cred.isExpired &&
+                                    !isActive
+                                ) {
+                                    activeBtn =
+                                        '<button class="btn btn-primary btn-small" onclick="setActiveCredential(' +
+                                        cred.index +
+                                        ')">设为活跃</button>';
+                                }
+                                const activeTag = isActive
+                                    ? '<span style="background:#10b981;color:white;font-size:0.7rem;padding:2px 8px;border-radius:10px;margin-left:8px;">活跃</span>'
+                                    : '';
+                                return `
+                        <li class="credential-item ${itemClass}">
+                            <div class="credential-info">
+                                <h4>${cred.email || cred.userId}${activeTag}</h4>
+                                <p>${statusParts.join(' | ')}</p>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                ${activeBtn}
+                                ${toggleBtn}
+                                <button class="btn btn-danger btn-small" onclick="deleteCredential(${cred.index})">删除</button>
+                            </div>
+                        </li>
+                    `;
+                            })
+                            .join('') +
+                        '</ul>';
+                    updateActiveCredentialSelect(data.credentials);
+                } catch (error) {
+                    showToast('加载凭证失败: ' + error.message, 'error');
+                }
+            }
+
+            async function deleteCredential(index) {
+                if (!confirm('确定要删除此凭证吗？')) return;
+                try {
+                    const response = await fetch(`/codebuddyFE/credentials/delete`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({index})
+                    });
+                    if (response.ok) {
+                        showToast('凭证已删除');
+                        loadCredentials();
+                    } else {
+                        throw new Error('删除失败');
+                    }
+                } catch (error) {
+                    showToast('删除失败: ' + error.message, 'error');
+                }
+            }
+
+            async function toggleCredentialDisable(index) {
+                try {
+                    const response = await fetch(`/codebuddyFE/credentials/toggle-disable`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({index})
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        showToast(data.message);
+                        loadCredentials();
+                    } else {
+                        throw new Error(data.error || '操作失败');
+                    }
+                } catch (error) {
+                    showToast('操作失败: ' + error.message, 'error');
+                }
+            }
+
+            async function toggleRotation() {
+                rotationConfig.autoRotationEnabled = !rotationConfig.autoRotationEnabled;
+                try {
+                    const response = await fetch(`/codebuddyFE/rotation/config`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({autoRotationEnabled: rotationConfig.autoRotationEnabled})
+                    });
+                    const data = await response.json();
+                    if (data.manualSelectedIndex !== undefined) {
+                        rotationConfig.manualSelectedIndex = data.manualSelectedIndex;
+                    }
+                    updateRotationUI();
+                    loadCredentials();
+                } catch (error) {
+                    rotationConfig.autoRotationEnabled = !rotationConfig.autoRotationEnabled;
+                    showToast('操作失败: ' + error.message, 'error');
+                }
+            }
+
+            function updateRotationUI() {
+                const toggle = document.getElementById('rotationToggle');
+                const status = document.getElementById('rotationStatus');
+                const activeRow = document.getElementById('activeCredentialRow');
+                const rotationCountRow = document.getElementById('rotationCountRow');
+                if (toggle) {
+                    toggle.className = 'toggle-switch' + (rotationConfig.autoRotationEnabled ? ' active' : '');
+                }
+                if (status) {
+                    status.textContent = rotationConfig.autoRotationEnabled ? '已启用' : '已禁用';
+                }
+                if (activeRow) {
+                    activeRow.style.display = rotationConfig.autoRotationEnabled ? 'none' : 'flex';
+                }
+                if (rotationCountRow) {
+                    rotationCountRow.style.display = rotationConfig.autoRotationEnabled ? 'flex' : 'none';
+                }
+            }
+
+            async function saveRotationConfig() {
+                const count = parseInt(document.getElementById('rotationCountInput').value) || 1;
+                try {
+                    const response = await fetch(`/codebuddyFE/rotation/config`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({rotationCount: count})
+                    });
+                    const data = await response.json();
+                    rotationConfig.rotationCount = data.rotationCount || count;
+                    document.getElementById('rotationCountInput').value = rotationConfig.rotationCount;
+                    showToast('轮换配置已保存');
+                } catch (error) {
+                    showToast('保存失败: ' + error.message, 'error');
+                }
+            }
+
+            async function setActiveCredential(index) {
+                try {
+                    const response = await fetch(`/codebuddyFE/credentials/select`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({index})
+                    });
+                    if (response.ok) {
+                        rotationConfig.manualSelectedIndex = index;
+                        showToast('已设为活跃凭证');
+                        loadCredentials();
+                    } else {
+                        throw new Error('设置失败');
+                    }
+                } catch (error) {
+                    showToast('设置失败: ' + error.message, 'error');
+                }
+            }
+
+            async function selectActiveCredential(indexStr) {
+                const index = parseInt(indexStr);
+                if (isNaN(index)) return;
+                await setActiveCredential(index);
+            }
+
+            function updateActiveCredentialSelect(credentials) {
+                const select = document.getElementById('activeCredentialSelect');
+                const activeRow = document.getElementById('activeCredentialRow');
+                if (!select) return;
+                const currentActive = rotationConfig.manualSelectedIndex;
+                const validCreds = credentials.filter((c) => !c.isDisabled && !c.isExpired);
+                if (validCreds.length === 0) {
+                    if (activeRow) activeRow.style.display = 'none';
+                    return;
+                }
+                if (activeRow && !rotationConfig.autoRotationEnabled) activeRow.style.display = 'flex';
+                select.innerHTML = validCreds
+                    .map(
+                        (c) =>
+                            '<option value="' +
+                            c.index +
+                            '"' +
+                            (c.index === currentActive ? ' selected' : '') +
+                            '>' +
+                            (c.email || c.userId) +
+                            '</option>'
+                    )
+                    .join('');
+            }
+
+            function toggleApiKeyVisibility() {
+                apiKeyVisible = !apiKeyVisible;
+                const textEl = document.getElementById('apiKeyText');
+                const btn = document.getElementById('toggleKeyBtn');
+                if (apiKeyVisible && apiKeyPlain) {
+                    textEl.textContent = apiKeyPlain;
+                    btn.textContent = '🙈';
+                } else {
+                    textEl.textContent = apiKeyMasked;
+                    btn.textContent = '👁';
+                    apiKeyVisible = false;
+                }
+            }
+
+            async function copyApiKey() {
+                const keyToCopy = apiKeyPlain || apiKeyMasked;
+                if (!keyToCopy || keyToCopy === '****') {
+                    showToast('无可复制的 API Key', 'error');
+                    return;
+                }
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(keyToCopy);
+                    } else {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = keyToCopy;
+                        textarea.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                    }
+                    const btn = document.getElementById('copyKeyBtn');
+                    btn.textContent = '✓';
+                    btn.classList.add('copy-success');
+                    showToast('API Key 已复制');
+                    setTimeout(() => {
+                        btn.textContent = '📋';
+                        btn.classList.remove('copy-success');
+                    }, 2000);
+                } catch (error) {
+                    showToast('复制失败', 'error');
+                }
+            }
+
+            function updateGuideConfig() {
+                const baseUrl = window.location.origin;
+                const el = document.getElementById('guideConfigCode');
+                if (!el) return;
+                el.textContent = `{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_BASE_URL": "${baseUrl}/codebuddy/anthropic",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: ${apiKeyPlain || apiKeyMasked}",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.1",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.0"
+  }
+}`;
+                const openaiUrlEl = document.getElementById('guideOpenAIUrl');
+                if (openaiUrlEl) {
+                    openaiUrlEl.textContent = `${baseUrl}/codebuddy/v1`;
+                }
+            }
+
+            function copyGuideConfig() {
+                const el = document.getElementById('guideConfigCode');
+                if (!el) return;
+                copyGuideText(el.textContent);
+            }
+
+            function copyGuideOpenAIUrl() {
+                const el = document.getElementById('guideOpenAIUrl');
+                if (!el) return;
+                copyGuideText(el.textContent);
+            }
+
+            function copyGuideText(text) {
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        navigator.clipboard.writeText(text);
+                    } else {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = text;
+                        textarea.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                    }
+                    showToast('已复制');
+                } catch {
+                    showToast('复制失败', 'error');
+                }
+            }
+
+            async function resetApiKey() {
+                if (!confirm('重置后旧 Key 将立即失效，确定？')) return;
+                try {
+                    const response = await fetch(`/codebuddyFE/regenerate-key`, {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    if (data.api_key) {
+                        apiKeyPlain = data.api_key;
+                        const body = apiKeyPlain.slice('sk-codebuddy-'.length);
+                        apiKeyMasked = 'sk-codebuddy-' + body.slice(0, 8) + '****' + body.slice(-4);
+                        apiKeyVisible = true;
+                        document.getElementById('apiKeyText').textContent = apiKeyPlain;
+                        document.getElementById('toggleKeyBtn').textContent = '🙈';
+                        showToast('API Key 已重置，请妥善保存');
+                    } else {
+                        throw new Error(data.error || '重置失败');
+                    }
+                } catch (error) {
+                    showToast('重置失败: ' + error.message, 'error');
+                }
+            }
+
+            window.addEventListener('resize', function () {
+                if (apiCallsChartInstance) apiCallsChartInstance.resize();
+                if (tokensChartInstance) tokensChartInstance.resize();
+            });
+
+            loadMyTenant();
+        </script>
+    </body>
+</html>

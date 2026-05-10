@@ -47,6 +47,47 @@ const globalAgents = {
 // 代理 Agent 缓存（按代理 URL 缓存）
 const proxyAgentCache = new Map();
 
+// NO_PROXY 缓存（避免每次请求都解析环境变量）
+let noProxyPatterns = null;
+
+/**
+ * 检查目标主机名是否应跳过代理（NO_PROXY）
+ * @param {string} hostname - 目标主机名
+ * @returns {boolean} true 表示跳过代理
+ */
+function shouldSkipProxy(hostname) {
+    const noProxyEnv = process.env.NO_PROXY || process.env.no_proxy;
+    if (!noProxyEnv) return false;
+
+    // 延迟解析并缓存
+    if (!noProxyPatterns) {
+        noProxyPatterns = noProxyEnv.split(',')
+            .map(p => p.trim())
+            .filter(Boolean)
+            .map(p => {
+                if (p === '*') return {type: 'all'};
+                if (p.startsWith('.')) return {type: 'suffix', value: p.toLowerCase()};
+                if (p.startsWith('*.')) return {type: 'suffix', value: p.slice(1).toLowerCase()};
+                return {type: 'exact', value: p.toLowerCase()};
+            });
+    }
+
+    const lower = hostname.toLowerCase();
+    for (const pattern of noProxyPatterns) {
+        if (pattern.type === 'all') return true;
+        if (pattern.type === 'suffix' && (lower.endsWith(pattern.value) || lower === pattern.value.slice(1))) return true;
+        if (pattern.type === 'exact' && lower === pattern.value) return true;
+    }
+    return false;
+}
+
+/**
+ * 使 NO_PROXY 缓存失效（环境变量变更后调用）
+ */
+export function invalidateNoProxyCache() {
+    noProxyPatterns = null;
+}
+
 // ==================== 重试辅助函数 ====================
 
 /**
@@ -189,15 +230,19 @@ function requestOnce(url, options = {}) {
         // 准备请求头
         const headers = {...options.headers};
 
-        // 代理配置 - 使用缓存的 Agent
+        // 代理配置 - 优先使用调用方传入的 agent，然后检查 NO_PROXY，最后回退到环境变量代理
         let agent;
-        const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
-
-        if (proxyUrl) {
-            agent = getProxyAgent(proxyUrl, isHttps);
-        } else {
-            // 使用全局连接池 Agent
+        if (options.agent) {
+            agent = options.agent;
+        } else if (options.noProxy || shouldSkipProxy(parsedUrl.hostname)) {
             agent = isHttps ? globalAgents.https : globalAgents.http;
+        } else {
+            const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+            if (proxyUrl) {
+                agent = getProxyAgent(proxyUrl, isHttps);
+            } else {
+                agent = isHttps ? globalAgents.https : globalAgents.http;
+            }
         }
 
         // 启用压缩以减少传输时间
@@ -223,7 +268,10 @@ function requestOnce(url, options = {}) {
             headers,
             agent: agent || undefined,
             // 允许通过环境变量禁用 TLS 证书验证
-            rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0'
+            // 如果调用方显式传入则优先使用，否则按环境变量
+            rejectUnauthorized: 'rejectUnauthorized' in options
+                ? options.rejectUnauthorized
+                : process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0'
         };
 
         const req = protocol.request(requestOptions, (res) => {

@@ -1,6 +1,6 @@
 /**
  * 公共 Translator 逻辑
- * 抽取自 Copilot translator 的公共代码
+ * 抽取自 Copilot/CodeBuddy translator 的重复代码
  * @module transformer/shared-translator
  */
 
@@ -53,7 +53,107 @@ export function translateToolChoice(anthropicToolChoice) {
 }
 
 /**
+ * 将 base64 编码的文档内容解码为文本
+ * 支持 PDF、纯文本、代码文件等
+ */
+function decodeDocumentToText(block) {
+    const source = block.source;
+    if (!source || source.type !== 'base64' || !source.data) {
+        return null;
+    }
+
+    const mediaType = (source.media_type || '').toLowerCase();
+
+    // 纯文本类文件：直接 base64 解码
+    const textMediaTypes = [
+        'text/plain',
+        'text/markdown',
+        'text/csv',
+        'text/html',
+        'text/xml',
+        'text/css',
+        'text/javascript',
+        'text/x-python',
+        'text/x-java',
+        'text/x-c',
+        'text/x-cpp',
+        'text/x-shellscript',
+        'text/x-yaml',
+        'text/x-json',
+        'text/x-toml',
+        'text/x-rust',
+        'application/json',
+        'application/xml',
+        'application/javascript',
+        'application/x-yaml',
+        'application/x-sh'
+    ];
+    if (textMediaTypes.includes(mediaType)) {
+        try {
+            return Buffer.from(source.data, 'base64').toString('utf8');
+        } catch {
+            return null;
+        }
+    }
+
+    // PDF: 尝试提取文本，失败则回退为 base64 image_url
+    if (mediaType === 'application/pdf') {
+        try {
+            const pdfBuffer = Buffer.from(source.data, 'base64');
+            const text = extractPDFText(pdfBuffer);
+            if (text && text.trim().length > 0) {
+                return text;
+            }
+        } catch {
+            // PDF 文本提取失败，回退
+        }
+        return null;
+    }
+
+    // 未知类型：尝试 base64 解码为文本
+    try {
+        const decoded = Buffer.from(source.data, 'base64').toString('utf8');
+        const nonPrintable = decoded.split('').filter((c) => {
+            const code = c.charCodeAt(0);
+            return code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d;
+        }).length;
+        if (nonPrintable / decoded.length < 0.1) {
+            return decoded;
+        }
+    } catch {}
+
+    return null;
+}
+
+/**
+ * 从 PDF Buffer 中提取纯文本
+ * 使用简单的正则匹配方式，无需外部依赖
+ */
+function extractPDFText(buffer) {
+    const text = buffer.toString('latin1');
+
+    const texts = [];
+    const parenRegex = /\(([^\\)]*(?:\\.[^\\)]*)*)\)/g;
+    let match;
+    while ((match = parenRegex.exec(text)) !== null) {
+        const raw = match[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r')
+            .replace(/\\t/g, '\t')
+            .replace(/\\\(/g, '(')
+            .replace(/\\\)/g, ')')
+            .replace(/\\\\/g, '\\');
+        if (raw.trim().length > 0) {
+            texts.push(raw);
+        }
+    }
+
+    return texts.join('\n');
+}
+
+/**
  * 映射内容块
+ * 支持 text、image、document（PDF/文本文件）类型
  */
 export function mapContent(blocks) {
     if (blocks.length === 1 && blocks[0].type === 'text') {
@@ -76,6 +176,22 @@ export function mapContent(blocks) {
                     }
                 };
             }
+            if (block.type === 'document') {
+                const extractedText = decodeDocumentToText(block);
+                if (extractedText) {
+                    return {type: 'text', text: extractedText};
+                }
+                const source = block.source;
+                if (source && source.type === 'base64' && source.data) {
+                    return {
+                        type: 'image_url',
+                        image_url: {
+                            url: `data:${source.media_type || 'application/octet-stream'};base64,${source.data}`
+                        }
+                    };
+                }
+                return null;
+            }
             if (block.text) {
                 return {type: 'text', text: block.text};
             }
@@ -95,7 +211,7 @@ export function mapContent(blocks) {
  */
 export function prependThinkingHint(content) {
     if (typeof content === 'string') {
-        return '【请用中文思考】\n' + content;
+        return '[重要提醒：你的思考过程必须使用中文，不要用英文思考！]\n' + content;
     }
     return content;
 }
@@ -105,30 +221,50 @@ export function prependThinkingHint(content) {
  */
 export function prependToolThinkingHint(content) {
     if (typeof content === 'string') {
-        return '【请用中文分析以上工具结果】\n' + content;
+        return '[重要：工具返回结果必须用中文分析和思考！]\n' + content;
     }
     return content;
 }
 
 /**
+ * 在 assistant 消息后注入中文思考提醒，防止下一轮思考语言漂移到英文
+ */
+const THINKING_LANG_REMINDER = {role: 'system', content: '[关键规则] 你的思考过程必须使用中文！不要用英文思考！'};
+
+/**
  * 将行为规则注入到 OpenAI 格式的 messages 数组中
- * 如果存在 system 消息则追加，否则新建
+ * 如果存在 system 消息则前置，否则新建
+ * 同时在每条 assistant 消息后插入中文思考提醒
  * @param {Array} messages - OpenAI 格式的 messages 数组
  * @returns {Array} 注入后的 messages 数组
  */
 export function injectBehaviorRules(messages) {
     const behaviorRules = getBehaviorRules();
-    const result = [...messages];
+    const result = [];
 
-    const systemIndex = result.findIndex((m) => m.role === 'system');
+    const systemIndex = messages.findIndex((m) => m.role === 'system');
 
+    // 注入前置 system 规则
     if (systemIndex >= 0) {
-        result[systemIndex] = {
-            ...result[systemIndex],
-            content: result[systemIndex].content + '\n\n' + behaviorRules
-        };
+        result.push({
+            ...messages[systemIndex],
+            content: behaviorRules + '\n\n' + messages[systemIndex].content
+        });
     } else {
-        result.unshift({role: 'system', content: behaviorRules});
+        result.push({role: 'system', content: behaviorRules});
+    }
+
+    // 在每条 assistant 消息后插入中文思考提醒
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (i === systemIndex) continue;
+
+        result.push(m);
+
+        // fix: deepseek和kimi不能在工具调用的消息插入系统提示词，会导致消息块顺序错误
+        if (m.role === 'assistant' && !m.tool_calls) {
+            result.push({...THINKING_LANG_REMINDER});
+        }
     }
 
     return result;

@@ -305,7 +305,7 @@ export class ClaudeToOpenAITransformer {
 
         // 在用户消息中注入中文思考引导，防止多轮对话后思考语言漂移
         req.messages = req.messages.map((m) => {
-            if (m.role === 'user' && typeof m.content === 'string' && !m.content.startsWith('【请用中文思考】')) {
+            if (m.role === 'user' && typeof m.content === 'string' && !m.content.startsWith('[重要提醒：你的思考过程必须使用中文')) {
                 return {...m, content: prependThinkingHint(m.content)};
             }
             return m;

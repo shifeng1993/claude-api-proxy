@@ -42,9 +42,10 @@ export async function authenticateGitHub() {
 
 /**
  * 刷新 Copilot token
+ * @param {string} [proxyUrl] - 代理地址
  * @returns {Promise<string>}
  */
-export async function refreshCopilotToken() {
+export async function refreshCopilotToken(proxyUrl) {
     if (!copilotState.githubToken) {
         throw new Error('GitHub token not found. Please authenticate first.');
     }
@@ -53,7 +54,8 @@ export async function refreshCopilotToken() {
 
     const tokenData = await getCopilotToken(
         copilotState.githubToken,
-        copilotState.vsCodeVersion
+        copilotState.vsCodeVersion,
+        proxyUrl
     );
 
     copilotState.saveCopilotToken(tokenData.token, tokenData.expires_at);
@@ -64,9 +66,10 @@ export async function refreshCopilotToken() {
 
 /**
  * 确保有有效的 Copilot token
+ * @param {string} [proxyUrl] - 代理地址
  * @returns {Promise<string>}
  */
-export async function ensureCopilotToken() {
+export async function ensureCopilotToken(proxyUrl) {
     // 如果没有 GitHub token，需要先认证
     if (!copilotState.githubToken) {
         throw new Error('Not authenticated. Please authenticate first via /copilot/auth endpoint.');
@@ -74,7 +77,7 @@ export async function ensureCopilotToken() {
 
     // 如果 Copilot token 过期，刷新它
     if (copilotState.isCopilotTokenExpired()) {
-        await refreshCopilotToken();
+        await refreshCopilotToken(proxyUrl);
     }
 
     return copilotState.copilotToken;
