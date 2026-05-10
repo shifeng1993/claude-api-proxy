@@ -6,6 +6,7 @@
 import {authenticateGitHub, ensureCopilotToken, isAuthenticated} from '../services/copilot/auth.js';
 import {createChatCompletions, getModels} from '../services/copilot/copilot-api.js';
 import {copilotState} from '../services/copilot/state.js';
+import {copilotStore} from '../services/copilot/copilot-store.js';
 import {readBody} from '../utils/http-client.js';
 import {
     anthropicToOpenAI,
@@ -20,14 +21,15 @@ import {
 import {aggregateStreamResponse} from '../services/codebuddy/api.js';
 import logger from '../utils/logger.js';
 
-// 自动认证配置
-const AUTO_AUTH = true;
-
 /* ==================== 工具函数 ==================== */
 
 function extractProxyFromHeaders(req) {
+    // 优先从 store 读取代理配置
+    const storeProxy = copilotStore.getProxyConfig().https_proxy || copilotStore.getProxyConfig().http_proxy;
+    if (storeProxy) return storeProxy;
+
+    // 兼容：从请求头读取（仅本地请求）
     const proxy = req.headers['x-copilot-proxy'];
-    // 仅信任来自本地的请求头
     if (!proxy) return undefined;
     const remoteAddr = req.socket?.remoteAddress || '';
     if (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1') {
@@ -50,6 +52,16 @@ function sendAnthropicError(res, status, message) {
     sendJson(res, status, {type: 'error', error: {type: errorType, message}});
 }
 
+/**
+ * API Key 鉴权
+ */
+function authenticateRequest(req) {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) return false;
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+    return copilotStore.authenticate(token);
+}
+
 async function parseBody(req) {
     const chunks = [];
     for await (const chunk of req) {
@@ -60,26 +72,19 @@ async function parseBody(req) {
 
 /* ==================== 鉴权 ==================== */
 
-async function ensureAuthenticated() {
-    if (isAuthenticated()) {
-        return true;
+async function authenticateAndGetToken(req) {
+    // API Key 鉴权
+    if (!authenticateRequest(req)) {
+        return {error: {status: 401, message: 'Invalid API Key. Check your API key or visit /copilotFE.'}};
     }
 
-    if (AUTO_AUTH) {
-        logger.warn('Not authenticated. Please run the service once to complete GitHub authentication.');
-        return false;
-    }
-
-    logger.warn('Not authenticated. Please authenticate first.');
-    return false;
-}
-
-async function authenticateAndGetToken(proxyUrl) {
-    if (!(await ensureAuthenticated())) {
-        return {error: {status: 401, message: 'Not authenticated. Please complete GitHub authentication first.'}};
+    // Copilot 认证检查
+    if (!isAuthenticated()) {
+        return {error: {status: 401, message: 'Not authenticated. Please visit /copilotFE to authenticate with GitHub.'}};
     }
 
     try {
+        const proxyUrl = copilotStore.getProxyConfig().https_proxy || copilotStore.getProxyConfig().http_proxy;
         const copilotToken = await ensureCopilotToken(proxyUrl);
         return {copilotToken};
     } catch (error) {
@@ -95,7 +100,7 @@ async function authenticateAndGetToken(proxyUrl) {
 async function handleOpenAIChatCompletions(req, res) {
     try {
         const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(proxyUrl);
+        const authResult = await authenticateAndGetToken(req);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -160,6 +165,17 @@ async function handleOpenAIChatCompletions(req, res) {
                 if (lineBuffer.trim()) {
                     res.write(lineBuffer);
                 }
+                // 记录用量
+                if (streamInputTokens > 0 || streamOutputTokens > 0) {
+                    copilotStore.incrementApiCallCount();
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens);
+                    copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens);
+                } else {
+                    copilotStore.incrementApiCallCount();
+                    const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                    copilotStore.incrementTokenUsage(estimated, 0);
+                    copilotStore.recordDailyUsage(estimated, 0);
+                }
                 res.end();
             });
 
@@ -182,6 +198,17 @@ async function handleOpenAIChatCompletions(req, res) {
                 sendOpenAIError(res, 502, 'Upstream returned invalid JSON');
                 return;
             }
+            const inputTokens = parsed.usage?.prompt_tokens || 0;
+            const outputTokens = parsed.usage?.completion_tokens || 0;
+            copilotStore.incrementApiCallCount();
+            if (inputTokens > 0 || outputTokens > 0) {
+                copilotStore.incrementTokenUsage(inputTokens, outputTokens);
+                copilotStore.recordDailyUsage(inputTokens, outputTokens);
+            } else {
+                const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                copilotStore.incrementTokenUsage(estimated, 0);
+                copilotStore.recordDailyUsage(estimated, 0);
+            }
             sendJson(res, 200, parsed);
         }
     } catch (error) {
@@ -196,7 +223,7 @@ async function handleOpenAIChatCompletions(req, res) {
 async function handleOpenAIModels(req, res) {
     try {
         const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(proxyUrl);
+        const authResult = await authenticateAndGetToken(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -232,7 +259,7 @@ async function handleOpenAIModels(req, res) {
 async function handleAnthropicMessages(req, res) {
     try {
         const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(proxyUrl);
+        const authResult = await authenticateAndGetToken(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -268,6 +295,8 @@ async function handleAnthropicMessages(req, res) {
 
             const state = createStreamState();
             let buffer = '';
+            let streamInputTokens = 0;
+            let streamOutputTokens = 0;
 
             const processLines = (lines) => {
                 for (const line of lines) {
@@ -284,6 +313,11 @@ async function handleAnthropicMessages(req, res) {
                         try {
                             const openAIChunk = JSON.parse(data);
                             const anthropicEvents = translateStreamChunk(openAIChunk, state);
+
+                            if (openAIChunk.usage) {
+                                streamInputTokens = openAIChunk.usage.prompt_tokens || streamInputTokens;
+                                streamOutputTokens = openAIChunk.usage.completion_tokens || streamOutputTokens;
+                            }
 
                             for (const event of anthropicEvents) {
                                 if (res.destroyed) return;
@@ -320,6 +354,17 @@ async function handleAnthropicMessages(req, res) {
                     }
                     buffer = '';
                 }
+                // 记录用量
+                if (streamInputTokens > 0 || streamOutputTokens > 0) {
+                    copilotStore.incrementApiCallCount();
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens);
+                    copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens);
+                } else {
+                    copilotStore.incrementApiCallCount();
+                    const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                    copilotStore.incrementTokenUsage(estimated, 0);
+                    copilotStore.recordDailyUsage(estimated, 0);
+                }
                 if (!res.destroyed) {
                     res.end();
                 }
@@ -341,6 +386,17 @@ async function handleAnthropicMessages(req, res) {
             const responseBody = await readBody(response.body);
             const openAIResponse = JSON.parse(responseBody);
             const anthropicResponse = openAIToAnthropic(openAIResponse);
+            const inputTokens = openAIResponse.usage?.prompt_tokens || 0;
+            const outputTokens = openAIResponse.usage?.completion_tokens || 0;
+            copilotStore.incrementApiCallCount();
+            if (inputTokens > 0 || outputTokens > 0) {
+                copilotStore.incrementTokenUsage(inputTokens, outputTokens);
+                copilotStore.recordDailyUsage(inputTokens, outputTokens);
+            } else {
+                const estimated = estimateMessageTokens(anthropicPayload.messages || []);
+                copilotStore.incrementTokenUsage(estimated, 0);
+                copilotStore.recordDailyUsage(estimated, 0);
+            }
             sendJson(res, 200, anthropicResponse);
         }
     } catch (error) {
@@ -355,7 +411,7 @@ async function handleAnthropicMessages(req, res) {
 async function handleAnthropicCountTokens(req, res) {
     try {
         const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(proxyUrl);
+        const authResult = await authenticateAndGetToken(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -404,7 +460,7 @@ async function handleAnthropicCountTokens(req, res) {
 async function handleAnthropicModels(req, res) {
     try {
         const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(proxyUrl);
+        const authResult = await authenticateAndGetToken(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -455,7 +511,6 @@ function handleRoot(req, res) {
             }
         },
         configuration: {
-            autoAuth: AUTO_AUTH,
             tokenSource: isAuthenticated() ? '.copilot/github_token' : 'not configured'
         }
     });
