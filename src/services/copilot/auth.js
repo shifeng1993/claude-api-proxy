@@ -3,8 +3,10 @@
  * @module services/copilot/auth
  */
 
-import { getDeviceCode, pollAccessToken, getUser, getCopilotToken } from './github-api.js';
+import { getDeviceCode, getUser, getCopilotToken } from './github-api.js';
 import { copilotState } from './state.js';
+import { request, readBody } from '../../utils/http-client.js';
+import { GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from './config.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -23,27 +25,49 @@ export async function startDeviceAuth() {
 }
 
 /**
- * 轮询 GitHub 等待用户完成设备码授权
- * 授权成功后自动保存 GitHub token 和用户信息到 copilotState
+ * 单次查询 GitHub 设备码授权状态
+ * 由前端控制轮询频率，每次调用查一次 GitHub 立即返回
  * @param {string} deviceCode - 设备代码
- * @param {number} interval - 轮询间隔（秒）
- * @param {number} expiresIn - 过期时间（秒）
  * @returns {Promise<{githubToken: string, userInfo: object}>}
+ * @throws {Error} error.code 为 'authorization_pending' | 'slow_down' | 'expired_token'
  */
-export async function pollDeviceAuth(deviceCode, interval, expiresIn) {
-    logger.info('Polling for GitHub device authorization...');
+export async function pollDeviceAuth(deviceCode) {
+    const response = await request(`${GITHUB_BASE_URL}/login/oauth/access_token`, {
+        method: 'POST',
+        headers: {
+            ...standardHeaders(),
+            'accept': 'application/json'
+        },
+        body: JSON.stringify({
+            client_id: GITHUB_CLIENT_ID,
+            device_code: deviceCode,
+            grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
+        })
+    });
 
-    const tokenData = await pollAccessToken(deviceCode, interval, expiresIn);
+    const body = await readBody(response.body);
+    const data = JSON.parse(body);
 
-    const githubToken = tokenData.access_token;
-    copilotState.saveGithubToken(githubToken);
+    if (data.error) {
+        const err = new Error(data.error_description || data.error);
+        err.code = data.error;
+        throw err;
+    }
 
-    const userInfo = await getUser(githubToken, copilotState.vsCodeVersion);
-    copilotState.saveUserInfo(userInfo);
+    if (data.access_token) {
+        const githubToken = data.access_token;
+        copilotState.saveGithubToken(githubToken);
 
-    logger.info(`Successfully authenticated as ${userInfo.login}`);
+        const userInfo = await getUser(githubToken, copilotState.vsCodeVersion);
+        copilotState.saveUserInfo(userInfo);
 
-    return { githubToken, userInfo };
+        logger.info(`Successfully authenticated as ${userInfo.login}`);
+        return { githubToken, userInfo };
+    }
+
+    const err = new Error('No access token in response');
+    err.code = 'unknown';
+    throw err;
 }
 
 /**

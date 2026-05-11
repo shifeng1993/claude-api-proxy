@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Copilot 管理面板</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa; color: #333; line-height: 1.6;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 20px 30px; margin-bottom: 30px;
+            border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        header h1 { font-size: 1.5rem; }
+        .card {
+            background: white; border-radius: 12px; padding: 24px;
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        .card h2 {
+            color: #667eea; margin-bottom: 16px; font-size: 1.15rem;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 10px 20px; border: none; border-radius: 8px;
+            font-size: 0.9rem; cursor: pointer; transition: all 0.3s ease; font-weight: 500;
+        }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-secondary { background: #f3f4f6; color: #374151; }
+        .btn-secondary:hover { background: #e5e7eb; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-warning:hover { background: #d97706; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-small { padding: 6px 12px; font-size: 0.8rem; }
+
+        .auth-box {
+            background: #f8fafc; border: 2px dashed #cbd5e1;
+            border-radius: 12px; padding: 30px; text-align: center;
+        }
+        .auth-box.active { border-color: #667eea; background: #eef2ff; }
+        .auth-code {
+            font-size: 2rem; font-weight: 700; letter-spacing: 4px;
+            color: #667eea; background: #f8fafc; padding: 12px 24px;
+            border-radius: 8px; display: inline-block; margin: 12px 0;
+            font-family: 'Courier New', monospace; user-select: all;
+        }
+        .auth-link {
+            display: inline-block; background: #667eea; color: white;
+            padding: 10px 20px; border-radius: 8px; text-decoration: none;
+            margin: 10px 0; font-size: 0.85rem;
+        }
+        .auth-link:hover { background: #5a67d8; }
+
+        .loading {
+            display: inline-block; width: 18px; height: 18px;
+            border: 3px solid #f3f3f3; border-top: 3px solid #667eea;
+            border-radius: 50%; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .toast {
+            position: fixed; top: 20px; right: 20px; padding: 12px 24px;
+            border-radius: 8px; color: white; font-size: 0.9rem;
+            z-index: 1000; opacity: 0; transition: opacity 0.3s;
+        }
+        .toast.show { opacity: 1; }
+        .toast.success { background: #10b981; }
+        .toast.error { background: #ef4444; }
+
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+        }
+        .stat-item {
+            background: #f8fafc; border-radius: 8px; padding: 16px; text-align: center;
+        }
+        .stat-value { font-size: 1.5rem; font-weight: 700; color: #667eea; }
+        .stat-label { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+
+        .proxy-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        }
+        .proxy-grid input {
+            width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
+            border-radius: 8px; font-size: 0.9rem;
+        }
+        .proxy-grid input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.2); }
+
+        .user-info { display: flex; align-items: center; gap: 16px; }
+        .user-avatar { width: 48px; height: 48px; border-radius: 50%; }
+        .user-details h3 { font-size: 1rem; color: #1f2937; }
+        .user-details p { font-size: 0.85rem; color: #6b7280; }
+
+        .token-status { margin-top: 12px; }
+        .status-badge {
+            display: inline-block; padding: 4px 12px; border-radius: 20px;
+            font-size: 0.75rem; font-weight: 500;
+        }
+        .status-badge.active { background: #d1fae5; color: #065f46; }
+        .status-badge.expired { background: #fee2e2; color: #991b1b; }
+        .status-badge.pending { background: #fef3c7; color: #92400e; }
+
+        .config-code {
+            background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px;
+            font-family: 'Courier New', monospace; font-size: 0.85rem;
+            margin-top: 12px; position: relative;
+        }
+        .config-code .copy-btn {
+            position: absolute; top: 8px; right: 8px; background: rgba(255,255,255,0.1);
+            color: #e2e8f0; border: none; padding: 4px 8px; border-radius: 4px;
+            cursor: pointer; font-size: 0.75rem;
+        }
+        .config-code .copy-btn:hover { background: rgba(255,255,255,0.2); }
+
+        .month-selector { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .month-btn {
+            padding: 6px 14px; border: 1px solid #d1d5db; border-radius: 6px;
+            background: white; cursor: pointer; font-size: 0.85rem;
+        }
+        .month-btn.active { background: #667eea; color: white; border-color: #667eea; }
+
+        .chart-container { height: 200px; position: relative; margin-top: 16px; }
+        .chart-bar-group { display: flex; align-items: flex-end; height: 180px; gap: 2px; padding: 0 4px; }
+        .chart-bar {
+            flex: 1; min-width: 8px; background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            border-radius: 3px 3px 0 0; transition: height 0.3s ease; position: relative;
+            cursor: pointer;
+        }
+        .chart-bar:hover { opacity: 0.8; }
+        .chart-bar .tooltip {
+            display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            background: #1e293b; color: white; padding: 6px 10px; border-radius: 6px;
+            font-size: 0.7rem; white-space: nowrap; z-index: 10;
+        }
+        .chart-bar:hover .tooltip { display: block; }
+        .chart-labels { display: flex; gap: 2px; padding: 4px; }
+        .chart-labels span {
+            flex: 1; text-align: center; font-size: 0.65rem; color: #9ca3af;
+            min-width: 8px;
+        }
+
+        .key-display {
+            display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+            background: #f8fafc; border-radius: 8px; margin-top: 12px;
+        }
+        .key-value { font-family: 'Courier New', monospace; font-size: 0.9rem; color: #374151; flex: 1; }
+
+        .usage-guide {
+            margin-top: 16px; padding: 16px; background: #f8fafc; border-radius: 8px;
+        }
+        .usage-guide h3 { font-size: 0.95rem; color: #374151; margin-bottom: 12px; }
+        .usage-guide .guide-item { margin-bottom: 12px; }
+        .usage-guide .guide-label { font-size: 0.85rem; color: #6b7280; margin-bottom: 4px; font-weight: 500; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GitHub Copilot 管理面板</h1>
+            <div style="font-size:0.85rem; opacity:0.9;">
+                <span id="header-status">加载中...</span>
+            </div>
+        </header>
+
+        <!-- 认证卡片 -->
+        <div class="card">
+            <h2>&#x1F511; GitHub 认证</h2>
+            <div id="auth-section">
+                <!-- 动态内容由 JS 填充 -->
+            </div>
+        </div>
+
+        <!-- API Key 卡片 -->
+        <div class="card">
+            <h2>&#x1F511; API Key</h2>
+            <div id="apikey-section">
+                <div class="key-display">
+                    <span class="key-value" id="apikey-prefix">加载中...</span>
+                    <button class="btn btn-secondary btn-small" onclick="toggleApiKey()" id="toggle-key-btn">显示</button>
+                    <button class="btn btn-secondary btn-small" onclick="copyApiKey()">复制</button>
+                    <button class="btn btn-warning btn-small" onclick="regenerateApiKey()">重新生成</button>
+                </div>
+                <div id="apikey-plain" style="display:none; margin-top:8px; padding:8px 16px; background:#fef3c7; border-radius:8px; font-family:'Courier New',monospace; font-size:0.85rem; color:#92400e; word-break:break-all;"></div>
+            </div>
+            <div class="usage-guide">
+                <h3>使用指南</h3>
+                <div class="guide-item">
+                    <div class="guide-label">Anthropic 协议 (Claude Code / Claude Desktop)</div>
+                    <div class="config-code">
+                        <button class="copy-btn" onclick="copyText('anthropic-config')">复制</button>
+                        <pre id="anthropic-config">ANTHROPIC_AUTH_TOKEN=&lt;your-api-key&gt;
+ANTHROPIC_BASE_URL={{origin}}/copilot/anthropic</pre>
+                    </div>
+                </div>
+                <div class="guide-item">
+                    <div class="guide-label">OpenAI 协议 (Cursor / Continue / Cline)</div>
+                    <div class="config-code">
+                        <button class="copy-btn" onclick="copyText('openai-config')">复制</button>
+                        <pre id="openai-config">Base URL: {{origin}}/copilot/v1
+API Key: &lt;your-api-key&gt;</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计卡片 -->
+        <div class="card">
+            <h2>&#x1F4CA; 用量统计</h2>
+            <div id="stats-section">
+                <div class="stats-grid" id="stats-grid">加载中...</div>
+                <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e7eb;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="font-size:0.95rem; color:#374151;">自定义统计 <span style="font-size:0.75rem; color:#9ca3af;">(可重置)</span></h3>
+                    <button class="btn btn-secondary btn-small" onclick="resetCustomStats()">重置</button>
+                </div>
+                <div class="stats-grid" id="custom-stats-grid">加载中...</div>
+                <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e7eb;">
+                <h3 style="font-size:0.95rem; color:#374151; margin-bottom:12px;">每日用量</h3>
+                <div class="month-selector" id="month-selector"></div>
+                <div class="chart-container">
+                    <div class="chart-bar-group" id="chart-bars"></div>
+                    <div class="chart-labels" id="chart-labels"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 代理配置卡片 -->
+        <div class="card">
+            <h2>&#x1F310; 代理配置</h2>
+            <div class="proxy-grid">
+                <div>
+                    <label style="font-size:0.85rem; color:#6b7280; display:block; margin-bottom:4px;">HTTP Proxy</label>
+                    <input type="text" id="http-proxy" placeholder="http://127.0.0.1:7890" />
+                </div>
+                <div>
+                    <label style="font-size:0.85rem; color:#6b7280; display:block; margin-bottom:4px;">HTTPS Proxy</label>
+                    <input type="text" id="https-proxy" placeholder="http://127.0.0.1:7890" />
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:12px;" onclick="saveProxy()">保存代理配置</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = '/copilotFE';
+        let authPollTimer = null;
+        let currentMonth = '';
+        let apiKeyPlain = null;
+        let apiKeyVisible = false;
+
+        // ==================== 工具函数 ====================
+
+        function showToast(msg, type = 'success') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = `toast ${type} show`;
+            setTimeout(() => t.className = 'toast', 3000);
+        }
+
+        async function api(path, method = 'GET', body = null) {
+            const opts = {method, headers: {'Content-Type': 'application/json'}};
+            if (body) opts.body = JSON.stringify(body);
+            const resp = await fetch(`${API_BASE}${path}`, opts);
+            return resp.json();
+        }
+
+        function formatNumber(n) {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+            return String(n);
+        }
+
+        // ==================== 加载状态 ====================
+
+        async function loadStatus() {
+            const data = await api('/status');
+            document.getElementById('header-status').textContent =
+                data.authenticated ? `已认证: ${data.userInfo?.login || 'unknown'}` : '未认证';
+            // 认证流程进行中时不覆盖认证区域
+            if (!authPolling) {
+                renderAuthSection(data);
+            }
+            renderApiKeySection(data);
+            renderStatsSection(data);
+            renderProxySection(data);
+        }
+
+        // ==================== 认证区域 ====================
+
+        function renderAuthSection(data) {
+            const el = document.getElementById('auth-section');
+            if (data.authenticated) {
+                const info = data.userInfo || {};
+                el.innerHTML = `
+                    <div class="user-info">
+                        ${info.avatar_url ? `<img class="user-avatar" src="${info.avatar_url}" alt="avatar" />` : ''}
+                        <div class="user-details">
+                            <h3>${info.login || info.name || 'unknown'}</h3>
+                            <p>${info.email || ''}</p>
+                        </div>
+                        <button class="btn btn-danger btn-small" onclick="handleLogout()" style="margin-left:auto;">登出</button>
+                    </div>
+                    <div class="token-status" style="margin-top:12px;">
+                        ${data.tokenStatus?.hasCopilotToken ?
+                            (data.tokenStatus.copilotTokenExpired ?
+                                '<span class="status-badge expired">Copilot Token 已过期</span>' :
+                                '<span class="status-badge active">Copilot Token 有效</span>') :
+                            '<span class="status-badge pending">Copilot Token 未获取</span>'
+                        }
+                        <span style="font-size:0.8rem; color:#6b7280; margin-left:8px;">
+                            账户类型: ${data.tokenStatus?.accountType || 'individual'}
+                        </span>
+                    </div>
+                `;
+            } else {
+                el.innerHTML = `
+                    <div class="auth-box">
+                        <p style="margin-bottom:16px; color:#6b7280;">需要通过 GitHub 设备码完成认证</p>
+                        <button class="btn btn-primary" onclick="startAuth()">GitHub 认证</button>
+                    </div>
+                `;
+            }
+        }
+
+        let authState = null;
+        let authPolling = false;
+
+        async function startAuth() {
+            const el = document.getElementById('auth-section');
+            el.innerHTML = `<div class="auth-box"><div class="loading"></div> <span>正在获取设备码...</span></div>`;
+            try {
+                const data = await api('/auth/start');
+                if (!data.success) throw new Error(data.error || '获取设备码失败');
+                authState = data;
+                el.innerHTML = `
+                    <div class="auth-box active">
+                        <p style="margin-bottom:8px; color:#374151;">请在浏览器中打开以下链接，并输入设备码完成授权</p>
+                        <div class="auth-code" id="user-code">${data.user_code}</div>
+                        <br/>
+                        <a class="auth-link" href="${data.verification_uri}" target="_blank">${data.verification_uri}</a>
+                        <p style="margin-top:12px; font-size:0.85rem; color:#6b7280;">
+                            <span class="loading"></span> 等待授权中...
+                        </p>
+                        <button class="btn btn-secondary btn-small" style="margin-top:8px;" onclick="cancelAuth()">取消</button>
+                    </div>
+                `;
+                try { await navigator.clipboard.writeText(data.user_code); } catch {}
+                startAuthPoll(data.device_code, data.interval);
+            } catch (error) {
+                showToast('获取设备码失败: ' + error.message, 'error');
+                loadStatus();
+            }
+        }
+
+        function startAuthPoll(deviceCode, interval) {
+            authPolling = true;
+            let pollInterval = (interval || 5) * 1000;
+
+            const poll = async () => {
+                if (!authPolling) return;
+                try {
+                    const result = await api('/auth/poll', 'POST', {
+                        device_code: deviceCode
+                    });
+                    if (result.status === 'success') {
+                        authPolling = false;
+                        showToast('认证成功！');
+                        loadStatus();
+                    } else if (result.status === 'pending') {
+                        authPollTimer = setTimeout(poll, pollInterval);
+                    } else if (result.status === 'slow_down') {
+                        pollInterval = (result.interval || 10) * 1000;
+                        authPollTimer = setTimeout(poll, pollInterval);
+                    } else if (result.status === 'expired') {
+                        authPolling = false;
+                        showToast('设备码已过期，请重新认证', 'error');
+                        loadStatus();
+                    } else if (result.status === 'denied') {
+                        authPolling = false;
+                        showToast('用户拒绝授权', 'error');
+                        loadStatus();
+                    } else {
+                        authPolling = false;
+                        showToast('认证失败: ' + (result.message || '未知错误'), 'error');
+                        loadStatus();
+                    }
+                } catch (error) {
+                    authPolling = false;
+                    showToast('认证失败: ' + error.message, 'error');
+                    loadStatus();
+                }
+            };
+
+            poll();
+        }
+        function cancelAuth() {
+            authPolling = false;
+            if (authPollTimer) { clearTimeout(authPollTimer); authPollTimer = null; }
+            loadStatus();
+        }
+
+        async function handleLogout() {
+            if (!confirm('确定要登出 GitHub 认证吗？')) return;
+            await api('/auth/clear', 'POST');
+            showToast('已登出');
+            loadStatus();
+        }
+
+        // ==================== API Key 区域 ====================
+
+        function renderApiKeySection(data) {
+            document.getElementById('apikey-prefix').textContent = data.apiKeyPrefix || 'N/A';
+            apiKeyPlain = data.apiKeyPlain || null;
+            apiKeyVisible = false;
+            document.getElementById('apikey-plain').style.display = 'none';
+            document.getElementById('toggle-key-btn').textContent = '显示';
+            // 更新配置示例
+            const origin = window.location.origin;
+            const acEl = document.getElementById('anthropic-config');
+            const ocEl = document.getElementById('openai-config');
+            if (acEl) acEl.textContent = `ANTHROPIC_AUTH_TOKEN=<your-api-key>\nANTHROPIC_BASE_URL=${origin}/copilot/anthropic`;
+            if (ocEl) ocEl.textContent = `Base URL: ${origin}/copilot\nAPI Key: <your-api-key>`;
+        }
+
+        function toggleApiKey() {
+            apiKeyVisible = !apiKeyVisible;
+            const el = document.getElementById('apikey-plain');
+            const btn = document.getElementById('toggle-key-btn');
+            if (apiKeyVisible && apiKeyPlain) {
+                el.textContent = apiKeyPlain;
+                el.style.display = 'block';
+                btn.textContent = '隐藏';
+            } else {
+                el.style.display = 'none';
+                btn.textContent = '显示';
+            }
+        }
+
+        async function copyApiKey() {
+            if (!apiKeyPlain) {
+                showToast('API Key 不可用，请重新生成', 'error');
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(apiKeyPlain);
+                showToast('API Key 已复制到剪贴板');
+            } catch {
+                showToast('复制失败', 'error');
+            }
+        }
+
+        async function regenerateApiKey() {
+            if (!confirm('重新生成 API Key 后，旧 Key 将立即失效。确定？')) return;
+            const data = await api('/apikey/regenerate', 'POST');
+            if (data.api_key) {
+                showToast('API Key 已重新生成，请立即保存！');
+                loadStatus();
+            } else {
+                showToast('重新生成失败: ' + (data.error || ''), 'error');
+            }
+        }
+
+        function copyText(id) {
+            const text = document.getElementById(id)?.textContent || '';
+            navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板'));
+        }
+
+        // ==================== 统计区域 ====================
+
+        function renderStatsSection(data) {
+            const usage = data.usage || {};
+            document.getElementById('stats-grid').innerHTML = `
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.api_call_count || 0)}</div><div class="stat-label">API 调用次数</div></div>
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.input_tokens || 0)}</div><div class="stat-label">输入 Token</div></div>
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.output_tokens || 0)}</div><div class="stat-label">输出 Token</div></div>
+            `;
+            document.getElementById('custom-stats-grid').innerHTML = `
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.custom_api_call_count || 0)}</div><div class="stat-label">API 调用次数</div></div>
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.custom_input_tokens || 0)}</div><div class="stat-label">输入 Token</div></div>
+                <div class="stat-item"><div class="stat-value">${formatNumber(usage.custom_output_tokens || 0)}</div><div class="stat-label">输出 Token</div></div>
+            `;
+            loadDailyChart();
+        }
+
+        async function resetCustomStats() {
+            if (!confirm('确定要重置自定义统计数据？')) return;
+            await api('/stats/custom-reset', 'POST');
+            showToast('自定义统计已重置');
+            loadStatus();
+        }
+
+        async function loadDailyChart(month) {
+            if (!month) {
+                const now = new Date();
+                month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            }
+            currentMonth = month;
+            const data = await api(`/stats/daily?month=${month}`);
+            renderMonthSelector(data.available_months || [month]);
+            renderChart(data.data || {});
+        }
+
+        function renderMonthSelector(months) {
+            const el = document.getElementById('month-selector');
+            el.innerHTML = months.map(m =>
+                `<button class="month-btn ${m === currentMonth ? 'active' : ''}" onclick="loadDailyChart('${m}')">${m}</button>`
+            ).join('');
+        }
+
+        function renderChart(dailyData) {
+            const bars = document.getElementById('chart-bars');
+            const labels = document.getElementById('chart-labels');
+            const daysInMonth = new Date(
+                parseInt(currentMonth.split('-')[0]),
+                parseInt(currentMonth.split('-')[1]), 0
+            ).getDate();
+
+            let maxCalls = 0;
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = String(d).padStart(2, '0');
+                const dayData = dailyData[key];
+                if (dayData && dayData.api_calls > maxCalls) maxCalls = dayData.api_calls;
+            }
+            if (maxCalls === 0) maxCalls = 1;
+
+            let barsHtml = '';
+            let labelsHtml = '';
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = String(d).padStart(2, '0');
+                const dayData = dailyData[key];
+                const calls = dayData ? dayData.api_calls : 0;
+                const height = calls > 0 ? Math.max(4, (calls / maxCalls) * 170) : 0;
+                const tooltip = dayData ?
+                    `${key}日: ${calls}次 / ${formatNumber(dayData.input_tokens)}in / ${formatNumber(dayData.output_tokens)}out` :
+                    `${key}日: 无数据`;
+                barsHtml += `<div class="chart-bar" style="height:${height}px;"><div class="tooltip">${tooltip}</div></div>`;
+                if (d === 1 || d === 10 || d === 20 || d === daysInMonth) {
+                    labelsHtml += `<span>${d}</span>`;
+                } else {
+                    labelsHtml += `<span></span>`;
+                }
+            }
+            bars.innerHTML = barsHtml;
+            labels.innerHTML = labelsHtml;
+        }
+
+        // ==================== 代理配置 ====================
+
+        function renderProxySection(data) {
+            const proxy = data.proxy || {};
+            document.getElementById('http-proxy').value = proxy.http_proxy || '';
+            document.getElementById('https-proxy').value = proxy.https_proxy || '';
+        }
+
+        async function saveProxy() {
+            const httpProxy = document.getElementById('http-proxy').value.trim();
+            const httpsProxy = document.getElementById('https-proxy').value.trim();
+            const data = await api('/proxy', 'POST', {http_proxy: httpProxy, https_proxy: httpsProxy});
+            if (data.message) {
+                showToast('代理配置已保存');
+            } else {
+                showToast('保存失败: ' + (data.error || ''), 'error');
+            }
+        }
+
+        // ==================== 初始化 ====================
+
+        loadStatus();
+        setInterval(loadStatus, 30000);
+    </script>
+</body>
+</html>

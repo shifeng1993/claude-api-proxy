@@ -1,6 +1,6 @@
 /**
  * 上游配置管理器
- * 管理每个租户的多上游配置（base_url + api_key + proxy）、活跃上游、故障转移
+ * 管理多个上游配置（base_url + api_key + proxy）、活跃上游手动切换、重试
  * @module services/relay/upstream-manager
  */
 
@@ -10,6 +10,7 @@ import {buildUrl} from '../../utils/helpers.js';
 import logger from '../../utils/logger.js';
 
 const UPSTREAMS_FILE = 'upstreams.json';
+const SETTINGS_FILE = 'settings.json';
 
 // 单上游重试次数，范围 1-3
 const DEFAULT_RETRY_COUNT = 3;
@@ -36,12 +37,14 @@ export class UpstreamManager {
     constructor(tenantDir) {
         this.tenantDir = tenantDir;
         this.upstreamsPath = join(tenantDir, UPSTREAMS_FILE);
+        this.settingsPath = join(tenantDir, SETTINGS_FILE);
         this.upstreams = [];
         // 活跃上游索引，-1 表示使用第一个启用的上游
         this._activeIndex = -1;
         // 单上游重试次数
         this._retryCount = DEFAULT_RETRY_COUNT;
         this._loadUpstreams();
+        this._loadSettings();
     }
 
     _loadUpstreams() {
@@ -62,6 +65,34 @@ export class UpstreamManager {
             writeFileSync(this.upstreamsPath, JSON.stringify(this.upstreams, null, 2), 'utf8');
         } catch (error) {
             logger.error(`Relay: 保存上游配置失败: ${error.message}`);
+        }
+    }
+
+    _loadSettings() {
+        try {
+            if (existsSync(this.settingsPath)) {
+                const data = JSON.parse(readFileSync(this.settingsPath, 'utf8'));
+                if (typeof data.activeIndex === 'number') {
+                    this._activeIndex = data.activeIndex;
+                }
+                if (typeof data.retryCount === 'number') {
+                    this._retryCount = Math.max(MIN_RETRY_COUNT, Math.min(MAX_RETRY_COUNT, data.retryCount));
+                }
+            }
+        } catch (error) {
+            logger.error(`Relay: 加载设置失败: ${error.message}`);
+        }
+    }
+
+    _saveSettings() {
+        try {
+            if (!existsSync(this.tenantDir)) mkdirSync(this.tenantDir, {recursive: true});
+            writeFileSync(this.settingsPath, JSON.stringify({
+                activeIndex: this._activeIndex,
+                retryCount: this._retryCount
+            }, null, 2), 'utf8');
+        } catch (error) {
+            logger.error(`Relay: 保存设置失败: ${error.message}`);
         }
     }
 
@@ -111,6 +142,7 @@ export class UpstreamManager {
         if (this.upstreams[index].enabled === false) return false;
         this._activeIndex = index;
         logger.info(`Relay: 活跃上游已切换为「${this.upstreams[index].name}」(index: ${index})`);
+        this._saveSettings();
         return true;
     }
 
@@ -150,6 +182,7 @@ export class UpstreamManager {
     setRetryCount(count) {
         if (count && count > 0) {
             this._retryCount = Math.max(MIN_RETRY_COUNT, Math.min(MAX_RETRY_COUNT, count));
+            this._saveSettings();
         }
     }
 
@@ -246,7 +279,14 @@ export class UpstreamManager {
     deleteUpstream(index) {
         if (index < 0 || index >= this.upstreams.length) return false;
         this.upstreams.splice(index, 1);
+        // 修正活跃索引
+        if (this._activeIndex === index) {
+            this._activeIndex = -1;
+        } else if (this._activeIndex > index) {
+            this._activeIndex--;
+        }
         this._saveUpstreams();
+        this._saveSettings();
         return true;
     }
 
@@ -256,7 +296,14 @@ export class UpstreamManager {
     moveUp(index) {
         if (index <= 0 || index >= this.upstreams.length) return false;
         [this.upstreams[index - 1], this.upstreams[index]] = [this.upstreams[index], this.upstreams[index - 1]];
+        // 活跃上游跟随移动
+        if (this._activeIndex === index) {
+            this._activeIndex = index - 1;
+        } else if (this._activeIndex === index - 1) {
+            this._activeIndex = index;
+        }
         this._saveUpstreams();
+        this._saveSettings();
         return true;
     }
 
@@ -266,7 +313,14 @@ export class UpstreamManager {
     moveDown(index) {
         if (index < 0 || index >= this.upstreams.length - 1) return false;
         [this.upstreams[index], this.upstreams[index + 1]] = [this.upstreams[index + 1], this.upstreams[index]];
+        // 活跃上游跟随移动
+        if (this._activeIndex === index) {
+            this._activeIndex = index + 1;
+        } else if (this._activeIndex === index + 1) {
+            this._activeIndex = index;
+        }
         this._saveUpstreams();
+        this._saveSettings();
         return true;
     }
 

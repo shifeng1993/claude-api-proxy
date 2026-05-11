@@ -44,19 +44,6 @@
                 font-size: 0.9rem;
                 opacity: 0.9;
             }
-            .logout-btn {
-                background: rgba(255, 255, 255, 0.2);
-                color: white;
-                border: 1px solid rgba(255, 255, 255, 0.4);
-                padding: 6px 16px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 0.85rem;
-                transition: background 0.2s;
-            }
-            .logout-btn:hover {
-                background: rgba(255, 255, 255, 0.3);
-            }
             .card {
                 background: white;
                 border-radius: 12px;
@@ -471,10 +458,7 @@
         <div class="container">
             <header>
                 <h1>CodeBuddy 管理面板</h1>
-                <div class="header-right">
-                    <span>欢迎, CodeBuddy {{displayName}}</span>
-                    {{logoutButton}}
-                </div>
+                <div class="header-right"></div>
             </header>
 
             <div id="mainContent">
@@ -506,15 +490,6 @@
                 toast.classList.add('show');
                 const duration = type === 'error' ? 8000 : 3000;
                 setTimeout(() => toast.classList.remove('show'), duration);
-            }
-
-            async function logout() {
-                try {
-                    await fetch(API_BASE + '/logout', {method: 'POST'});
-                    window.location.href = '/codebuddyFE';
-                } catch (error) {
-                    showToast('退出失败', 'error');
-                }
             }
 
             async function loadMyTenant() {
@@ -806,6 +781,7 @@
                             <select id="baseUrlSelect" class="rotation-input" style="width: 240px; text-align: left; padding: 8px 10px;">
                                 <option value="https://copilot.tencent.com">copilot.tencent.com (国内站)</option>
                                 <option value="https://www.codebuddy.ai">www.codebuddy.ai (国际站)</option>
+                                {{extraBaseUrlOptions}}
                             </select>
                         </div>
                     </div>

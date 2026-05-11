@@ -10,6 +10,11 @@ import logger from '../../utils/logger.js';
 // 默认上游 URL（旧凭证无 base_url 字段时 fallback 使用）
 export const DEFAULT_BASE_URL = process.env.CODEBUDDY_DEFAULT_BASE_URL || (process.env.CODEBUDDY_REGION === 'intl' ? 'https://www.codebuddy.ai' : 'https://copilot.tencent.com');
 
+// 额外企业站 URL 列表（逗号分隔，会追加到管理面板的上游下拉列表中）
+export const EXTRA_BASE_URLS = process.env.CODEBUDDY_EXTRA_BASE_URLS
+    ? process.env.CODEBUDDY_EXTRA_BASE_URLS.split(',').map(u => u.trim()).filter(Boolean)
+    : [];
+
 /**
  * 获取 CodeBuddy 基础 URL
  * @param {string} [baseUrl] - 可选，优先使用传入值

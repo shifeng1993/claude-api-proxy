@@ -10,7 +10,8 @@ import {fileURLToPath} from 'url';
 import {dirname, join} from 'path';
 import {networkInterfaces} from 'os';
 import {createServer} from './server.js';
-import {authenticateGitHub, isAuthenticated, refreshCopilotToken} from './services/copilot/auth.js';
+import {isAuthenticated, refreshCopilotToken} from './services/copilot/auth.js';
+import {copilotStore} from './services/copilot/copilot-store.js';
 import {credentialStore} from './services/codebuddy/credential-store.js';
 import {relayStore} from './services/relay/relay-store.js';
 import logger from './utils/logger.js';
@@ -36,9 +37,6 @@ try {
         }
     });
     console.log('✓ 已加载 .env 配置');
-    if (process.env.HTTP_PROXY) {
-        console.log(`✓ HTTP 代理: ${process.env.HTTP_PROXY}`);
-    }
 } catch (err) {
     console.log('⚠ 未找到 .env 文件，使用默认配置');
 }
@@ -46,7 +44,7 @@ try {
 // 配置
 const PORT = parseInt(process.env.PORT, 10) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
-const AUTO_AUTH = process.env.COPILOT_AUTO_AUTH !== 'false';
+const AUTO_AUTH = false; // FE-based auth, no console auth
 
 // 获取本机内网 IP 地址
 function getLocalIp() {
@@ -61,43 +59,27 @@ function getLocalIp() {
 }
 
 /**
- * 初始化 Copilot 服务（后台异步，不阻塞主进程）
+ * 初始化 Copilot 服务
  */
 function initializeCopilot() {
-    if (!AUTO_AUTH) {
-        return;
-    }
+    const apiInfo = copilotStore.getApiKeyInfo();
+    logger.info(`Copilot API Key: ${apiInfo.prefix}`);
 
-    (async () => {
-        if (!isAuthenticated()) {
-            console.log('\n========================================');
-            console.log('GitHub Copilot Authentication');
-            console.log('========================================\n');
-            console.log('Authenticating in background...\n');
-
+    if (isAuthenticated()) {
+        logger.info('Already authenticated with GitHub');
+        (async () => {
             try {
-                const {userInfo} = await authenticateGitHub();
-                console.log(`\n✓ GitHub token written to .copilot/github_token`);
-                console.log(`✓ Successfully authenticated as ${userInfo.login}\n`);
-
-                await refreshCopilotToken();
-                console.log('✓ Copilot token refreshed\n');
-            } catch (error) {
-                console.error('✗ Copilot authentication failed:', error.message);
-                console.log('  The server is still running, but Copilot proxy will not work.');
-                console.log('  Please check your credentials and restart the service.\n');
-            }
-        } else {
-            logger.info('Already authenticated, skipping GitHub authentication');
-
-            try {
-                await refreshCopilotToken();
+                const proxyUrl = copilotStore.getProxyConfig().https_proxy || copilotStore.getProxyConfig().http_proxy;
+                await refreshCopilotToken(proxyUrl);
                 logger.info('Copilot token refreshed');
             } catch (error) {
-                logger.warn('Failed to refresh Copilot token on startup:', error.message);
+                logger.warn('Failed to refresh Copilot token:', error.message);
             }
-        }
-    })();
+        })();
+    } else {
+        logger.info('Copilot not authenticated');
+        logger.info('  Please visit /copilotFE to authenticate with GitHub');
+    }
 }
 
 /**
@@ -151,6 +133,7 @@ function initializeRelay() {
             console.log(`✓ Server running at http://${localIp}:${PORT}`);
             console.log(`✓ Health check endpoint: http://${localIp}:${PORT}/health`);
             console.log(`✓ Copilot proxy endpoint: http://${localIp}:${PORT}/copilot`);
+            console.log(`✓ Copilot admin UI: http://${localIp}:${PORT}/copilotFE`);
             console.log(`✓ CodeBuddy proxy endpoint: http://${localIp}:${PORT}/codebuddy`);
             console.log(`✓ CodeBuddy admin UI: http://${localIp}:${PORT}/codebuddyFE`);
             console.log(`✓ Relay proxy endpoint: http://${localIp}:${PORT}/relay`);
@@ -161,6 +144,7 @@ function initializeRelay() {
         const shutdown = (signal) => {
             console.log(`\n${signal} received, shutting down gracefully...`);
             credentialStore.flushApiCallCounts();
+            copilotStore.flushApiCallCounts();
             relayStore.flushApiCallCounts();
             server.close(() => {
                 console.log('Server closed');

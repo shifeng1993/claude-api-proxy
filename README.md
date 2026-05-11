@@ -1,162 +1,206 @@
-# Claude API 代理服务
+# Claude API Proxy
 
-为 Claude Code 提供多种 API 后端选择的代理服务，让你可以自由选择使用 GitHub Copilot、CodeBuddy 或其他 OpenAI 兼容 API。
+为 Claude Code 提供多种 AI 后端接入的代理服务。项目监听 **3080 端口**，将 Claude Code 的 Anthropic API 请求转发到你选择的后端，无需修改 Claude Code 本身。
 
-## 项目说明
+访问 `http://127.0.0.1:3080` 可进入主页，从中跳转到各服务的 Web 管理面板。
 
-Claude Code 默认调用 Anthropic 的 Claude API。本项目作为中间代理层，将 Claude Code 的请求转发到你选择的后端：
+## 支持的后端
 
-- **模式 1: OpenAI 兼容 API** - 转发到 DeepSeek、OpenAI 等任何兼容 OpenAI 格式的服务
-- **模式 2: GitHub Copilot** - 转发到 GitHub Copilot，利用 Copilot 订阅为 Claude Code 供能
-- **模式 3: CodeBuddy** - 转发到腾讯 CodeBuddy，支持多租户、凭证轮换和 Web 管理面板
-- **模式 4: Relay** - 通用多上游 LLM 代理，支持多租户、上游故障转移和 Web 管理面板
-
-## 功能特点
-
-- 多模式支持 - OpenAI 兼容 API / GitHub Copilot / CodeBuddy / Relay
-- 完全兼容 Claude Code - 无需修改 Claude Code，只需配置环境变量
-- 流式响应 - 完整 SSE 支持
-- 轻量依赖 - 核心逻辑使用 Node.js 原生实现
-- 多租户管理 - CodeBuddy 和 Relay 模块支持租户级别的凭证管理和用量追踪
-- 凭证轮换 - CodeBuddy 支持自动凭证轮换
-- 上游故障转移 - Relay 支持多上游配置和自动重试
-- Web 管理面板 - 可视化租户、凭证和上游管理
+| 后端 | API 端点 | 管理面板 | 说明 |
+|------|----------|----------|------|
+| GitHub Copilot | `/copilot` | `/copilotFE` | GitHub Copilot Pro 订阅代理 |
+| 腾讯 CodeBuddy | `/codebuddy/anthropic` | `/codebuddyFE` | CodeBuddy 订阅代理 · 多凭证轮换 · 国内/国际站 |
+| Relay 中继 | `/relay/anthropic` | `/relayFE` | 多上游配置 · 单上游重试 |
 
 ---
 
-## 模式选择
+## 快速开始
 
-### 模式 1: 使用 GitHub Copilot
-
-通过 GitHub Copilot 订阅为 Claude Code 提供 AI 能力，无需额外的 API Key 费用。
-
-#### 快速开始
+### 安装
 
 ```bash
-npm start  # 首次运行会自动引导 GitHub 认证
+npm install
+npm start
 ```
 
-首次启动会显示认证链接，完成认证后 Token 自动保存，服务立即可用。
+服务启动后访问 `http://127.0.0.1:3080` 进入主页。
 
-#### 配置 Claude Code
+---
+
+## GitHub Copilot
+
+GitHub Copilot Pro 订阅代理，将 Claude Code 的请求转发到 Copilot 后端。
+
+### 认证
+
+首次启动时，访问管理面板 `http://127.0.0.1:3080/copilotFE` 完成 GitHub 设备码授权。授权成功后 Token 自动保存，后续无需重新认证。
+
+管理面板同时提供：
+- API Key 查看与重新生成
+- 用量统计（请求数、Token 消耗）
+- 代理配置（HTTP/HTTPS/SOCKS）
+
+### 关于代理和可用模型
+
+Copilot API 需要能访问 GitHub 服务。**国内网络需要配置代理**，在管理面板的"代理配置"中填写 HTTP/HTTPS/SOCKS 代理地址即可。
+
+此外，Copilot 可用的模型取决于出口节点所在地区：
+
+- **国内节点**：通常只能使用 GPT、Gemini 等模型，Claude 模型不可用
+- **非国内节点**（如日本、美国、新加坡等）：可以访问 Copilot 中的 Claude 系列模型
+
+因此如果想用 Claude 模型，需要将代理设置为非国内节点，然后在 Claude Code 配置中指定对应的 Claude 模型名（如 `claude-sonnet-4-5`）。
+
+### 配置 Claude Code
 
 编辑 `~/.claude/settings.json`：
+
+使用 GPT 模型（国内节点可用）：
+
 ```json
 {
     "env": {
         "ANTHROPIC_AUTH_TOKEN": "dummy",
         "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/copilot",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: sk-copilot-xxxx",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-4.1",
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4.1",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-4.1"
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-4.1",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
     }
 }
 ```
 
----
-
-### 模式 2: 使用 OpenAI 兼容 API
-
-将 Claude 请求转发到任何 OpenAI 兼容的 API 服务。
-
-URL 格式: `{服务地址}/{transformer类型}/{目标API地址}/v1/messages`
-
-配置示例：
-```json
-{
-    "env": {
-        "ANTHROPIC_AUTH_TOKEN": "xxx",
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/openai/https://api.deepseek.com",
-        "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: sk-xxxxx",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-chat",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-chat"
-    }
-}
-```
-
----
-
-### 模式 3: CodeBuddy
-
-转发到腾讯 CodeBuddy 服务，支持多租户凭证管理和自动轮换。
-
-#### 快速开始
-
-1. 启动服务后访问管理面板: `http://127.0.0.1:3080/codebuddyFE`
-2. 添加租户并配置 CodeBuddy 凭证
-3. 获取租户 API Key（格式: `sk-codebuddy-xxx`）
-
-#### 配置 Claude Code
+使用 Claude 模型（需非国内节点代理）：
 
 ```json
 {
     "env": {
-        "ANTHROPIC_AUTH_TOKEN": "sk-codebuddy-xxx",
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/codebuddy/anthropic"
+        "ANTHROPIC_AUTH_TOKEN": "dummy",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/copilot",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: sk-copilot-xxxx",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.6",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4.6",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
     }
 }
 ```
 
-#### 区域配置
+> API Key 格式为 `sk-copilot-xxx`，在管理面板中查看。可用模型列表也可在管理面板的"模型列表"中实时查询。
+> `ANTHROPIC_AUTH_TOKEN` 填 `dummy` 即可，实际鉴权通过 `ANTHROPIC_CUSTOM_HEADERS` 传递 `x-api-key`。
 
-CodeBuddy 支持国内站和国际站：
+---
 
-| 区域 | CODEBUDDY_REGION | 默认 URL |
-|------|-----------------|-----------|
+## CodeBuddy
+
+CodeBuddy 订阅代理，支持添加多个账号凭证自动轮换。内置模型包括 GLM 5.1、Kimi K2.5、MiniMax M2.5、DeepSeek V3.2 等。
+
+### 快速开始
+
+1. 访问 `http://127.0.0.1:3080/codebuddyFE` 进入管理面板
+2. 添加一个或多个 CodeBuddy 账号凭证（多个凭证自动轮换）
+3. 复制 API Key（格式：`sk-codebuddy-xxx`）
+
+### 配置 Claude Code
+
+```json
+{
+    "env": {
+        "ANTHROPIC_AUTH_TOKEN": "dummy",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/codebuddy/anthropic",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: sk-codebuddy-xxx",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
+    }
+}
+```
+
+### 区域与企业站
+
+| 区域 | `CODEBUDDY_REGION` | 默认上游 |
+|------|-------------------|---------|
 | 国内（默认） | `cn` | `https://copilot.tencent.com` |
 | 国际 | `intl` | `https://www.codebuddy.ai` |
 
+腾讯云企业客户通常会有独立域名，可通过 `CODEBUDDY_EXTRA_BASE_URLS` 将一个或多个企业站地址添加到管理面板的上游下拉列表（逗号分隔）：
+
+```env
+CODEBUDDY_EXTRA_BASE_URLS=https://your-company.copilot.tencent.com,https://another.copilot.tencent.com
+```
+
+也可以在管理面板的凭证编辑页面中针对每个凭证单独设置上游地址，优先级高于环境变量。
+
 ---
 
-### 模式 4: Relay
+## Relay 中继
 
-通用多上游 LLM 代理，支持配置多个上游提供商和自动故障转移。
+通用 LLM 中继代理，可配置多个上游并手动切换，对当前活跃上游自动重试。可接入任意 OpenAI 兼容服务（DeepSeek 等），也可以将本地运行的 Copilot / CodeBuddy 端点作为上游。
 
-#### 快速开始
+### 快速开始
 
-1. 启动服务后访问管理面板: `http://127.0.0.1:3080/relayFE`
-2. 添加租户和上游配置
-3. 获取租户 API Key（格式: `sk-relay-xxx`）
+1. 访问 `http://127.0.0.1:3080/relayFE` 进入管理面板
+2. 添加一个或多个上游（URL + API Key + 可选代理），选择活跃上游
+3. 复制 API Key（格式：`sk-relay-xxx`）
 
-#### 配置 Claude Code
+### 配置 Claude Code
 
 ```json
 {
     "env": {
-        "ANTHROPIC_AUTH_TOKEN": "sk-relay-xxx",
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/relay/anthropic"
+        "ANTHROPIC_AUTH_TOKEN": "dummy",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3080/relay/anthropic",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: sk-relay-xxx",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
     }
 }
 ```
 
----
+### 接入外部服务
 
-## 管理面板认证
+在管理面板添加上游时填写对应信息：
 
-CodeBuddy 和 Relay 的 Web 管理面板支持简单的用户名/密码登录。
+| 服务 | Base URL | API Key |
+|------|----------|---------|
+| DeepSeek | `https://api.deepseek.com` | DeepSeek API Key |
 
-### 首次配置
+> 需要代理的上游可在"代理"字段填写，支持 `http://`、`https://`、`socks5://` 格式。
 
-在 `.env` 中设置管理员账号：
-```env
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your-secure-password
-```
+### 接入本地 Copilot / CodeBuddy
 
-首次启动时会自动创建管理员用户。之后可以在管理面板中创建更多用户。
+Relay 可以将本机运行的 Copilot 或 CodeBuddy 端点作为上游，实现在 Relay 侧统一管理：
 
-### 安全说明
+| 上游 | Base URL | API Key |
+|------|----------|---------|
+| GitHub Copilot | `http://127.0.0.1:3080/copilot` | Copilot 的 `sk-copilot-xxx` |
+| CodeBuddy | `http://127.0.0.1:3080/codebuddy` | CodeBuddy 的 `sk-codebuddy-xxx` |
 
-- 密码使用 scrypt 算法加密存储
-- 会话使用 JWT（HttpOnly, SameSite=Strict Cookie）
-- 如果未配置用户，管理面板为开放访问
+### 模型映射
+
+不同上游的模型名称不同，可在管理面板的上游配置中设置**模型映射表**，将 Claude Code 请求的模型名自动转换为上游实际模型名。
+
+示例（DeepSeek 上游）：
+
+| Claude Code 请求模型 | 实际转发模型 |
+|----------------------|------------|
+| `claude-sonnet-4-5` | `deepseek-v4-flash` |
+| `claude-opus-4-5` | `deepseek-v4-pro` |
+
+也可开启"**模型自动**"选项，将所有未匹配的模型名统一转发到该上游配置的默认模型。
+
+代理已内置以下针对 DeepSeek / Kimi 的兼容性修复，无需额外配置：
+
+1. **多轮 thinking 回传**：Claude Code 多轮对话时，助手消息中的 `thinking` 块会自动转换为 `reasoning_content` 字段回传给上游，符合 DeepSeek 和 Kimi 的多轮推理格式要求
+2. **工具调用消息顺序**：系统提示词注入仅插入到普通 assistant 消息之后，不会插入到包含 `tool_calls` 的消息中，避免 DeepSeek / Kimi 因消息块顺序错误导致请求失败
+
+### 重试策略
+
+请求失败时对当前活跃上游自动重试（可在管理面板配置重试次数，范围 1–5 次，也可以为每个上游单独配置）。
 
 ---
 
 ## 系统提示词注入
 
-代理会在每个请求的 system message 前自动注入行为规则，引导模型使用中文思考、合理规划任务等。规则统一维护在 `src/config/system-prompts.js` 中，可按需增删。
+代理会在每个请求的 system message 头部自动注入行为规则，引导模型使用中文思考、合理规划任务等。规则统一维护在 `src/config/system-prompts.js`，可按需增删。
 
 ---
 
@@ -164,33 +208,27 @@ ADMIN_PASSWORD=your-secure-password
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `PORT` | 服务端口 | `3080` |
+| `PORT` | 服务监听端口 | `3080` |
 | `HOST` | 绑定地址 | `0.0.0.0` |
-| `LOG_LEVEL` | 日志级别 | `INFO` |
-| `HTTP_PROXY` | HTTP 代理地址 | - |
-| `HTTPS_PROXY` | HTTPS 代理地址 | - |
-| `ADMIN_USERNAME` | 管理面板管理员用户名 | - |
-| `ADMIN_PASSWORD` | 管理面板管理员密码 | - |
-| `JWT_SECRET` | JWT 会话密钥（未设置时自动生成） | - |
-| `JWT_EXPIRES_IN` | JWT 会话有效期 | `7d` |
-| `CODEBUDDY_REGION` | CodeBuddy 区域 (`cn`/`intl`) | `cn` |
-| `CODEBUDDY_DEFAULT_BASE_URL` | CodeBuddy 自定义上游 URL | 按区域选择 |
+| `LOG_LEVEL` | 日志级别（`DEBUG`/`INFO`/`WARN`/`ERROR`） | `INFO` |
+| `CODEBUDDY_REGION` | CodeBuddy 区域（`cn`/`intl`） | `cn` |
+| `CODEBUDDY_DEFAULT_BASE_URL` | CodeBuddy 默认上游 URL（旧凭证兼容用） | 按区域选择 |
+| `CODEBUDDY_EXTRA_BASE_URLS` | 额外企业站地址，逗号分隔，会出现在管理面板上游下拉列表 | — |
 | `CODEBUDDY_CREDS_DIR` | CodeBuddy 凭证存储目录 | `.codebuddy` |
 | `RELAY_CREDS_DIR` | Relay 凭证存储目录 | `.relay` |
 
 ---
 
-## 开发和部署
-
-### 本地开发
+## 运行与部署
 
 ```bash
-npm start
-
-# 开发模式（带热重载）
+# 开发（带热重载）
 npm run dev
 
-# 调试模式
+# 生产
+npm start
+
+# 调试（输出 DEBUG 日志）
 npm run debug
 ```
 
@@ -204,42 +242,39 @@ pm2 startup
 
 ---
 
-## 项目架构
+## 项目结构
 
 ```
 src/
   index.js                    # 入口，初始化所有模块
-  server.js                   # HTTP 服务器，路由分发
-  router.js                   # 通用代理路由解析
+  server.js                   # HTTP 服务器与路由分发
   routes/
-    copilot.js                # Copilot 路由
+    copilot.js                # Copilot API 路由
+    copilot-frontend.js       # Copilot 管理面板路由
     codebuddy.js              # CodeBuddy API 路由
     codebuddy-frontend.js     # CodeBuddy 管理面板路由
     relay.js                  # Relay API 路由
     relay-frontend.js         # Relay 管理面板路由
   services/
-    copilot/                  # Copilot 服务（GitHub OAuth, Token 管理）
-    codebuddy/                # CodeBuddy 服务（API, 凭证轮换, 租户管理）
-    relay/                    # Relay 服务（多上游, 故障转移, 租户管理）
-    simple-auth.js            # 简单用户名/密码认证
-    jwt-session.js            # JWT 会话管理
+    copilot/                  # GitHub OAuth · Token 管理 · 用量统计
+    codebuddy/                # CodeBuddy API · 凭证轮换
+    relay/                    # 多上游管理 · 重试
   transformer/
-    claude-to-openai.js       # 通用 Claude → OpenAI 转换器
-    shared-translator.js      # 公共翻译逻辑
+    shared-translator.js      # 公共翻译逻辑（Anthropic ↔ OpenAI 格式互转）
   config/
-    system-prompts.js         # 行为规则注入
-    retry-config.js           # 重试配置
+    system-prompts.js         # 系统提示词注入规则
+    retry-config.js           # 重试策略配置
   utils/
-    http-client.js            # HTTP 客户端（代理, 重试, 连接池）
-    helpers.js                # 通用工具
-    converter.js              # Anthropic ↔ OpenAI 格式转换
-    token-estimation.js       # Token 估算
+    http-client.js            # HTTP 客户端
+    token-estimation.js       # Token 用量估算
     logger.js                 # 日志
+    helpers.js                # 通用工具函数
+    circular-buffer.js        # 环形缓冲区
   templates/                  # 管理面板 HTML 模板
 ```
 
 ---
 
-## 许可证
+## License
 
-MIT License
+MIT

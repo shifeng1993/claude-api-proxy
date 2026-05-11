@@ -1,5 +1,6 @@
 /**
  * Relay 路由处理器 - 支持 OpenAI 和 Anthropic 双格式的聊天补全和模型列表 API
+ * 对活跃上游发起请求，失败时在同一上游重试
  * @module routes/relay
  */
 

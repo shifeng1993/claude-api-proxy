@@ -1,5 +1,5 @@
 /**
- * Relay 单租户存储管理器
+ * Relay 存储管理器
  * 管理 API Key 鉴权、UpstreamManager 实例及使用量统计
  * @module services/relay/relay-store
  */

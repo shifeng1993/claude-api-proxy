@@ -3,7 +3,7 @@
  * @module routes/copilot
  */
 
-import {authenticateGitHub, ensureCopilotToken, isAuthenticated} from '../services/copilot/auth.js';
+import {ensureCopilotToken, isAuthenticated} from '../services/copilot/auth.js';
 import {createChatCompletions, getModels} from '../services/copilot/copilot-api.js';
 import {copilotState} from '../services/copilot/state.js';
 import {copilotStore} from '../services/copilot/copilot-store.js';

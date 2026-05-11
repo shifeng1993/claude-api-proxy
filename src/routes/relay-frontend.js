@@ -309,9 +309,7 @@ async function handleSetRetryConfig(req, res) {
  * 管理面板 HTML
  */
 function serveAdminPage(res) {
-    let html = readTemplate('relay-admin.html');
-    html = html.replaceAll('{{displayName}}', '管理员');
-    html = html.replaceAll('{{logoutButton}}', '');
+    const html = readTemplate('relay-admin.html');
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
     res.end(html);
 }

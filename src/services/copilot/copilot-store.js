@@ -229,9 +229,8 @@ class CopilotStore {
                 return;
             } catch {}
         }
-        // 首次从环境变量读取
-        this.httpProxy = process.env.HTTP_PROXY || process.env.http_proxy || null;
-        this.httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy || null;
+        this.httpProxy = null;
+        this.httpsProxy = null;
         this._saveProxy();
     }
 

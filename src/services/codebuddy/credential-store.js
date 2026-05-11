@@ -1,7 +1,7 @@
 /**
- * 单租户凭证存储
+ * 凭证存储
  * 管理唯一的 API Key 鉴权、TenantTokenManager 实例及使用统计
- * 替代多租户 tenant-manager.js，简化为单租户模式
+ * 支持多个 CodeBuddy 账号凭证自动轮换
  * @module services/codebuddy/credential-store
  */
 
