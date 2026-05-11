@@ -52,7 +52,6 @@ class CopilotState {
             // 优先从文件加载 GitHub token（推荐方式）
             if (fs.existsSync(GITHUB_TOKEN_FILE)) {
                 this.githubToken = fs.readFileSync(GITHUB_TOKEN_FILE, 'utf8').trim();
-                logger.info('Loaded GitHub token from file');
             }
 
             // 加载 Copilot token
@@ -60,13 +59,11 @@ class CopilotState {
                 const data = JSON.parse(fs.readFileSync(COPILOT_TOKEN_FILE, 'utf8'));
                 this.copilotToken = data.token;
                 this.copilotTokenExpiresAt = data.expires_at;
-                logger.info('Loaded Copilot token from file');
             }
 
             // 加载用户信息
             if (fs.existsSync(USER_INFO_FILE)) {
                 this.userInfo = JSON.parse(fs.readFileSync(USER_INFO_FILE, 'utf8'));
-                logger.info('Loaded user info from file');
             }
         } catch (error) {
             logger.error('Failed to load state:', error);
@@ -95,7 +92,6 @@ class CopilotState {
         fs.writeFileSync(COPILOT_TOKEN_FILE, JSON.stringify(data), 'utf8');
         this.copilotToken = token;
         this.copilotTokenExpiresAt = expiresAt;
-        logger.info('Saved Copilot token to file');
     }
 
     /**

@@ -63,15 +63,12 @@ function getLocalIp() {
  */
 function initializeCopilot() {
     const apiInfo = copilotStore.getApiKeyInfo();
-    logger.info(`Copilot API Key: ${apiInfo.prefix}`);
 
     if (isAuthenticated()) {
-        logger.info('Already authenticated with GitHub');
         (async () => {
             try {
                 const proxyUrl = copilotStore.getProxyConfig().https_proxy || copilotStore.getProxyConfig().http_proxy;
                 await refreshCopilotToken(proxyUrl);
-                logger.info('Copilot token refreshed');
             } catch (error) {
                 logger.warn('Failed to refresh Copilot token:', error.message);
             }
@@ -87,15 +84,11 @@ function initializeCopilot() {
  */
 function initializeCodebuddy() {
     const apiInfo = credentialStore.getApiKeyInfo();
-    logger.info(`✓ CodeBuddy API Key: ${apiInfo.prefix}`);
 
     const hasCredentials = credentialStore.hasCredentials();
     if (hasCredentials) {
         const tm = credentialStore.getTokenManager();
         const info = tm.getCurrentCredentialInfo();
-        logger.info(`✓ Found ${tm.credentials.length} CodeBuddy credential(s)`);
-        logger.info(`✓ Current credential: ${info.filename || 'N/A'} (${info.userId || 'unknown'})`);
-        logger.info(`✓ Auto rotation: ${tm.autoRotationEnabled ? 'enabled' : 'disabled'}`);
     } else {
         logger.info('No CodeBuddy credentials found');
         logger.info('  Please add credentials via the admin panel: /codebuddyFE');
@@ -107,10 +100,6 @@ function initializeCodebuddy() {
  */
 function initializeRelay() {
     const apiInfo = relayStore.getApiKeyInfo();
-    if (apiInfo.prefix) {
-        logger.info(`Relay API Key: ${apiInfo.prefix}`);
-    }
-    logger.info('  Visit /relayFE to configure upstreams');
 }
 
 // 初始化并启动服务
@@ -131,7 +120,6 @@ function initializeRelay() {
         server.listen(PORT, HOST, () => {
             const localIp = getLocalIp() || 'localhost';
             console.log(`✓ Server running at http://${localIp}:${PORT}`);
-            console.log(`✓ Health check endpoint: http://${localIp}:${PORT}/health`);
             console.log(`✓ Copilot proxy endpoint: http://${localIp}:${PORT}/copilot`);
             console.log(`✓ Copilot admin UI: http://${localIp}:${PORT}/copilotFE`);
             console.log(`✓ CodeBuddy proxy endpoint: http://${localIp}:${PORT}/codebuddy`);

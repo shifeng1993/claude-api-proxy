@@ -3,10 +3,10 @@
  * @module services/copilot/auth
  */
 
-import { getDeviceCode, getUser, getCopilotToken } from './github-api.js';
-import { copilotState } from './state.js';
-import { request, readBody } from '../../utils/http-client.js';
-import { GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from './config.js';
+import {getDeviceCode, getUser, getCopilotToken} from './github-api.js';
+import {copilotState} from './state.js';
+import {request, readBody} from '../../utils/http-client.js';
+import {GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders} from './config.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -36,7 +36,7 @@ export async function pollDeviceAuth(deviceCode) {
         method: 'POST',
         headers: {
             ...standardHeaders(),
-            'accept': 'application/json'
+            accept: 'application/json'
         },
         body: JSON.stringify({
             client_id: GITHUB_CLIENT_ID,
@@ -62,7 +62,7 @@ export async function pollDeviceAuth(deviceCode) {
         copilotState.saveUserInfo(userInfo);
 
         logger.info(`Successfully authenticated as ${userInfo.login}`);
-        return { githubToken, userInfo };
+        return {githubToken, userInfo};
     }
 
     const err = new Error('No access token in response');
@@ -80,16 +80,9 @@ export async function refreshCopilotToken(proxyUrl) {
         throw new Error('GitHub token not found. Please authenticate first.');
     }
 
-    logger.info('Refreshing Copilot token...');
-
-    const tokenData = await getCopilotToken(
-        copilotState.githubToken,
-        copilotState.vsCodeVersion,
-        proxyUrl
-    );
+    const tokenData = await getCopilotToken(copilotState.githubToken, copilotState.vsCodeVersion, proxyUrl);
 
     copilotState.saveCopilotToken(tokenData.token, tokenData.expires_at);
-    logger.info('Successfully refreshed Copilot token');
 
     return tokenData.token;
 }
