@@ -1,6 +1,6 @@
 # Claude API Proxy
 
-为 Claude Code 提供多种 AI 后端接入的代理服务。项目监听 **3080 端口**，将 Claude Code 的 Anthropic API 请求转发到你选择的后端，无需修改 Claude Code 本身。
+为 Claude Code 提供多种 AI 后端接入的代理服务。项目监听 **3080 端口**，将 Claude Code 的 Anthropic API 请求转发到你选择的后端。
 
 访问 `http://127.0.0.1:3080` 可进入主页，从中跳转到各服务的 Web 管理面板。
 
