@@ -90,3 +90,24 @@ export function copilotHeaders(copilotToken, vsCodeVersion, vision = false) {
 
     return headers;
 }
+
+export function wsHeaders(copilotToken, vsCodeVersion) {
+    const requestId = generateUUID();
+    const sessionId = generateUUID() + Date.now();
+    return {
+        'Authorization': `Bearer ${copilotToken}`,
+        'OpenAI-Intent': 'conversation-agent',
+        'X-GitHub-Api-Version': API_VERSION,
+        'X-Request-Id': requestId,
+        'X-Interaction-Id': requestId,
+        'X-Interaction-Type': 'conversation-agent',
+        'X-Agent-Task-Id': requestId,
+        'Editor-Version': `vscode/${vsCodeVersion}`,
+        'Editor-Plugin-Version': EDITOR_PLUGIN_VERSION,
+        'Editor-Device-Id': generateUUID(),
+        'User-Agent': 'node',
+        'Copilot-Integration-Id': 'vscode-chat',
+        'VScode-SessionId': sessionId,
+        'VScode-MachineId': generateUUID()
+    };
+}

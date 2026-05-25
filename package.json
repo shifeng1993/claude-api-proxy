@@ -15,7 +15,8 @@
         "dotenv": "^17.2.4",
         "https-proxy-agent": "^7.0.6",
         "jsonwebtoken": "^9.0.3",
-        "socks-proxy-agent": "^8.0.5"
+        "socks-proxy-agent": "^8.0.5",
+        "ws": "^8.21.0"
     },
     "engines": {
         "node": ">=18.0.0"

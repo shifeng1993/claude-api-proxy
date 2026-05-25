@@ -54,14 +54,7 @@ export function responsesRequestToChat(responsesReq) {
     if (Array.isArray(responsesReq.tools) && responsesReq.tools.length > 0) {
         chatReq.tools = responsesReq.tools.map((tool) => {
             if (tool.type === 'function') {
-                return {
-                    type: 'function',
-                    function: {
-                        name: tool.name,
-                        description: tool.description || '',
-                        parameters: tool.parameters || {}
-                    }
-                };
+                return responsesFunctionToolToChat(tool);
             }
             // 其他类型（web_search 等）直接透传
             return tool;
@@ -166,12 +159,7 @@ export function chatRequestToResponses(chatReq) {
     if (Array.isArray(chatReq.tools) && chatReq.tools.length > 0) {
         responsesReq.tools = chatReq.tools.map((tool) => {
             if (tool.type === 'function') {
-                return {
-                    type: 'function',
-                    name: tool.function?.name || '',
-                    description: tool.function?.description || '',
-                    parameters: tool.function?.parameters || {}
-                };
+                return chatFunctionToolToResponses(tool);
             }
             return tool;
         });
@@ -309,6 +297,43 @@ function convertChatToolChoice(choice) {
     return choice;
 }
 
+function responsesFunctionToolToChat(tool) {
+    const {
+        type,
+        name,
+        description = '',
+        parameters = {},
+        ...rest
+    } = tool;
+
+    return {
+        type: 'function',
+        function: {
+            name: name || '',
+            description,
+            parameters,
+            ...rest
+        }
+    };
+}
+
+function chatFunctionToolToResponses(tool) {
+    const {
+        name = '',
+        description = '',
+        parameters = {},
+        ...rest
+    } = tool.function || {};
+
+    return {
+        type: 'function',
+        name,
+        description,
+        parameters,
+        ...rest
+    };
+}
+
 function extractTextContent(content) {
     if (typeof content === 'string') return content;
     if (!Array.isArray(content)) return '';
@@ -377,7 +402,6 @@ export function chatResponseToResponses(chatRes) {
                 output.push({
                     type: 'reasoning',
                     id: `rs_${generateId()}`,
-                    status: 'completed',
                     summary: [{type: 'summary_text', text: reasoningText}]
                 });
             }
@@ -496,7 +520,7 @@ export function responsesResponseToChat(responsesRes) {
     };
 }
 
-function convertResponsesUsageToChat(usage) {
+export function convertResponsesUsageToChat(usage) {
     if (!usage) return {prompt_tokens: 0, completion_tokens: 0, total_tokens: 0};
     return {
         prompt_tokens: usage.input_tokens || 0,
@@ -571,6 +595,15 @@ export function createChatCompletionsStreamState() {
     };
 }
 
+export function responsesEventToResponsesEvents(eventName, eventData, chatState, responsesState) {
+    const chatChunks = responsesEventToChatChunks(eventName, eventData, chatState);
+    const events = [];
+    for (const chunk of chatChunks) {
+        events.push(...chatChunkToResponsesEvents(chunk, responsesState));
+    }
+    return events;
+}
+
 export function responsesEventToChatChunks(eventName, eventData, state) {
     const chunks = [];
 
@@ -587,6 +620,83 @@ export function responsesEventToChatChunks(eventName, eventData, state) {
         ...(usage ? {usage} : {})
     });
 
+    const ensureAssistantRole = () => {
+        if (!state.roleSent) {
+            chunks.push(buildChunk({role: 'assistant'}));
+            state.roleSent = true;
+        }
+    };
+
+    const ensureToolCallStart = (toolCall) => {
+        ensureAssistantRole();
+        if (toolCall.emitted) return;
+
+        chunks.push(buildChunk({
+            tool_calls: [{
+                index: toolCall.index,
+                id: toolCall.id,
+                type: 'function',
+                function: {
+                    name: toolCall.name,
+                    arguments: ''
+                }
+            }]
+        }));
+        toolCall.emitted = true;
+    };
+
+    const emitToolCallArguments = (toolCall, argsText) => {
+        if (!argsText) return;
+        ensureToolCallStart(toolCall);
+
+        chunks.push(buildChunk({
+            tool_calls: [{
+                index: toolCall.index,
+                function: {
+                    arguments: argsText
+                }
+            }]
+        }));
+        toolCall.emittedArgs += argsText;
+    };
+
+    const flushPendingToolCallArguments = () => {
+        for (const toolCall of state.toolCalls.values()) {
+            const pendingArgs = toolCall.finalArgs || '';
+            if (!pendingArgs) continue;
+
+            if (pendingArgs.startsWith(toolCall.emittedArgs)) {
+                emitToolCallArguments(toolCall, pendingArgs.slice(toolCall.emittedArgs.length));
+            } else if (!toolCall.emittedArgs) {
+                emitToolCallArguments(toolCall, pendingArgs);
+            }
+        }
+    };
+
+    const ensureCompletedToolCalls = () => {
+        for (const item of eventData.response?.output || []) {
+            if (item?.type !== 'function_call') continue;
+            const itemId = item.id || item.call_id || `fc_${generateId()}`;
+            if (!state.toolCalls.has(itemId)) {
+                state.sawToolCall = true;
+                state.toolCalls.set(itemId, {
+                    index: state.nextToolIndex++,
+                    id: item.call_id || item.id || `call_${generateId()}`,
+                    name: item.name || '',
+                    emitted: false,
+                    emittedArgs: '',
+                    finalArgs: typeof item.arguments === 'string' ? item.arguments : ''
+                });
+                continue;
+            }
+
+            const toolCall = state.toolCalls.get(itemId);
+            if (item.call_id) toolCall.id = item.call_id;
+            if (item.name) toolCall.name = item.name;
+            if (typeof item.arguments === 'string') toolCall.finalArgs = item.arguments;
+        }
+    };
+
     if (eventName === 'response.created') {
         state.model = eventData.response?.model || state.model;
         return chunks;
@@ -600,16 +710,15 @@ export function responsesEventToChatChunks(eventName, eventData, state) {
             index: toolIndex,
             id: item.call_id || item.id || `call_${generateId()}`,
             name: item.name || '',
-            emitted: false
+            emitted: false,
+            emittedArgs: '',
+            finalArgs: typeof item.arguments === 'string' ? item.arguments : ''
         });
         return chunks;
     }
 
     if (eventName === 'response.output_text.delta') {
-        if (!state.roleSent) {
-            chunks.push(buildChunk({role: 'assistant'}));
-            state.roleSent = true;
-        }
+        ensureAssistantRole();
         chunks.push(buildChunk({content: eventData.delta || ''}));
         return chunks;
     }
@@ -618,40 +727,28 @@ export function responsesEventToChatChunks(eventName, eventData, state) {
         const toolCall = state.toolCalls.get(eventData.item_id);
         if (!toolCall) return chunks;
 
-        if (!state.roleSent) {
-            chunks.push(buildChunk({role: 'assistant'}));
-            state.roleSent = true;
+        toolCall.finalArgs += eventData.delta || '';
+        emitToolCallArguments(toolCall, eventData.delta || '');
+        return chunks;
+    }
+
+    if (eventName === 'response.function_call_arguments.done') {
+        const toolCall = state.toolCalls.get(eventData.item_id);
+        if (!toolCall) return chunks;
+
+        if (typeof eventData.arguments === 'string') {
+            toolCall.finalArgs = eventData.arguments;
         }
 
-        if (!toolCall.emitted) {
-            chunks.push(buildChunk({
-                tool_calls: [{
-                    index: toolCall.index,
-                    id: toolCall.id,
-                    type: 'function',
-                    function: {
-                        name: toolCall.name,
-                        arguments: ''
-                    }
-                }]
-            }));
-            toolCall.emitted = true;
-        }
-
-        chunks.push(buildChunk({
-            tool_calls: [{
-                index: toolCall.index,
-                function: {
-                    arguments: eventData.delta || ''
-                }
-            }]
-        }));
+        flushPendingToolCallArguments();
         return chunks;
     }
 
     if (eventName === 'response.completed') {
         state.model = eventData.response?.model || state.model;
         state.completed = true;
+        ensureCompletedToolCalls();
+        flushPendingToolCallArguments();
         chunks.push(
             buildChunk(
                 {},
@@ -712,9 +809,7 @@ export function chatChunkToResponsesEvents(data, state) {
                     output_index: state.outputIndex,
                     item: {
                         type: 'reasoning',
-                        id: state.reasoningItemId,
-                        status: 'in_progress',
-                        summary: []
+                        id: state.reasoningItemId
                     }
                 }
             });
@@ -769,9 +864,7 @@ export function chatChunkToResponsesEvents(data, state) {
                     output_index: state.outputIndex,
                     item: {
                         type: 'reasoning',
-                        id: state.reasoningItemId,
-                        status: 'completed',
-                        summary: [{type: 'summary_text', text: state.reasoningText}]
+                        id: state.reasoningItemId
                     }
                 }
             });
@@ -1114,4 +1207,118 @@ export function chatResponseToCompact(chatRes) {
         usage: convertUsage(chatRes.usage),
         error: null
     };
+}
+
+/* ================= WS Input 净化 ================= */
+
+/**
+ * 净化 Responses API 请求的 input，去除上游 WS 无法解析的 id 引用
+ *
+ * 客户端（如 CherryStudio）续接对话时，会将上一轮响应的 output items（含 id）
+ * 放入新请求的 input。上游 Copilot WS 是无状态的，无法查找这些 id，
+ * 导致 "text part xxx not found" 错误。
+ *
+ * 处理策略：
+ * - message 类型 → 转换为 EasyInputMessage（{role, content}），去掉 id
+ * - output_text / input_text content parts → 去掉 id
+ * - function_call 类型 → 保留 call_id，去掉 item id
+ * - reasoning 类型 → 去掉 id，保留 summary text
+ * - 其他类型 → 透传
+ *
+ * @param {Array|undefined} input - Responses API 的 input 数组
+ * @returns {Array} 净化后的 input 数组
+ */
+export function sanitizeResponsesInput(input) {
+    if (!Array.isArray(input)) return input;
+
+    return input.map(item => {
+        if (!item || typeof item !== 'object') return item;
+
+        // 已是 EasyInputMessage 格式（有 role 但无 type），直接净化 content
+        if (item.role && !item.type) {
+            return {
+                role: item.role,
+                content: sanitizeContentParts(item.content)
+            };
+        }
+
+        // message 类型（上一轮响应的 output message item）
+        if (item.type === 'message') {
+            return {
+                role: item.role || 'assistant',
+                content: sanitizeContentParts(item.content)
+            };
+        }
+
+        // function_call → 保留 call_id（tool_result 需要匹配），去掉 item id
+        if (item.type === 'function_call') {
+            return {
+                type: 'function_call',
+                call_id: item.call_id || `call_${generateId()}`,
+                name: item.name || '',
+                arguments: item.arguments || '{}'
+            };
+        }
+
+        // function_call_output → 保留 call_id
+        if (item.type === 'function_call_output') {
+            return {
+                type: 'function_call_output',
+                call_id: item.call_id || '',
+                output: typeof item.output === 'string' ? item.output : JSON.stringify(item.output || '')
+            };
+        }
+
+        // reasoning → 转为纯文本 content
+        if (item.type === 'reasoning') {
+            const text = Array.isArray(item.summary)
+                ? item.summary.map(s => s.text || '').filter(Boolean).join('\n')
+                : '';
+            return {
+                role: 'assistant',
+                content: text ? [{type: 'output_text', text}] : []
+            };
+        }
+
+        // input_text / output_text 顶层 item
+        if (item.type === 'input_text' || item.type === 'output_text') {
+            return {
+                role: item.type === 'output_text' ? 'assistant' : 'user',
+                content: [{type: item.type, text: item.text || ''}]
+            };
+        }
+
+        return item;
+    });
+}
+
+/**
+ * 净化 content parts，去掉 id 和 status 等上游无法解析的字段
+ */
+function sanitizeContentParts(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content;
+
+    return content.map(part => {
+        if (!part || typeof part !== 'object') return part;
+
+        if (part.type === 'output_text' || part.type === 'input_text') {
+            return {type: part.type, text: part.text || ''};
+        }
+
+        if (part.type === 'input_image') {
+            return {type: 'input_image', image_url: part.image_url || part.url || ''};
+        }
+
+        if (part.type === 'input_file') {
+            return {type: 'input_file', file_data: part.file_data || part.file_url || ''};
+        }
+
+        // 其他 part 类型保留 text
+        if (part.text) {
+            return {type: part.type || 'input_text', text: part.text};
+        }
+
+        return part;
+    });
 }

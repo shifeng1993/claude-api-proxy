@@ -9,6 +9,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getCopilotBaseUrl, copilotHeaders } from './config.js';
 import { normalizePayload } from '../../transformer/shared-translator.js';
 import logger from '../../utils/logger.js';
+import {acquire, release, discard, sendRequest} from './copilot-ws-pool.js';
 
 // ==================== 代理 Agent 缓存 ====================
 
@@ -135,4 +136,28 @@ export async function createEmbeddings(copilotToken, vsCodeVersion, payload, acc
 
     const body = await readBody(response.body);
     return JSON.parse(body);
+}
+
+export async function createResponsesWS(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl, options = {}) {
+    const agent = createProxyAgent(proxyUrl);
+    const conn = await acquire(
+        copilotToken,
+        vsCodeVersion,
+        accountType,
+        agent,
+        true,
+        options.contextKey,
+        payload.previous_response_id,
+        proxyUrl
+    );
+    const eventStream = sendRequest(conn, payload);
+    return {eventStream, conn};
+}
+
+export function releaseWSConnection(conn) {
+    release(conn);
+}
+
+export function discardWSConnection(conn) {
+    discard(conn);
 }

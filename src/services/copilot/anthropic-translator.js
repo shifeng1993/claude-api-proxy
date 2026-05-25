@@ -6,6 +6,7 @@
 
 import logger from '../../utils/logger.js';
 import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, extractCacheHitTokens, openAIToAnthropic as sharedOpenAIToAnthropic} from '../../transformer/shared-translator.js';
+import {responsesEventToChatChunks} from '../../transformer/responses-translator.js';
 
 /**
  * 转换 Anthropic 请求到 OpenAI 格式
@@ -314,9 +315,24 @@ export function translateStreamChunk(openAIChunk, state) {
     if (delta.tool_calls) {
         for (const toolCall of delta.tool_calls) {
             const tcIndex = toolCall.index;
-            
+            const partialJson = toolCall.function?.arguments || '';
+
             if (!state.toolCalls[tcIndex]) {
-                // 新的 tool call
+                state.toolCalls[tcIndex] = {
+                    id: toolCall.id || '',
+                    name: toolCall.function?.name || '',
+                    arguments: partialJson,
+                    blockIndex: null,
+                    emitted: false
+                };
+            } else {
+                if (toolCall.id) state.toolCalls[tcIndex].id = toolCall.id;
+                if (toolCall.function?.name) state.toolCalls[tcIndex].name = toolCall.function.name;
+                if (partialJson) state.toolCalls[tcIndex].arguments += partialJson;
+            }
+
+            const stateToolCall = state.toolCalls[tcIndex];
+            if (!stateToolCall.emitted && stateToolCall.name) {
                 if (state.contentBlockOpen) {
                     events.push({
                         type: 'content_block_stop',
@@ -326,39 +342,45 @@ export function translateStreamChunk(openAIChunk, state) {
                     state.contentBlockOpen = false;
                 }
 
-                state.toolCalls[tcIndex] = {
-                    id: toolCall.id || '',
-                    name: toolCall.function?.name || '',
-                    arguments: toolCall.function?.arguments || '',
-                    blockIndex: state.contentBlockIndex
-                };
+                stateToolCall.id ||= `call_${generateId()}`;
+                stateToolCall.blockIndex = state.contentBlockIndex;
+                stateToolCall.emitted = true;
 
                 events.push({
                     type: 'content_block_start',
                     index: state.contentBlockIndex,
                     content_block: {
                         type: 'tool_use',
-                        id: toolCall.id || '',
-                        name: toolCall.function?.name || '',
+                        id: stateToolCall.id,
+                        name: stateToolCall.name,
                         input: {}
                     }
                 });
                 state.contentBlockOpen = true;
                 state.currentBlockType = 'tool_use';
-            } else {
-                // 追加参数
-                if (toolCall.function?.arguments) {
-                    state.toolCalls[tcIndex].arguments += toolCall.function.arguments;
-                    
+
+                if (stateToolCall.arguments) {
                     events.push({
                         type: 'content_block_delta',
-                        index: state.toolCalls[tcIndex].blockIndex,
+                        index: stateToolCall.blockIndex,
                         delta: {
                             type: 'input_json_delta',
-                            partial_json: toolCall.function.arguments
+                            partial_json: stateToolCall.arguments
                         }
                     });
                 }
+                continue;
+            }
+
+            if (stateToolCall.emitted && partialJson) {
+                events.push({
+                    type: 'content_block_delta',
+                    index: stateToolCall.blockIndex,
+                    delta: {
+                        type: 'input_json_delta',
+                        partial_json: partialJson
+                    }
+                });
             }
         }
     }
@@ -394,4 +416,149 @@ export function translateStreamChunk(openAIChunk, state) {
     return events;
 }
 
+function anthropicContentToResponsesContent(content, textType = 'input_text') {
+    if (typeof content === 'string') {
+        return [{type: textType, text: content}];
+    }
+
+    if (!Array.isArray(content)) {
+        return [{type: textType, text: content ? JSON.stringify(content) : ''}];
+    }
+
+    return content
+        .map((block) => {
+            if (!block || typeof block !== 'object') return null;
+            if (block.type === 'text') return {type: textType, text: block.text || ''};
+            if (block.type === 'image') return {type: 'input_image', image_url: block.source?.data ? `data:${block.source.media_type};base64,${block.source.data}` : block.source?.url || ''};
+            if (block.type === 'input_text' || block.type === 'output_text') return {type: textType, text: block.text || ''};
+            return block.text ? {type: textType, text: block.text} : null;
+        })
+        .filter(Boolean);
+}
+
+function anthropicMessagesToResponsesInput(messages) {
+    const input = [];
+    if (!Array.isArray(messages)) return input;
+
+    for (const message of messages) {
+        if (!message || typeof message !== 'object') continue;
+
+        if (message.role === 'user' && Array.isArray(message.content)) {
+            const toolResults = message.content.filter(block => block?.type === 'tool_result');
+            const otherBlocks = message.content.filter(block => block?.type !== 'tool_result');
+
+            for (const block of toolResults) {
+                input.push({
+                    type: 'function_call_output',
+                    call_id: block.tool_use_id || '',
+                    output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                });
+            }
+
+            if (otherBlocks.length > 0) {
+                input.push({
+                    role: 'user',
+                    content: anthropicContentToResponsesContent(otherBlocks, 'input_text')
+                });
+            }
+            continue;
+        }
+
+        if (message.role === 'assistant' && Array.isArray(message.content)) {
+            const textBlocks = message.content.filter(block => block?.type === 'text' || block?.type === 'thinking');
+            const toolUseBlocks = message.content.filter(block => block?.type === 'tool_use');
+
+            if (textBlocks.length > 0) {
+                input.push({
+                    role: 'assistant',
+                    content: anthropicContentToResponsesContent(textBlocks.map(block => block.type === 'thinking' ? {type: 'text', text: block.thinking || ''} : block), 'output_text')
+                });
+            }
+
+            for (const block of toolUseBlocks) {
+                input.push({
+                    type: 'function_call',
+                    call_id: block.id || `call_${generateId()}`,
+                    name: block.name || '',
+                    arguments: JSON.stringify(block.input || {})
+                });
+            }
+            continue;
+        }
+
+        input.push({
+            role: message.role,
+            content: anthropicContentToResponsesContent(message.content, message.role === 'assistant' ? 'output_text' : 'input_text')
+        });
+    }
+
+    return input;
+}
+
+function anthropicSystemToInstructions(system) {
+    if (typeof system === 'string') return system;
+    if (!Array.isArray(system)) return undefined;
+    const text = system
+        .filter(block => block?.type === 'text' && block.text)
+        .map(block => block.text)
+        .join('\n\n');
+    return text || undefined;
+}
+
+function anthropicToolChoiceToResponses(toolChoice) {
+    if (!toolChoice) return undefined;
+    if (toolChoice.type === 'auto' || toolChoice.type === 'any' || toolChoice.type === 'none') return toolChoice.type;
+    if (toolChoice.type === 'tool' && toolChoice.name) return {type: 'function', name: toolChoice.name};
+    return translateToolChoice(toolChoice);
+}
+
+export function anthropicToResponses(anthropicPayload) {
+    const responsesPayload = {
+        model: translateModelName(anthropicPayload.model),
+        input: anthropicMessagesToResponsesInput(anthropicPayload.messages),
+        stream: anthropicPayload.stream,
+        temperature: anthropicPayload.temperature,
+        top_p: anthropicPayload.top_p
+    };
+
+    const instructions = anthropicSystemToInstructions(anthropicPayload.system);
+    if (instructions) responsesPayload.instructions = instructions;
+
+    if (anthropicPayload.max_tokens !== undefined) {
+        responsesPayload.max_output_tokens = anthropicPayload.max_tokens;
+    }
+
+    const thinkingConfig = resolveThinkingConfig(anthropicPayload);
+    if (!thinkingConfig.disabled && thinkingConfig.effort) {
+        responsesPayload.reasoning = {effort: thinkingConfig.effort};
+    }
+
+    if (Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0) {
+        responsesPayload.tools = anthropicPayload.tools.map(tool => ({
+            type: 'function',
+            name: tool.name,
+            description: tool.description || '',
+            parameters: tool.input_schema || {}
+        }));
+    }
+
+    const toolChoice = anthropicToolChoiceToResponses(anthropicPayload.tool_choice);
+    if (toolChoice) responsesPayload.tool_choice = toolChoice;
+
+    if (anthropicPayload.stop_sequences) responsesPayload.stop = anthropicPayload.stop_sequences;
+    if (anthropicPayload.metadata) responsesPayload.metadata = anthropicPayload.metadata;
+
+    return responsesPayload;
+}
+
 export {sharedOpenAIToAnthropic as openAIToAnthropic};
+
+export function responsesEventToAnthropicEvents(eventType, eventData, chatState, anthropicState) {
+    const chatChunks = responsesEventToChatChunks(eventType, eventData, chatState);
+    const anthropicEvents = [];
+    for (const chunk of chatChunks) {
+        const events = translateStreamChunk(chunk, anthropicState);
+        anthropicEvents.push(...events);
+    }
+    return anthropicEvents;
+}

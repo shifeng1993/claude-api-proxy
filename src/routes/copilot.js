@@ -4,23 +4,32 @@
  */
 
 import {ensureCopilotToken, isAuthenticated} from '../services/copilot/auth.js';
-import {createChatCompletions, getModels} from '../services/copilot/copilot-api.js';
+import {createChatCompletions, createResponsesWS, releaseWSConnection, discardWSConnection, getModels} from '../services/copilot/copilot-api.js';
 import {copilotState} from '../services/copilot/state.js';
 import {copilotStore} from '../services/copilot/copilot-store.js';
 import {readBody, isNetworkError} from '../utils/http-client.js';
 import {
     anthropicToOpenAI,
+    anthropicToResponses,
     openAIToAnthropic,
     translateStreamChunk,
-    createStreamState
+    createStreamState,
+    responsesEventToAnthropicEvents
 } from '../services/copilot/anthropic-translator.js';
 import {
     responsesRequestToChat,
+    chatRequestToResponses,
     chatResponseToResponses,
+    responsesResponseToChat,
     createResponsesStreamState,
+    createChatCompletionsStreamState,
     chatChunkToResponsesEvents,
+    responsesEventToChatChunks,
+    responsesEventToResponsesEvents,
+    convertResponsesUsageToChat,
     compactRequestToChat,
-    chatResponseToCompact
+    chatResponseToCompact,
+    sanitizeResponsesInput
 } from '../transformer/responses-translator.js';
 import {
     estimateMessageTokens,
@@ -56,6 +65,57 @@ function extractProxyFromHeaders(req) {
     return undefined;
 }
 
+function normalizeConversationKey(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function extractConversationKeyFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return undefined;
+
+    const metadata = payload.metadata && typeof payload.metadata === 'object'
+        ? payload.metadata
+        : undefined;
+
+    const candidates = [
+        payload.conversation_id,
+        payload.conversationId,
+        payload.session_id,
+        payload.sessionId,
+        payload.thread_id,
+        payload.threadId,
+        metadata?.conversation_id,
+        metadata?.conversationId,
+        metadata?.session_id,
+        metadata?.sessionId,
+        metadata?.thread_id,
+        metadata?.threadId
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizeConversationKey(candidate);
+        if (normalized) return normalized;
+    }
+
+    return undefined;
+}
+
+function extractConversationKey(req, payload) {
+    const headerCandidates = [
+        req.headers['x-conversation-id'],
+        req.headers['x-session-id'],
+        req.headers['x-chat-id'],
+        req.headers['x-thread-id']
+    ];
+
+    for (const candidate of headerCandidates) {
+        const value = Array.isArray(candidate) ? candidate[0] : candidate;
+        const normalized = normalizeConversationKey(value);
+        if (normalized) return normalized;
+    }
+
+    return extractConversationKeyFromPayload(payload);
+}
+
 function sendJson(res, status, data) {
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
@@ -70,8 +130,42 @@ function sendAnthropicError(res, status, message) {
     sendJson(res, status, {type: 'error', error: {type: errorType, message}});
 }
 
+function isResponsesProtocolError(err) {
+    return err?.name === 'CopilotResponsesWSError' && err?.event?.type === 'error';
+}
+
+function sendResponsesProtocolError(res, err) {
+    const event = err?.event || {
+        type: 'error',
+        status: err?.status || 400,
+        error: {
+            message: err?.message || 'Responses WebSocket request failed'
+        }
+    };
+
+    if (res.headersSent) {
+        if (!res.destroyed && !res.writableEnded) {
+            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+            res.end();
+        }
+        return;
+    }
+
+    sendJson(res, event.status || err?.status || 400, event);
+}
+
 function upstreamErrorStatus(err) {
     return isNetworkError(err) ? 502 : 500;
+}
+
+export function supportsResponsesWebSocket(model) {
+    return typeof model === 'string' && /^gpt(?:-|$)/i.test(model.trim());
+}
+
+function ensureResponsesWebSocketSupported(model) {
+    if (!supportsResponsesWebSocket(model)) {
+        throw new Error(`Responses WebSocket is only supported for GPT-series models: ${model || 'unknown'}`);
+    }
 }
 
 /**
@@ -145,57 +239,54 @@ async function handleOpenAIChatCompletions(req, res) {
 
         logger.info(`Copilot OpenAI request - model: ${openAIPayload.model}, stream: ${openAIPayload.stream}`);
 
-        const response = await createChatCompletions(
-            copilotState.copilotToken,
-            copilotState.vsCodeVersion,
-            openAIPayload,
-            copilotState.accountType,
-            proxyUrl
-        );
+        const conversationKey = extractConversationKey(req, openAIPayload);
 
-        if (response.status >= 400) {
-            const errorBody = await readBody(response.body);
-            sendOpenAIError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
-            return;
-        }
+        // Chat → Responses 格式
+        const responsesReq = chatRequestToResponses(openAIPayload);
 
-        if (openAIPayload.stream) {
-            res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive'
-            });
+        try {
+            ensureResponsesWebSocketSupported(responsesReq.model);
+            const wsResult = await createResponsesWS(
+                authResult.copilotToken,
+                copilotState.vsCodeVersion,
+                responsesReq,
+                copilotState.accountType,
+                proxyUrl,
+                {contextKey: conversationKey}
+            );
 
-            let streamInputTokens = 0;
-            let streamOutputTokens = 0;
-            let streamCacheHitTokens = 0;
-            let lineBuffer = '';
+            if (openAIPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
 
-            response.body.on('data', (chunk) => {
-                res.write(chunk);
-                lineBuffer += chunk.toString('utf8');
-                const lines = lineBuffer.split('\n');
-                lineBuffer = lines.pop();
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed.startsWith('data: ')) continue;
-                    const raw = trimmed.slice(6).trim();
-                    if (raw === '[DONE]') continue;
-                    try {
-                        const data = JSON.parse(raw);
-                        if (data.usage) {
-                            streamInputTokens = data.usage.prompt_tokens || 0;
-                            streamOutputTokens = data.usage.completion_tokens || 0;
-                            streamCacheHitTokens = extractCacheHitTokens(data.usage);
+                const chatState = createChatCompletionsStreamState();
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
+
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed' && event.data?.response?.usage) {
+                            const chatUsage = convertResponsesUsageToChat(event.data.response.usage);
+                            streamInputTokens = chatUsage.prompt_tokens || 0;
+                            streamOutputTokens = chatUsage.completion_tokens || 0;
+                            streamCacheHitTokens = extractCacheHitTokens(chatUsage);
                         }
-                    } catch {}
+                        const chatChunks = responsesEventToChatChunks(event.type, event.data, chatState);
+                        for (const chunk of chatChunks) {
+                            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                        }
+                    }
+                    res.write('data: [DONE]\n\n');
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
                 }
-            });
 
-            response.body.on('end', () => {
-                if (lineBuffer.trim()) {
-                    res.write(lineBuffer);
-                }
                 if (streamInputTokens > 0 || streamOutputTokens > 0) {
                     copilotStore.incrementApiCallCount();
                     copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
@@ -207,40 +298,141 @@ async function handleOpenAIChatCompletions(req, res) {
                     copilotStore.recordDailyUsage(estimated, 0, 0);
                 }
                 res.end();
-            });
-
-            response.body.on('error', (err) => {
-                logger.error('Copilot OpenAI stream error:', err);
-                res.end();
-            });
-
-            res.on('close', () => {
-                if (response.body && !response.body.destroyed) {
-                    response.body.destroy();
+            } else {
+                let completedData = null;
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed') {
+                            completedData = event.data;
+                        }
+                    }
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
                 }
-            });
-        } else {
-            const responseBody = await readBody(response.body);
-            let parsed;
-            try {
-                parsed = JSON.parse(responseBody);
-            } catch {
-                sendOpenAIError(res, 502, 'Upstream returned invalid JSON');
+
+                if (completedData?.response) {
+                    const chatResponse = responsesResponseToChat(completedData.response);
+                    const inputTokens = chatResponse.usage?.prompt_tokens || 0;
+                    const outputTokens = chatResponse.usage?.completion_tokens || 0;
+                    const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
+                    copilotStore.incrementApiCallCount();
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                    sendJson(res, 200, chatResponse);
+                } else {
+                    sendOpenAIError(res, 502, 'No response.completed event received from upstream');
+                }
+            }
+        } catch (wsError) {
+            if (res.headersSent) {
+                logger.warn(`Copilot OpenAI: WS stream failed after response started: ${wsError.message}`);
+                if (!res.destroyed && !res.writableEnded) {
+                    res.end();
+                }
                 return;
             }
-            const inputTokens = parsed.usage?.prompt_tokens || 0;
-            const outputTokens = parsed.usage?.completion_tokens || 0;
-            const cacheHitTokens = extractCacheHitTokens(parsed.usage);
-            copilotStore.incrementApiCallCount();
-            if (inputTokens > 0 || outputTokens > 0) {
-                copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-                copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
-            } else {
-                const estimated = estimateMessageTokens(openAIPayload.messages || []);
-                copilotStore.incrementTokenUsage(estimated, 0, 0);
-                copilotStore.recordDailyUsage(estimated, 0, 0);
+
+            logger.warn(`Copilot OpenAI: WS failed, falling back to HTTP POST: ${wsError.message}`);
+
+            const response = await createChatCompletions(
+                copilotState.copilotToken,
+                copilotState.vsCodeVersion,
+                openAIPayload,
+                copilotState.accountType,
+                proxyUrl
+            );
+
+            if (response.status >= 400) {
+                const errorBody = await readBody(response.body);
+                sendOpenAIError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
+                return;
             }
-            sendJson(res, 200, parsed);
+
+            if (openAIPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
+                let lineBuffer = '';
+
+                response.body.on('data', (chunk) => {
+                    res.write(chunk);
+                    lineBuffer += chunk.toString('utf8');
+                    const lines = lineBuffer.split('\n');
+                    lineBuffer = lines.pop();
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed.startsWith('data: ')) continue;
+                        const raw = trimmed.slice(6).trim();
+                        if (raw === '[DONE]') continue;
+                        try {
+                            const data = JSON.parse(raw);
+                            if (data.usage) {
+                                streamInputTokens = data.usage.prompt_tokens || 0;
+                                streamOutputTokens = data.usage.completion_tokens || 0;
+                                streamCacheHitTokens = extractCacheHitTokens(data.usage);
+                            }
+                        } catch {}
+                    }
+                });
+
+                response.body.on('end', () => {
+                    if (lineBuffer.trim()) {
+                        res.write(lineBuffer);
+                    }
+                    if (streamInputTokens > 0 || streamOutputTokens > 0) {
+                        copilotStore.incrementApiCallCount();
+                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                        copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    } else {
+                        copilotStore.incrementApiCallCount();
+                        const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                        copilotStore.incrementTokenUsage(estimated, 0, 0);
+                        copilotStore.recordDailyUsage(estimated, 0, 0);
+                    }
+                    res.end();
+                });
+
+                response.body.on('error', (err) => {
+                    logger.error('Copilot OpenAI stream error (fallback):', err);
+                    res.end();
+                });
+
+                res.on('close', () => {
+                    if (response.body && !response.body.destroyed) {
+                        response.body.destroy();
+                    }
+                });
+            } else {
+                const responseBody = await readBody(response.body);
+                let parsed;
+                try {
+                    parsed = JSON.parse(responseBody);
+                } catch {
+                    sendOpenAIError(res, 502, 'Upstream returned invalid JSON');
+                    return;
+                }
+                const inputTokens = parsed.usage?.prompt_tokens || 0;
+                const outputTokens = parsed.usage?.completion_tokens || 0;
+                const cacheHitTokens = extractCacheHitTokens(parsed.usage);
+                copilotStore.incrementApiCallCount();
+                if (inputTokens > 0 || outputTokens > 0) {
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                } else {
+                    const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                    copilotStore.incrementTokenUsage(estimated, 0, 0);
+                    copilotStore.recordDailyUsage(estimated, 0, 0);
+                }
+                sendJson(res, 200, parsed);
+            }
         }
     } catch (error) {
         logger.error('Copilot: Failed to handle OpenAI chat completions:', error);
@@ -301,137 +493,243 @@ async function handleAnthropicMessages(req, res) {
 
         logger.info(`Copilot Anthropic request - model: ${anthropicPayload.model}, stream: ${anthropicPayload.stream}`);
 
-        const openAIPayload = anthropicToOpenAI(anthropicPayload);
+        const conversationKey = extractConversationKey(req, anthropicPayload);
 
-        const response = await createChatCompletions(
-            authResult.copilotToken,
-            copilotState.vsCodeVersion,
-            openAIPayload,
-            copilotState.accountType,
-            proxyUrl
-        );
+        const responsesReq = anthropicToResponses(anthropicPayload);
 
-        if (response.status >= 400) {
-            const errorBody = await readBody(response.body);
-            sendAnthropicError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
-            return;
-        }
+        try {
+            ensureResponsesWebSocketSupported(responsesReq.model);
+            const wsResult = await createResponsesWS(
+                authResult.copilotToken,
+                copilotState.vsCodeVersion,
+                responsesReq,
+                copilotState.accountType,
+                proxyUrl,
+                {contextKey: conversationKey}
+            );
 
-        if (anthropicPayload.stream) {
-            res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive'
-            });
+            if (anthropicPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
 
-            const state = createStreamState();
-            let buffer = '';
-            let streamInputTokens = 0;
-            let streamOutputTokens = 0;
-            let streamCacheHitTokens = 0;
+                const chatState = createChatCompletionsStreamState();
+                const anthropicState = createStreamState();
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
 
-            const processLines = (lines) => {
-                for (const line of lines) {
-                    if (res.destroyed) return;
-
-                    const trimmedLine = line.trim();
-                    if (trimmedLine.startsWith('data: ')) {
-                        const data = trimmedLine.slice(6);
-
-                        if (data === '[DONE]') {
-                            continue;
-                        }
-
-                        try {
-                            const openAIChunk = JSON.parse(data);
-                            const anthropicEvents = translateStreamChunk(openAIChunk, state);
-
-                            if (openAIChunk.usage) {
-                                streamInputTokens = openAIChunk.usage.prompt_tokens || streamInputTokens;
-                                streamOutputTokens = openAIChunk.usage.completion_tokens || streamOutputTokens;
-                                streamCacheHitTokens = extractCacheHitTokens(openAIChunk.usage) || streamCacheHitTokens;
-                            }
-
-                            for (const event of anthropicEvents) {
-                                if (res.destroyed) return;
-                                res.write(`event: ${event.type}\n`);
-                                res.write(`data: ${JSON.stringify(event)}\n\n`);
-                            }
-                        } catch (e) {
-                            logger.error('Failed to parse chunk:', e);
-                        }
-                    }
-                }
-            };
-
-            response.body.on('data', (chunk) => {
                 try {
-                    if (res.destroyed) return;
-
-                    buffer += chunk.toString('utf8');
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-
-                    processLines(lines);
-                } catch (error) {
-                    logger.error('Stream processing error:', error);
-                }
-            });
-
-            response.body.on('end', () => {
-                if (buffer.trim()) {
-                    try {
-                        processLines([buffer]);
-                    } catch (error) {
-                        logger.error('Failed to process remaining buffer:', error);
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed' && event.data?.response?.usage) {
+                            const chatUsage = convertResponsesUsageToChat(event.data.response.usage);
+                            streamInputTokens = chatUsage.prompt_tokens || 0;
+                            streamOutputTokens = chatUsage.completion_tokens || 0;
+                            streamCacheHitTokens = extractCacheHitTokens(chatUsage);
+                        }
+                        const anthropicEvents = responsesEventToAnthropicEvents(
+                            event.type, event.data, chatState, anthropicState
+                        );
+                        for (const ev of anthropicEvents) {
+                            if (res.destroyed) break;
+                            res.write(`event: ${ev.type}\n`);
+                            res.write(`data: ${JSON.stringify(ev)}\n\n`);
+                        }
                     }
-                    buffer = '';
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
                 }
-                // 记录用量
+
                 if (streamInputTokens > 0 || streamOutputTokens > 0) {
                     copilotStore.incrementApiCallCount();
                     copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
                     copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
                 } else {
                     copilotStore.incrementApiCallCount();
-                    const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                    const estimated = estimateMessageTokens(anthropicPayload.messages || []);
                     copilotStore.incrementTokenUsage(estimated, 0, 0);
                     copilotStore.recordDailyUsage(estimated, 0, 0);
                 }
-                if (!res.destroyed) {
-                    res.end();
-                }
-            });
-
-            response.body.on('error', (error) => {
-                logger.error('Stream error:', error);
-                if (!res.destroyed) {
-                    res.end();
-                }
-            });
-
-            res.on('close', () => {
-                if (response.body && !response.body.destroyed) {
-                    response.body.destroy();
-                }
-            });
-        } else {
-            const responseBody = await readBody(response.body);
-            const openAIResponse = JSON.parse(responseBody);
-            const anthropicResponse = openAIToAnthropic(openAIResponse);
-            const inputTokens = openAIResponse.usage?.prompt_tokens || 0;
-            const outputTokens = openAIResponse.usage?.completion_tokens || 0;
-            const cacheHitTokens = extractCacheHitTokens(openAIResponse.usage);
-            copilotStore.incrementApiCallCount();
-            if (inputTokens > 0 || outputTokens > 0) {
-                copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-                copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                if (!res.destroyed) res.end();
             } else {
-                const estimated = estimateMessageTokens(anthropicPayload.messages || []);
-                copilotStore.incrementTokenUsage(estimated, 0, 0);
-                copilotStore.recordDailyUsage(estimated, 0, 0);
+                let completedData = null;
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed') {
+                            completedData = event.data;
+                        }
+                    }
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
+                }
+
+                if (completedData?.response) {
+                    const chatResponse = responsesResponseToChat(completedData.response);
+                    const anthropicResponse = openAIToAnthropic(chatResponse);
+                    const inputTokens = chatResponse.usage?.prompt_tokens || 0;
+                    const outputTokens = chatResponse.usage?.completion_tokens || 0;
+                    const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
+                    copilotStore.incrementApiCallCount();
+                    if (inputTokens > 0 || outputTokens > 0) {
+                        copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                        copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                    } else {
+                        const estimated = estimateMessageTokens(anthropicPayload.messages || []);
+                        copilotStore.incrementTokenUsage(estimated, 0, 0);
+                        copilotStore.recordDailyUsage(estimated, 0, 0);
+                    }
+                    sendJson(res, 200, anthropicResponse);
+                } else {
+                    sendAnthropicError(res, 502, 'No response.completed event received from upstream');
+                }
             }
-            sendJson(res, 200, anthropicResponse);
+        } catch (wsError) {
+            if (res.headersSent) {
+                logger.warn(`Copilot Anthropic: WS stream failed after response started: ${wsError.message}`);
+                if (!res.destroyed && !res.writableEnded) {
+                    res.end();
+                }
+                return;
+            }
+
+            logger.warn(`Copilot Anthropic: WS failed, falling back to HTTP POST: ${wsError.message}`);
+
+            const openAIPayload = anthropicToOpenAI(anthropicPayload);
+            const response = await createChatCompletions(
+                authResult.copilotToken,
+                copilotState.vsCodeVersion,
+                openAIPayload,
+                copilotState.accountType,
+                proxyUrl
+            );
+
+            if (response.status >= 400) {
+                const errorBody = await readBody(response.body);
+                sendAnthropicError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
+                return;
+            }
+
+            if (anthropicPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const state = createStreamState();
+                let buffer = '';
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
+
+                const processLines = (lines) => {
+                    for (const line of lines) {
+                        if (res.destroyed) return;
+
+                        const trimmedLine = line.trim();
+                        if (trimmedLine.startsWith('data: ')) {
+                            const data = trimmedLine.slice(6);
+
+                            if (data === '[DONE]') {
+                                continue;
+                            }
+
+                            try {
+                                const openAIChunk = JSON.parse(data);
+                                const anthropicEvents = translateStreamChunk(openAIChunk, state);
+
+                                if (openAIChunk.usage) {
+                                    streamInputTokens = openAIChunk.usage.prompt_tokens || streamInputTokens;
+                                    streamOutputTokens = openAIChunk.usage.completion_tokens || streamOutputTokens;
+                                    streamCacheHitTokens = extractCacheHitTokens(openAIChunk.usage) || streamCacheHitTokens;
+                                }
+
+                                for (const event of anthropicEvents) {
+                                    if (res.destroyed) return;
+                                    res.write(`event: ${event.type}\n`);
+                                    res.write(`data: ${JSON.stringify(event)}\n\n`);
+                                }
+                            } catch (e) {
+                                logger.error('Failed to parse chunk:', e);
+                            }
+                        }
+                    }
+                };
+
+                response.body.on('data', (chunk) => {
+                    try {
+                        if (res.destroyed) return;
+
+                        buffer += chunk.toString('utf8');
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+
+                        processLines(lines);
+                    } catch (error) {
+                        logger.error('Stream processing error:', error);
+                    }
+                });
+
+                response.body.on('end', () => {
+                    if (buffer.trim()) {
+                        try {
+                            processLines([buffer]);
+                        } catch (error) {
+                            logger.error('Failed to process remaining buffer:', error);
+                        }
+                        buffer = '';
+                    }
+                    if (streamInputTokens > 0 || streamOutputTokens > 0) {
+                        copilotStore.incrementApiCallCount();
+                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                        copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    } else {
+                        copilotStore.incrementApiCallCount();
+                        const estimated = estimateMessageTokens(openAIPayload.messages || []);
+                        copilotStore.incrementTokenUsage(estimated, 0, 0);
+                        copilotStore.recordDailyUsage(estimated, 0, 0);
+                    }
+                    if (!res.destroyed) {
+                        res.end();
+                    }
+                });
+
+                response.body.on('error', (error) => {
+                    logger.error('Stream error (fallback):', error);
+                    if (!res.destroyed) {
+                        res.end();
+                    }
+                });
+
+                res.on('close', () => {
+                    if (response.body && !response.body.destroyed) {
+                        response.body.destroy();
+                    }
+                });
+            } else {
+                const responseBody = await readBody(response.body);
+                const openAIResponse = JSON.parse(responseBody);
+                const anthropicResponse = openAIToAnthropic(openAIResponse);
+                const inputTokens = openAIResponse.usage?.prompt_tokens || 0;
+                const outputTokens = openAIResponse.usage?.completion_tokens || 0;
+                const cacheHitTokens = extractCacheHitTokens(openAIResponse.usage);
+                copilotStore.incrementApiCallCount();
+                if (inputTokens > 0 || outputTokens > 0) {
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                } else {
+                    const estimated = estimateMessageTokens(anthropicPayload.messages || []);
+                    copilotStore.incrementTokenUsage(estimated, 0, 0);
+                    copilotStore.recordDailyUsage(estimated, 0, 0);
+                }
+                sendJson(res, 200, anthropicResponse);
+            }
         }
     } catch (error) {
         logger.error('Copilot: Failed to handle Anthropic messages:', error);
@@ -541,102 +839,203 @@ async function handleResponsesAPI(req, res) {
         const body = await parseBody(req);
         const responsesReq = JSON.parse(body);
 
-        // Responses -> Chat Completions
-        const chatReq = responsesRequestToChat(responsesReq);
+        logger.info(`Copilot Responses request - model: ${responsesReq.model}, stream: ${responsesReq.stream}`);
 
-        const response = await createChatCompletions(
-            authResult.copilotToken,
-            copilotState.vsCodeVersion,
-            chatReq,
-            copilotState.accountType,
-            proxyUrl
-        );
+        const conversationKey = extractConversationKey(req, responsesReq);
 
-        if (response.status >= 400) {
-            const errorBody = await readBody(response.body);
-            sendOpenAIError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
-            return;
+        // 净化 input：去除上游 WS 无法解析的 id 引用（CherryStudio 续接对话时带入的 output item id）
+        if (Array.isArray(responsesReq.input)) {
+            responsesReq.input = sanitizeResponsesInput(responsesReq.input);
         }
 
-        if (responsesReq.stream) {
-            res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive'
-            });
+        // WS 通道：直接发送 Responses 格式
+        try {
+            ensureResponsesWebSocketSupported(responsesReq.model);
+            const wsResult = await createResponsesWS(
+                authResult.copilotToken,
+                copilotState.vsCodeVersion,
+                responsesReq,
+                copilotState.accountType,
+                proxyUrl,
+                {contextKey: conversationKey}
+            );
 
-            const streamState = createResponsesStreamState();
-            let buffer = Buffer.alloc(0);
-            let streamInputTokens = 0;
-            let streamOutputTokens = 0;
-            let streamCacheHitTokens = 0;
-            let streamModel = '';
+            if (responsesReq.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
 
-            response.body.on('data', (chunk) => {
-                buffer = Buffer.concat([buffer, chunk]);
-                let start = 0;
-                let newLineIndex;
-                while ((newLineIndex = buffer.indexOf(10, start)) !== -1) {
-                    const line = buffer.toString('utf8', start, newLineIndex).trim();
-                    start = newLineIndex + 1;
-                    if (!line || line.startsWith(':')) continue;
-                    if (!line.startsWith('data: ')) continue;
-                    const raw = line.slice(6).trim();
-                    if (raw === '[DONE]') continue;
+                const chatState = createChatCompletionsStreamState();
+                const responsesState = createResponsesStreamState();
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
 
-                    let data;
-                    try { data = JSON.parse(raw); } catch { continue; }
-
-                    if (data.usage) {
-                        streamInputTokens = data.usage.prompt_tokens || 0;
-                        streamOutputTokens = data.usage.completion_tokens || 0;
-                        streamCacheHitTokens = extractCacheHitTokens(data.usage);
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed' && event.data?.response?.usage) {
+                            const chatUsage = convertResponsesUsageToChat(event.data.response.usage);
+                            streamInputTokens = chatUsage.prompt_tokens || 0;
+                            streamOutputTokens = chatUsage.completion_tokens || 0;
+                            streamCacheHitTokens = extractCacheHitTokens(chatUsage);
+                        }
+                        const responseEvents = responsesEventToResponsesEvents(event.type, event.data, chatState, responsesState);
+                        for (const ev of responseEvents) {
+                            res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+                        }
                     }
-                    if (data.model) streamModel = data.model;
-
-                    const events = chatChunkToResponsesEvents(data, streamState);
-                    for (const ev of events) {
-                        res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
-                    }
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
                 }
-                if (start > 0) buffer = buffer.subarray(start);
-            });
 
-            response.body.on('end', () => {
-                if (!streamState.started || !streamState.finished) {
-                    if (streamState.reasoningOpen) {
-                        res.write(`event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`);
-                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'reasoning', id: streamState.reasoningItemId, status: 'completed', summary: [{type: 'summary_text', text: streamState.reasoningText}]}})}\n\n`);
-                        streamState.outputIndex++;
-                    }
-                    if (streamState.messageOpen) {
-                        res.write(`event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`);
-                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]}})}\n\n`);
-                    }
-                    res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: [], usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
-                }
                 copilotStore.incrementApiCallCount();
                 copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
                 copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
                 res.end();
-            });
+            } else {
+                let completedData = null;
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed') {
+                            completedData = event.data;
+                        }
+                    }
+                    releaseWSConnection(wsResult.conn);
+                } catch (err) {
+                    discardWSConnection(wsResult.conn);
+                    throw err;
+                }
 
-            response.body.on('error', (err) => {
-                logger.error('Responses stream error:', err);
-                res.end();
-            });
-        } else {
-            const responseBody = await readBody(response.body);
-            const chatResponse = JSON.parse(responseBody);
+                if (completedData?.response) {
+                    const usage = completedData.response.usage || {};
+                    const chatUsage = convertResponsesUsageToChat(usage);
+                    const inputTokens = chatUsage.prompt_tokens || 0;
+                    const outputTokens = chatUsage.completion_tokens || 0;
+                    const cacheHitTokens = extractCacheHitTokens(chatUsage);
+                    copilotStore.incrementApiCallCount();
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+                    sendJson(res, 200, completedData.response);
+                } else {
+                    sendOpenAIError(res, 502, 'No response.completed event received from upstream');
+                }
+            }
+        } catch (wsError) {
+            if (isResponsesProtocolError(wsError)) {
+                logger.warn(`Copilot Responses: WS protocol error: ${wsError.message}`);
+                sendResponsesProtocolError(res, wsError);
+                return;
+            }
 
-            const inputTokens = chatResponse.usage?.prompt_tokens || 0;
-            const outputTokens = chatResponse.usage?.completion_tokens || 0;
-            const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
-            copilotStore.incrementApiCallCount();
-            copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-            copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+            if (res.headersSent) {
+                logger.warn(`Copilot Responses: WS stream failed after response started: ${wsError.message}`);
+                if (!res.destroyed && !res.writableEnded) {
+                    res.end();
+                }
+                return;
+            }
 
-            sendJson(res, 200, chatResponseToResponses(chatResponse));
+            logger.warn(`Copilot Responses: WS failed, falling back to HTTP POST: ${wsError.message}`);
+
+            const chatReq = responsesRequestToChat(responsesReq);
+            const response = await createChatCompletions(
+                authResult.copilotToken,
+                copilotState.vsCodeVersion,
+                chatReq,
+                copilotState.accountType,
+                proxyUrl
+            );
+
+            if (response.status >= 400) {
+                const errorBody = await readBody(response.body);
+                sendOpenAIError(res, response.status, `Upstream error: ${errorBody.slice(0, 500)}`);
+                return;
+            }
+
+            if (responsesReq.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const streamState = createResponsesStreamState();
+                let buffer = Buffer.alloc(0);
+                let streamInputTokens = 0;
+                let streamOutputTokens = 0;
+                let streamCacheHitTokens = 0;
+                let streamModel = '';
+
+                response.body.on('data', (chunk) => {
+                    buffer = Buffer.concat([buffer, chunk]);
+                    let start = 0;
+                    let newLineIndex;
+                    while ((newLineIndex = buffer.indexOf(10, start)) !== -1) {
+                        const line = buffer.toString('utf8', start, newLineIndex).trim();
+                        start = newLineIndex + 1;
+                        if (!line || line.startsWith(':')) continue;
+                        if (!line.startsWith('data: ')) continue;
+                        const raw = line.slice(6).trim();
+                        if (raw === '[DONE]') continue;
+
+                        let data;
+                        try { data = JSON.parse(raw); } catch { continue; }
+
+                        if (data.usage) {
+                            streamInputTokens = data.usage.prompt_tokens || 0;
+                            streamOutputTokens = data.usage.completion_tokens || 0;
+                            streamCacheHitTokens = extractCacheHitTokens(data.usage);
+                        }
+                        if (data.model) streamModel = data.model;
+
+                        const events = chatChunkToResponsesEvents(data, streamState);
+                        for (const ev of events) {
+                            res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+                        }
+                    }
+                    if (start > 0) buffer = buffer.subarray(start);
+                });
+
+                response.body.on('end', () => {
+                    if (!streamState.started || !streamState.finished) {
+                        if (streamState.reasoningOpen) {
+                            res.write(`event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`);
+                            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'reasoning', id: streamState.reasoningItemId}})}\n\n`);
+                            streamState.outputIndex++;
+                        }
+                        if (streamState.messageOpen) {
+                            res.write(`event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`);
+                            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]}})}\n\n`);
+                        }
+                        res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: [], usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
+                    }
+                    copilotStore.incrementApiCallCount();
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    res.end();
+                });
+
+                response.body.on('error', (err) => {
+                    logger.error('Responses stream error (fallback):', err);
+                    res.end();
+                });
+            } else {
+                const responseBody = await readBody(response.body);
+                const chatResponse = JSON.parse(responseBody);
+
+                const inputTokens = chatResponse.usage?.prompt_tokens || 0;
+                const outputTokens = chatResponse.usage?.completion_tokens || 0;
+                const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
+                copilotStore.incrementApiCallCount();
+                copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens);
+
+                sendJson(res, 200, chatResponseToResponses(chatResponse));
+            }
         }
     } catch (error) {
         logger.error('Copilot: Failed to handle Responses API:', error);
