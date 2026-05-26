@@ -41,6 +41,7 @@ class CopilotStore {
 
         // Proxy config
         this.proxy = null;
+        this.skipTlsVerify = false;
 
         this._init();
     }
@@ -238,32 +239,48 @@ class CopilotStore {
                 const data = JSON.parse(readFileSync(this.proxyFile, 'utf8'));
                 // 兼容旧格式（http_proxy/https_proxy）和新格式（proxy）
                 this.proxy = data.proxy || data.https_proxy || data.http_proxy || null;
+                this.skipTlsVerify = data.skip_tls_verify === true || data.skipTlsVerify === true || data.reject_unauthorized === false || data.rejectUnauthorized === false;
                 return;
             } catch {}
         }
         this.proxy = null;
+        this.skipTlsVerify = false;
         this._saveProxy();
     }
 
     _saveProxy() {
         writeFileSync(this.proxyFile, JSON.stringify({
             proxy: this.proxy,
+            skip_tls_verify: this.skipTlsVerify,
             updated_at: new Date().toISOString()
         }, null, 2), 'utf8');
     }
 
     getProxyConfig() {
-        return {proxy: this.proxy};
+        return {
+            proxy: this.proxy,
+            skip_tls_verify: this.skipTlsVerify
+        };
     }
 
     getProxyUrl() {
         return this.proxy || null;
     }
 
-    updateProxyConfig(proxy) {
-        this.proxy = proxy || null;
+    getRejectUnauthorized() {
+        return !this.skipTlsVerify;
+    }
+
+    updateProxyConfig(proxy, skipTlsVerify = false) {
+        const normalizedProxy = typeof proxy === 'string' && proxy.trim() ? proxy.trim() : null;
+        const normalizedSkipTlsVerify = skipTlsVerify === true;
+        const changed = this.proxy !== normalizedProxy || this.skipTlsVerify !== normalizedSkipTlsVerify;
+
+        this.proxy = normalizedProxy;
+        this.skipTlsVerify = normalizedSkipTlsVerify;
         this._saveProxy();
-        logger.info(`Proxy config updated: ${this.proxy}`);
+        logger.info(`Proxy config updated: ${this.proxy || 'direct'}, skip TLS verify: ${this.skipTlsVerify}`);
+        return changed;
     }
 
     // ==================== Credential Info (封装 copilotState) ====================

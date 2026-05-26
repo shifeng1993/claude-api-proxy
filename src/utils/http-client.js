@@ -63,8 +63,21 @@ const globalAgents = {
 
 const proxyAgentCache = new Map();
 
-function getProxyAgent(proxyUrl, isHttps) {
-    const cacheKey = `${proxyUrl}:${isHttps ? 'https' : 'http'}`;
+function describeProxyUrl(proxyUrl) {
+    try {
+        const parsed = new URL(proxyUrl);
+        if (parsed.username || parsed.password) {
+            parsed.username = '***';
+            parsed.password = '***';
+        }
+        return parsed.toString();
+    } catch {
+        return proxyUrl;
+    }
+}
+
+function getProxyAgent(proxyUrl, isHttps, rejectUnauthorized) {
+    const cacheKey = `${proxyUrl}:${isHttps ? 'https' : 'http'}:${rejectUnauthorized === false ? 'tls-skip' : 'tls-verify'}`;
 
     if (proxyAgentCache.has(cacheKey)) {
         return proxyAgentCache.get(cacheKey);
@@ -72,10 +85,11 @@ function getProxyAgent(proxyUrl, isHttps) {
 
     let agent;
     try {
+        const agentOptions = {rejectUnauthorized};
         if (proxyUrl.startsWith('socks')) {
-            agent = new SocksProxyAgent(proxyUrl);
+            agent = new SocksProxyAgent(proxyUrl, agentOptions);
         } else {
-            agent = new HttpsProxyAgent(proxyUrl);
+            agent = new HttpsProxyAgent(proxyUrl, agentOptions);
         }
 
         agent.maxSockets = POOL_CONFIG.maxSockets;
@@ -97,6 +111,7 @@ function getProxyAgent(proxyUrl, isHttps) {
  * @param {object} options.headers - 请求头
  * @param {string} [options.body] - 请求体
  * @param {number} [options.timeout] - 请求超时时间（毫秒），默认 120000
+ * @param {boolean} [options.rejectUnauthorized] - 是否校验 TLS 证书
  * @returns {Promise<{status: number, headers: object, body: import('stream').Readable}>}
  */
 export function request(url, options = {}) {
@@ -115,13 +130,21 @@ export function request(url, options = {}) {
 
         const headers = {...options.headers};
 
+        const rejectUnauthorized = typeof options.rejectUnauthorized === 'boolean'
+            ? options.rejectUnauthorized
+            : process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0';
+
         let agent;
         if (options.agent) {
             agent = options.agent;
         } else {
             const proxyUrl = options.proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
             if (proxyUrl) {
-                agent = getProxyAgent(proxyUrl, isHttps);
+                agent = getProxyAgent(proxyUrl, isHttps, rejectUnauthorized);
+                if (!agent) {
+                    reject(new Error(`Invalid proxy config: ${describeProxyUrl(proxyUrl)}`));
+                    return;
+                }
             } else {
                 agent = isHttps ? globalAgents.https : globalAgents.http;
             }
@@ -147,12 +170,19 @@ export function request(url, options = {}) {
             method: options.method || 'GET',
             headers,
             agent: agent || undefined,
-            rejectUnauthorized: 'rejectUnauthorized' in options
-                ? options.rejectUnauthorized
-                : process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0'
+            rejectUnauthorized
+        };
+
+        let hardTimeout = null;
+        const clearHardTimeout = () => {
+            if (hardTimeout) {
+                clearTimeout(hardTimeout);
+                hardTimeout = null;
+            }
         };
 
         const req = protocol.request(requestOptions, (res) => {
+            clearHardTimeout();
             let responseBody = res;
             const contentEncodingKey = Object.keys(res.headers).find((key) => key.toLowerCase() === 'content-encoding');
             const encoding = contentEncodingKey ? res.headers[contentEncodingKey] : null;
@@ -194,12 +224,19 @@ export function request(url, options = {}) {
         const done = (err) => {
             if (!isDone) {
                 isDone = true;
+                clearHardTimeout();
                 const wrapped = err instanceof UpstreamNetworkError
                     ? err
                     : new UpstreamNetworkError(err.message, err.code || err.errno);
                 reject(wrapped);
             }
         };
+
+        hardTimeout = setTimeout(() => {
+            logger.error(`请求硬超时 (${requestTimeout}ms): ${url}`);
+            req.destroy();
+            done(new UpstreamNetworkError(`Request timeout after ${requestTimeout}ms`, 'ETIMEDOUT'));
+        }, requestTimeout);
 
         req.setTimeout(requestTimeout, () => {
             logger.error(`请求超时 (${requestTimeout}ms): ${url}`);
@@ -252,15 +289,44 @@ export function request(url, options = {}) {
 /**
  * 读取响应体为字符串
  */
-export function readBody(stream) {
+export function readBody(stream, timeout = 120000) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        stream.on('data', (chunk) => chunks.push(chunk));
-        stream.on('end', () => {
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            stream.off('data', onData);
+            stream.off('end', onEnd);
+            stream.off('error', onError);
+        };
+        const done = (err, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            if (err) reject(err);
+            else resolve(value);
+        };
+        const onData = (chunk) => chunks.push(chunk);
+        const onEnd = () => {
             const buffer = Buffer.concat(chunks);
-            resolve(buffer.toString('utf8'));
-        });
-        stream.on('error', reject);
+            done(null, buffer.toString('utf8'));
+        };
+        const onError = (err) => done(err);
+
+        if (timeout > 0) {
+            timer = setTimeout(() => {
+                const err = new UpstreamNetworkError(`Response body timeout after ${timeout}ms`, 'ETIMEDOUT');
+                stream.once('error', () => {});
+                if (typeof stream.destroy === 'function') stream.destroy(err);
+                done(err);
+            }, timeout);
+        }
+
+        stream.on('data', onData);
+        stream.on('end', onEnd);
+        stream.on('error', onError);
     });
 }
 

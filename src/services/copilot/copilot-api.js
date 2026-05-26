@@ -15,17 +15,28 @@ import {acquire, release, discard, sendRequest} from './copilot-ws-pool.js';
 
 const proxyAgentCache = new Map();
 
-function createProxyAgent(proxyUrl) {
+function requestNetworkOptions(proxyUrl, networkOptions = {}) {
+    const options = {};
+    if (proxyUrl) options.proxyUrl = proxyUrl;
+    if (typeof networkOptions.rejectUnauthorized === 'boolean') {
+        options.rejectUnauthorized = networkOptions.rejectUnauthorized;
+    }
+    return options;
+}
+
+function createProxyAgent(proxyUrl, rejectUnauthorized = true) {
     if (!proxyUrl) return undefined;
-    if (proxyAgentCache.has(proxyUrl)) return proxyAgentCache.get(proxyUrl);
+    const cacheKey = `${proxyUrl}:${rejectUnauthorized === false ? 'tls-skip' : 'tls-verify'}`;
+    if (proxyAgentCache.has(cacheKey)) return proxyAgentCache.get(cacheKey);
     let agent;
     try {
+        const agentOptions = {rejectUnauthorized};
         if (proxyUrl.startsWith('socks')) {
-            agent = new SocksProxyAgent(proxyUrl);
+            agent = new SocksProxyAgent(proxyUrl, agentOptions);
         } else {
-            agent = new HttpsProxyAgent(proxyUrl);
+            agent = new HttpsProxyAgent(proxyUrl, agentOptions);
         }
-        proxyAgentCache.set(proxyUrl, agent);
+        proxyAgentCache.set(cacheKey, agent);
         return agent;
     } catch (err) {
         logger.warn(`Copilot: 代理配置失败: ${err.message}`);
@@ -39,16 +50,16 @@ function createProxyAgent(proxyUrl) {
  * @param {string} vsCodeVersion - VS Code 版本
  * @param {string} accountType - 账户类型
  * @param {string} [proxyUrl] - 代理地址
+ * @param {object} [networkOptions] - 网络选项
  * @returns {Promise<object>}
  */
-export async function getModels(copilotToken, vsCodeVersion, accountType = 'individual', proxyUrl) {
+export async function getModels(copilotToken, vsCodeVersion, accountType = 'individual', proxyUrl, networkOptions = {}) {
     const baseUrl = getCopilotBaseUrl(accountType);
     const options = {
         method: 'GET',
-        headers: copilotHeaders(copilotToken, vsCodeVersion)
+        headers: copilotHeaders(copilotToken, vsCodeVersion),
+        ...requestNetworkOptions(proxyUrl, networkOptions)
     };
-    const agent = createProxyAgent(proxyUrl);
-    if (agent) options.agent = agent;
 
     const response = await request(`${baseUrl}/models`, options);
 
@@ -67,9 +78,10 @@ export async function getModels(copilotToken, vsCodeVersion, accountType = 'indi
  * @param {object} payload - 请求负载
  * @param {string} accountType - 账户类型
  * @param {string} [proxyUrl] - 代理地址
+ * @param {object} [networkOptions] - 网络选项
  * @returns {Promise<{body: ReadableStream, headers: object, status: number}>}
  */
-export async function createChatCompletions(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl) {
+export async function createChatCompletions(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl, networkOptions = {}) {
     const baseUrl = getCopilotBaseUrl(accountType);
 
     // 检查是否启用 vision
@@ -91,10 +103,9 @@ export async function createChatCompletions(copilotToken, vsCodeVersion, payload
     const options = {
         method: 'POST',
         headers,
-        body: JSON.stringify(normalizePayload(payload, {source: 'copilot', upstream: baseUrl}))
+        body: JSON.stringify(normalizePayload(payload, {source: 'copilot', upstream: baseUrl})),
+        ...requestNetworkOptions(proxyUrl, networkOptions)
     };
-    const agent = createProxyAgent(proxyUrl);
-    if (agent) options.agent = agent;
 
     const response = await request(`${baseUrl}/chat/completions`, options);
 
@@ -115,16 +126,15 @@ export async function createChatCompletions(copilotToken, vsCodeVersion, payload
  * @param {string} accountType - 账户类型
  * @returns {Promise<object>}
  */
-export async function createEmbeddings(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl) {
+export async function createEmbeddings(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl, networkOptions = {}) {
     const baseUrl = getCopilotBaseUrl(accountType);
 
     const options = {
         method: 'POST',
         headers: copilotHeaders(copilotToken, vsCodeVersion),
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        ...requestNetworkOptions(proxyUrl, networkOptions)
     };
-    const agent = createProxyAgent(proxyUrl);
-    if (agent) options.agent = agent;
 
     const response = await request(`${baseUrl}/embeddings`, options);
 
@@ -139,16 +149,18 @@ export async function createEmbeddings(copilotToken, vsCodeVersion, payload, acc
 }
 
 export async function createResponsesWS(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl, options = {}) {
-    const agent = createProxyAgent(proxyUrl);
+    const rejectUnauthorized = options.rejectUnauthorized !== false;
+    const agent = createProxyAgent(proxyUrl, rejectUnauthorized);
+    const networkKey = `${proxyUrl || 'direct'}:${rejectUnauthorized ? 'tls-verify' : 'tls-skip'}`;
     const conn = await acquire(
         copilotToken,
         vsCodeVersion,
         accountType,
         agent,
-        true,
+        rejectUnauthorized,
         options.contextKey,
         payload.previous_response_id,
-        proxyUrl
+        networkKey
     );
     const eventStream = sendRequest(conn, payload);
     return {eventStream, conn};

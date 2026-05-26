@@ -41,7 +41,9 @@ function initializeCopilot() {
         (async () => {
             try {
                 const proxyUrl = copilotStore.getProxyUrl();
-                await refreshCopilotToken(proxyUrl);
+                await refreshCopilotToken(proxyUrl, {
+                    rejectUnauthorized: copilotStore.getRejectUnauthorized()
+                });
             } catch (error) {
                 logger.warn('Failed to refresh Copilot token:', error.message);
             }

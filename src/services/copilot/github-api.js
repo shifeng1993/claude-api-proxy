@@ -4,8 +4,6 @@
  */
 
 import { request, readBody } from '../../utils/http-client.js';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { SocksProxyAgent } from 'socks-proxy-agent';
 import {
     GITHUB_API_BASE_URL,
     GITHUB_BASE_URL,
@@ -14,38 +12,31 @@ import {
     githubHeaders,
     standardHeaders
 } from './config.js';
-import logger from '../../utils/logger.js';
 
-// ==================== 代理 Agent 缓存 ====================
-
-const proxyAgentCache = new Map();
-
-function createProxyAgent(proxyUrl) {
-    if (!proxyUrl) return undefined;
-    if (proxyAgentCache.has(proxyUrl)) return proxyAgentCache.get(proxyUrl);
-    let agent;
-    try {
-        if (proxyUrl.startsWith('socks')) {
-            agent = new SocksProxyAgent(proxyUrl);
-        } else {
-            agent = new HttpsProxyAgent(proxyUrl);
-        }
-        proxyAgentCache.set(proxyUrl, agent);
-        return agent;
-    } catch (err) {
-        logger.warn(`GitHub API: 代理配置失败: ${err.message}`);
-        return undefined;
+function applyNetworkOptions(options, proxyUrl, networkOptions = {}) {
+    if (proxyUrl) options.proxyUrl = proxyUrl;
+    if (typeof networkOptions.rejectUnauthorized === 'boolean') {
+        options.rejectUnauthorized = networkOptions.rejectUnauthorized;
     }
+    if (typeof networkOptions.timeout === 'number' && networkOptions.timeout > 0) {
+        options.timeout = networkOptions.timeout;
+    }
+    return options;
 }
 
 /**
  * 获取设备代码
  * @param {string} [proxyUrl] - 代理地址
  * @param {number} [timeout=30000] - 请求超时（毫秒），默认 30s
+ * @param {object} [networkOptions] - 网络选项
+ * @param {boolean} [networkOptions.rejectUnauthorized] - 是否校验 TLS 证书
  * @returns {Promise<{device_code: string, user_code: string, verification_uri: string, expires_in: number, interval: number}>}
  */
-export async function getDeviceCode(proxyUrl, timeout = 30000) {
-    const options = {
+export async function getDeviceCode(proxyUrl, timeout = 30000, networkOptions = {}) {
+    const requestTimeout = typeof networkOptions.timeout === 'number' && networkOptions.timeout > 0
+        ? networkOptions.timeout
+        : timeout;
+    const options = applyNetworkOptions({
         method: 'POST',
         headers: {
             ...standardHeaders(),
@@ -55,9 +46,8 @@ export async function getDeviceCode(proxyUrl, timeout = 30000) {
             client_id: GITHUB_CLIENT_ID,
             scope: GITHUB_APP_SCOPES
         }),
-        timeout,
-        proxyUrl
-    };
+        timeout: requestTimeout
+    }, proxyUrl, networkOptions);
 
     const response = await request(`${GITHUB_BASE_URL}/login/device/code`, options);
 
@@ -65,7 +55,7 @@ export async function getDeviceCode(proxyUrl, timeout = 30000) {
         throw new Error(`Failed to get device code: ${response.status}`);
     }
 
-    const body = await readBody(response.body);
+    const body = await readBody(response.body, requestTimeout);
     return JSON.parse(body);
 }
 
@@ -124,14 +114,17 @@ export async function pollAccessToken(deviceCode, interval = 5, expiresIn = 900)
  * @param {string} vsCodeVersion - VS Code 版本
  * @returns {Promise<{login: string, id: number, avatar_url: string}>}
  */
-export async function getUser(githubToken, vsCodeVersion, proxyUrl) {
-    const response = await request(`${GITHUB_API_BASE_URL}/user`, {
+export async function getUser(githubToken, vsCodeVersion, proxyUrl, networkOptions = {}) {
+    const timeout = typeof networkOptions.timeout === 'number' && networkOptions.timeout > 0
+        ? networkOptions.timeout
+        : 30000;
+    const response = await request(`${GITHUB_API_BASE_URL}/user`, applyNetworkOptions({
         method: 'GET',
         headers: githubHeaders(githubToken, vsCodeVersion),
-        proxyUrl
-    });
+        timeout
+    }, proxyUrl, networkOptions));
 
-    const body = await readBody(response.body);
+    const body = await readBody(response.body, timeout);
     
     if (response.status !== 200) {
         let errorMessage = `Failed to get user: ${response.status}`;
@@ -156,13 +149,15 @@ export async function getUser(githubToken, vsCodeVersion, proxyUrl) {
  * @param {string} [proxyUrl] - 代理地址
  * @returns {Promise<{token: string, expires_at: number, refresh_in: number}>}
  */
-export async function getCopilotToken(githubToken, vsCodeVersion, proxyUrl) {
-    const options = {
+export async function getCopilotToken(githubToken, vsCodeVersion, proxyUrl, networkOptions = {}) {
+    const timeout = typeof networkOptions.timeout === 'number' && networkOptions.timeout > 0
+        ? networkOptions.timeout
+        : 30000;
+    const options = applyNetworkOptions({
         method: 'GET',
-        headers: githubHeaders(githubToken, vsCodeVersion)
-    };
-    const agent = createProxyAgent(proxyUrl);
-    if (agent) options.agent = agent;
+        headers: githubHeaders(githubToken, vsCodeVersion),
+        timeout
+    }, proxyUrl, networkOptions);
 
     const response = await request(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, options);
 
@@ -170,7 +165,7 @@ export async function getCopilotToken(githubToken, vsCodeVersion, proxyUrl) {
         throw new Error(`Failed to get Copilot token: ${response.status}`);
     }
 
-    const body = await readBody(response.body);
+    const body = await readBody(response.body, timeout);
     return JSON.parse(body);
 }
 

@@ -65,6 +65,13 @@ function extractProxyFromHeaders(req) {
     return undefined;
 }
 
+function getCopilotNetworkOptions(req) {
+    return {
+        proxyUrl: extractProxyFromHeaders(req),
+        rejectUnauthorized: copilotStore.getRejectUnauthorized()
+    };
+}
+
 function normalizeConversationKey(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -195,7 +202,7 @@ async function parseBody(req) {
 
 /* ==================== 鉴权 ==================== */
 
-async function authenticateAndGetToken(req) {
+async function authenticateAndGetToken(req, networkOptions = {}) {
     // API Key 鉴权
     if (!authenticateRequest(req)) {
         return {error: {status: 401, message: 'Invalid API Key. Check your API key or visit /copilotFE.'}};
@@ -207,8 +214,8 @@ async function authenticateAndGetToken(req) {
     }
 
     try {
-        const proxyUrl = copilotStore.getProxyUrl();
-        const copilotToken = await ensureCopilotToken(proxyUrl);
+        const proxyUrl = 'proxyUrl' in networkOptions ? networkOptions.proxyUrl : copilotStore.getProxyUrl();
+        const copilotToken = await ensureCopilotToken(proxyUrl, networkOptions);
         return {copilotToken};
     } catch (error) {
         return {error: {status: 503, message: error.message}};
@@ -222,8 +229,9 @@ async function authenticateAndGetToken(req) {
  */
 async function handleOpenAIChatCompletions(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -252,7 +260,7 @@ async function handleOpenAIChatCompletions(req, res) {
                 responsesReq,
                 copilotState.accountType,
                 proxyUrl,
-                {contextKey: conversationKey}
+                {contextKey: conversationKey, rejectUnauthorized: networkOptions.rejectUnauthorized}
             );
 
             if (openAIPayload.stream) {
@@ -341,7 +349,8 @@ async function handleOpenAIChatCompletions(req, res) {
                 copilotState.vsCodeVersion,
                 openAIPayload,
                 copilotState.accountType,
-                proxyUrl
+                proxyUrl,
+                networkOptions
             );
 
             if (response.status >= 400) {
@@ -445,8 +454,9 @@ async function handleOpenAIChatCompletions(req, res) {
  */
 async function handleOpenAIModels(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -456,7 +466,8 @@ async function handleOpenAIModels(req, res) {
             authResult.copilotToken,
             copilotState.vsCodeVersion,
             copilotState.accountType,
-            proxyUrl
+            proxyUrl,
+            networkOptions
         );
 
         sendJson(res, 200, {
@@ -481,8 +492,9 @@ async function handleOpenAIModels(req, res) {
  */
 async function handleAnthropicMessages(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -505,7 +517,7 @@ async function handleAnthropicMessages(req, res) {
                 responsesReq,
                 copilotState.accountType,
                 proxyUrl,
-                {contextKey: conversationKey}
+                {contextKey: conversationKey, rejectUnauthorized: networkOptions.rejectUnauthorized}
             );
 
             if (anthropicPayload.stream) {
@@ -606,7 +618,8 @@ async function handleAnthropicMessages(req, res) {
                 copilotState.vsCodeVersion,
                 openAIPayload,
                 copilotState.accountType,
-                proxyUrl
+                proxyUrl,
+                networkOptions
             );
 
             if (response.status >= 400) {
@@ -742,8 +755,8 @@ async function handleAnthropicMessages(req, res) {
  */
 async function handleAnthropicCountTokens(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -791,8 +804,9 @@ async function handleAnthropicCountTokens(req, res) {
  */
 async function handleAnthropicModels(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -802,7 +816,8 @@ async function handleAnthropicModels(req, res) {
             authResult.copilotToken,
             copilotState.vsCodeVersion,
             copilotState.accountType,
-            proxyUrl
+            proxyUrl,
+            networkOptions
         );
 
         sendJson(res, 200, {
@@ -829,8 +844,9 @@ async function handleAnthropicModels(req, res) {
  */
 async function handleResponsesAPI(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -857,7 +873,7 @@ async function handleResponsesAPI(req, res) {
                 responsesReq,
                 copilotState.accountType,
                 proxyUrl,
-                {contextKey: conversationKey}
+                {contextKey: conversationKey, rejectUnauthorized: networkOptions.rejectUnauthorized}
             );
 
             if (responsesReq.stream) {
@@ -947,7 +963,8 @@ async function handleResponsesAPI(req, res) {
                 copilotState.vsCodeVersion,
                 chatReq,
                 copilotState.accountType,
-                proxyUrl
+                proxyUrl,
+                networkOptions
             );
 
             if (response.status >= 400) {
@@ -1054,8 +1071,9 @@ async function handleResponsesAPI(req, res) {
  */
 async function handleResponsesCompact(req, res) {
     try {
-        const proxyUrl = extractProxyFromHeaders(req);
-        const authResult = await authenticateAndGetToken(req);
+        const networkOptions = getCopilotNetworkOptions(req);
+        const proxyUrl = networkOptions.proxyUrl;
+        const authResult = await authenticateAndGetToken(req, networkOptions);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -1072,7 +1090,8 @@ async function handleResponsesCompact(req, res) {
             copilotState.vsCodeVersion,
             chatReq,
             copilotState.accountType,
-            proxyUrl
+            proxyUrl,
+            networkOptions
         );
 
         if (response.status >= 400) {

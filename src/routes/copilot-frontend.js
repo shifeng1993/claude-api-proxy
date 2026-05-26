@@ -10,10 +10,12 @@ import {fileURLToPath} from 'url';
 import logger from '../utils/logger.js';
 import {copilotStore} from '../services/copilot/copilot-store.js';
 import {startDeviceAuth, pollDeviceAuth, clearAuthentication, isAuthenticated} from '../services/copilot/auth.js';
+import {shutdown as shutdownCopilotWsPool} from '../services/copilot/copilot-ws-pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const templatesDir = join(__dirname, '..', 'templates');
+const GITHUB_AUTH_TIMEOUT = 20000;
 
 function readTemplate(name) {
     return readFileSync(join(templatesDir, name), 'utf8');
@@ -28,6 +30,38 @@ async function readRequestBody(req) {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     return Buffer.concat(chunks).toString('utf8');
+}
+
+function maskProxyUrl(proxyUrl) {
+    if (!proxyUrl) return 'direct';
+    try {
+        const parsed = new URL(proxyUrl);
+        if (parsed.username || parsed.password) {
+            parsed.username = '***';
+            parsed.password = '***';
+        }
+        return parsed.toString();
+    } catch {
+        return proxyUrl;
+    }
+}
+
+function getGithubAuthNetworkOptions() {
+    return {
+        proxyUrl: copilotStore.getProxyUrl(),
+        rejectUnauthorized: copilotStore.getRejectUnauthorized(),
+        timeout: GITHUB_AUTH_TIMEOUT
+    };
+}
+
+function withTimeout(promise, timeout, message) {
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeout);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
 }
 
 /**
@@ -46,7 +80,8 @@ function handleStatus(req, res) {
         apiKeyPrefix: apiInfo.prefix,
         apiKeyPlain: apiInfo.apiKeyPlain,
         usage,
-        proxy: proxyConfig.proxy || ''
+        proxy: proxyConfig.proxy || '',
+        skip_tls_verify: proxyConfig.skip_tls_verify === true
     });
 }
 
@@ -55,8 +90,13 @@ function handleStatus(req, res) {
  */
 async function handleAuthStart(req, res) {
     try {
-        const proxyUrl = copilotStore.getProxyUrl();
-        const deviceData = await startDeviceAuth(proxyUrl);
+        const networkOptions = getGithubAuthNetworkOptions();
+        logger.info(`Starting GitHub device auth via ${maskProxyUrl(networkOptions.proxyUrl)}, skip TLS verify: ${!networkOptions.rejectUnauthorized}`);
+        const deviceData = await withTimeout(
+            startDeviceAuth(networkOptions.proxyUrl, networkOptions),
+            GITHUB_AUTH_TIMEOUT + 2000,
+            'GitHub 认证请求超时，请检查代理配置'
+        );
         sendJson(res, 200, {
             success: true,
             device_code: deviceData.device_code,
@@ -84,7 +124,12 @@ async function handleAuthPoll(req, res) {
             return sendJson(res, 400, {error: 'missing device_code'});
         }
 
-        const result = await pollDeviceAuth(device_code, copilotStore.getProxyUrl());
+        const networkOptions = getGithubAuthNetworkOptions();
+        const result = await withTimeout(
+            pollDeviceAuth(device_code, networkOptions.proxyUrl, networkOptions),
+            GITHUB_AUTH_TIMEOUT + 2000,
+            'GitHub 授权轮询超时，请检查代理配置'
+        );
         sendJson(res, 200, {
             status: 'success',
             message: '认证成功！',
@@ -182,7 +227,9 @@ async function handleProxyUpdate(req, res) {
         const data = JSON.parse(body);
         // 兼容旧格式和新格式
         const proxy = data.proxy || data.https_proxy || data.http_proxy || '';
-        copilotStore.updateProxyConfig(proxy);
+        const skipTlsVerify = data.skip_tls_verify === true || data.skipTlsVerify === true || data.reject_unauthorized === false || data.rejectUnauthorized === false;
+        const changed = copilotStore.updateProxyConfig(proxy, skipTlsVerify);
+        if (changed) shutdownCopilotWsPool();
         sendJson(res, 200, {message: '代理配置已更新', ...copilotStore.getProxyConfig()});
     } catch (error) {
         sendJson(res, 500, {error: error.message});
