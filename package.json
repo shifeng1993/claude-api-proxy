@@ -7,7 +7,10 @@
     "scripts": {
         "start": "node --use-system-ca src/index.js",
         "debug": "cross-env LOG_LEVEL=DEBUG node --use-system-ca src/index.js",
-        "dev": "node --watch --use-system-ca src/index.js"
+        "dev": "node --watch --use-system-ca src/index.js",
+        "startup:enable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 enable",
+        "startup:disable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 disable",
+        "startup:status": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 status"
     },
     "dependencies": {
         "@tencent-ai/codebuddy-code": "^2.93.1",
