@@ -530,6 +530,10 @@
                         <option value="anthropic">Anthropic Messages API</option>
                     </select>
                 </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="upstreamWS" style="width: 18px; height: 18px; accent-color: #58a6ff;" />
+                    <label for="upstreamWS" style="margin: 0; cursor: pointer;">WebSocket 模式（仅 Responses 协议）</label>
+                </div>
                 <div class="form-group">
                     <label for="upstreamApiKey">API Key</label>
                     <input type="password" id="upstreamApiKey" placeholder="sk-xxx..." />
@@ -1130,6 +1134,7 @@
                                 : `<span class="tag tag-priority">#${idx + 1}</span>`;
                             const proxyText = up.proxy || '直连';
                             const protocolText = up.protocol || 'openai';
+                            const wsTag = up.ws ? '<span class="tag" style="background:#58a6ff;color:white">WS</span>' : '';
                             const maskedKey = maskApiKey(up.api_key || '');
                             const modelMapEntries =
                                 up.model_map && typeof up.model_map === 'object' ? Object.entries(up.model_map) : [];
@@ -1158,7 +1163,7 @@
                             ondragend="onDragEnd(event)">
                             <div class="drag-handle" draggable="false">⠿</div>
                             <div class="upstream-info" style="flex:1">
-                                <h4>${up.name || '未命名'} ${activeTag}</h4>
+                                <h4>${up.name || '未命名'} ${activeTag} ${wsTag}</h4>
                                 <p>${up.base_url || ''}</p>
                                 <p class="upstream-proxy">协议: ${protocolText}</p>
                                 <p class="upstream-proxy">代理: ${proxyText}</p>
@@ -1222,6 +1227,7 @@
                 document.getElementById('upstreamName').value = '';
                 document.getElementById('upstreamBaseUrl').value = '';
                 document.getElementById('upstreamProtocol').value = 'openai';
+                document.getElementById('upstreamWS').checked = false;
                 document.getElementById('upstreamApiKey').value = '';
                 document.getElementById('upstreamProxy').value = '';
                 document.getElementById('upstreamModelMap').value = 'sonnet=\nopus=\nhaiku=';
@@ -1238,6 +1244,7 @@
                 document.getElementById('upstreamName').value = up.name || '';
                 document.getElementById('upstreamBaseUrl').value = up.base_url || '';
                 document.getElementById('upstreamProtocol').value = up.protocol || 'openai';
+                document.getElementById('upstreamWS').checked = up.ws || false;
                 document.getElementById('upstreamApiKey').value = up.api_key_full || '';
                 document.getElementById('upstreamProxy').value = up.proxy || '';
 
@@ -1258,6 +1265,7 @@
                 const name = document.getElementById('upstreamName').value.trim();
                 const base_url = document.getElementById('upstreamBaseUrl').value.trim();
                 const protocol = document.getElementById('upstreamProtocol').value;
+                const ws = document.getElementById('upstreamWS').checked && protocol === 'responses';
                 const api_key = document.getElementById('upstreamApiKey').value.trim();
                 const proxy = document.getElementById('upstreamProxy').value.trim();
 
@@ -1288,7 +1296,7 @@
                 submitBtn.disabled = true;
 
                 try {
-                    const body = {name, base_url, protocol, api_key, proxy: proxy || undefined, models, model_map};
+                    const body = {name, base_url, protocol, ws: ws || undefined, api_key, proxy: proxy || undefined, models, model_map};
                     let url, method;
                     if (editingUpstreamIndex !== null) {
                         url = `/relayFE/upstreams/${editingUpstreamIndex}`;

@@ -13,6 +13,8 @@ import {copilotStore} from './services/copilot/copilot-store.js';
 import {credentialStore} from './services/codebuddy/credential-store.js';
 import {relayStore} from './services/relay/relay-store.js';
 import {initGatewayAuth, isAdminAuthEnabled, isGatewayAuthEnabled, getGatewayTokenPrefix} from './services/gateway/auth.js';
+import {shutdown as shutdownCopilotWSPool} from './services/copilot/copilot-ws-pool.js';
+import {shutdownWSPool as shutdownRelayWSPool} from './services/relay/api.js';
 import logger from './utils/logger.js';
 
 // 配置
@@ -101,10 +103,13 @@ function initializeRelay() {
             console.log(`✓ Server running at http://${localIp}:${PORT}`);
             console.log(`✓ Copilot proxy endpoint: http://${localIp}:${PORT}/copilot`);
             console.log(`✓ Copilot admin UI: http://${localIp}:${PORT}/copilotFE`);
+            console.log(`✓ Copilot Responses WS: ws://${localIp}:${PORT}/copilot/v1/responses`);
             console.log(`✓ CodeBuddy proxy endpoint: http://${localIp}:${PORT}/codebuddy`);
             console.log(`✓ CodeBuddy admin UI: http://${localIp}:${PORT}/codebuddyFE`);
+            console.log(`✓ CodeBuddy Responses WS: ws://${localIp}:${PORT}/codebuddy/v1/responses`);
             console.log(`✓ Relay proxy endpoint: http://${localIp}:${PORT}/relay`);
             console.log(`✓ Relay admin UI: http://${localIp}:${PORT}/relayFE`);
+            console.log(`✓ Relay Responses WS: ws://${localIp}:${PORT}/relay/v1/responses`);
 
             // 鉴权状态提示
             if (isAdminAuthEnabled()) {
@@ -124,6 +129,10 @@ function initializeRelay() {
         const shutdown = async (signal) => {
             console.log(`\n${signal} received, shutting down gracefully...`);
             try {
+                // 关闭 WS 连接池
+                shutdownCopilotWSPool();
+                shutdownRelayWSPool();
+
                 await Promise.all([
                     credentialStore.flushApiCallCounts(),
                     copilotStore.flushApiCallCounts(),

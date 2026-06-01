@@ -1,6 +1,7 @@
 /**
  * Relay API 调用模块
  * 向上游 LLM API 发送请求，支持 per-upstream 代理（HTTP/HTTPS/SOCKS5）及 agent 缓存
+ * 支持 Responses API WebSocket 模式
  * @module services/relay/api
  */
 
@@ -9,6 +10,8 @@ import {HttpsProxyAgent} from 'https-proxy-agent';
 import {SocksProxyAgent} from 'socks-proxy-agent';
 import {buildUrl} from '../../utils/helpers.js';
 import {normalizePayload} from '../../transformer/shared-translator.js';
+import {ResponsesWSPool} from '../ws/ws-pool.js';
+import {connectWebSocket, ResponsesWSError, sendRequest} from '../ws/ws-client.js';
 import logger from '../../utils/logger.js';
 
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
@@ -307,3 +310,87 @@ export async function getUpstreamModels(upstream, requestHeaders = {}) {
         throw new Error(`[${upstream.name}]:模型列表响应 JSON 解析失败: ${e.message}`);
     }
 }
+
+// ==================== WebSocket 上游支持 ====================
+
+const relayWSPool = new ResponsesWSPool({maxPerKey: 5, idleTimeout: 60000});
+
+/**
+ * 判断上游是否启用 WS 模式
+ */
+export function isWSUpstream(upstream) {
+    return upstream.ws === true && isResponsesUpstream(upstream);
+}
+
+/**
+ * 从上游 base_url 推导 WS URL
+ */
+export function buildWSUrl(upstream) {
+    const baseUrl = upstream.base_url.replace(/\/$/, '');
+    return baseUrl.replace('https://', 'wss://').replace('http://', 'ws://') + '/v1/responses';
+}
+
+/**
+ * 构建 WS 连接头
+ */
+export function buildWSHeaders(upstream) {
+    return {
+        'Authorization': `Bearer ${upstream.api_key}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Relay/1.0'
+    };
+}
+
+/**
+ * 计算上游 WS 连接池键
+ */
+function _connectionPoolKey(upstream) {
+    let hash = 0;
+    const key = upstream.api_key || '';
+    for (let i = 0; i < key.length; i++) {
+        hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+    }
+    return `${upstream.base_url}:${hash.toString(36)}`;
+}
+
+/**
+ * 通过 WS 连接上游发送 Responses 请求
+ * @param {object} payload - Responses API 请求体
+ * @param {object} upstream - 上游配置
+ * @param {object} [options] - 选项
+ * @param {string} [options.contextKey] - 会话上下文键
+ * @returns {Promise<{eventStream: AsyncIterable, conn: object}>}
+ */
+export async function createResponsesWS(payload, upstream, options = {}) {
+    const poolKey = _connectionPoolKey(upstream);
+
+    const connectFn = async () => {
+        const wsUrl = buildWSUrl(upstream);
+        const headers = buildWSHeaders(upstream);
+        const proxyAgent = getProxyAgent(upstream.proxy);
+        logger.info(`Relay WS: creating new connection to ${wsUrl}`);
+        return connectWebSocket(wsUrl, headers, proxyAgent, undefined, true);
+    };
+
+    const conn = await relayWSPool.acquire(poolKey, connectFn, {
+        contextKey: options.contextKey,
+        preferredPreviousResponseId: payload.previous_response_id
+    });
+
+    const eventStream = sendRequest(conn, payload);
+    return {eventStream, conn};
+}
+
+export function releaseWSConnection(conn) {
+    relayWSPool.release(conn);
+}
+
+export function discardWSConnection(conn) {
+    relayWSPool.discard(conn);
+}
+
+export function shutdownWSPool() {
+    relayWSPool.shutdown();
+}
+
+export {ResponsesWSError};

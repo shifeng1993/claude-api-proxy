@@ -1,6 +1,7 @@
 /**
  * Relay 路由处理器 - 支持 OpenAI、Anthropic、Responses 三种协议
  * 对活跃上游发起请求，根据上游协议自动选择最优路径（透传 > 转换）
+ * 支持 Responses API WebSocket 模式（上游 WS 连接 + 对外 WS 端点）
  * @module routes/relay
  */
 
@@ -14,7 +15,12 @@ import {
     getUpstreamModels,
     isAnthropicUpstream,
     isResponsesUpstream,
-    normalizeUpstreamProtocol
+    normalizeUpstreamProtocol,
+    createResponsesWS,
+    releaseWSConnection,
+    discardWSConnection,
+    isWSUpstream,
+    ResponsesWSError
 } from '../services/relay/api.js';
 import {readBody, isNetworkError} from '../utils/http-client.js';
 import {
@@ -40,6 +46,7 @@ import {
 } from '../transformer/responses-translator.js';
 import {aggregateStreamResponse} from '../services/codebuddy/api.js';
 import {estimateMessageTokens} from '../utils/token-estimation.js';
+import {handleWSConnection} from '../services/ws/ws-server.js';
 import logger from '../utils/logger.js';
 
 /* ==================== 工具函数 ==================== */
@@ -767,6 +774,7 @@ async function handleAnthropicCountTokens(req, res) {
  * 处理 Responses API 请求 (/relay/v1/responses)
  * 根据上游协议自动选择最优路径：
  * - Anthropic 上游 → 报错引导
+ * - Responses 上游 + WS → WS 优先，HTTP 回退
  * - Responses 上游 → 直接透传
  * - OpenAI 上游 → Responses→Chat 转换 → Chat→Responses 转回
  */
@@ -787,8 +795,89 @@ async function handleResponsesAPI(req, res) {
             return;
         }
 
-        // Responses 上游透传
+        // Responses 上游：WS 优先，HTTP 回退
         if (isResponsesUpstream(upstream)) {
+            // WS 模式：通过 WebSocket 连接上游
+            if (isWSUpstream(upstream)) {
+                try {
+                    const resolvedModel = upstreamManager.resolveModel(responsesReq.model, upstream.index);
+                    const wsResult = await createResponsesWS(
+                        {...responsesReq, model: resolvedModel},
+                        upstream,
+                        {contextKey: responsesReq.conversation_id || responsesReq.metadata?.conversation_id}
+                    );
+
+                    if (responsesReq.stream) {
+                        res.writeHead(200, {
+                            'Content-Type': 'text/event-stream',
+                            'Cache-Control': 'no-cache',
+                            Connection: 'keep-alive'
+                        });
+
+                        try {
+                            for await (const event of wsResult.eventStream) {
+                                if (event.type === 'response.completed' && event.data?.response?.usage) {
+                                    const usage = event.data.response.usage;
+                                    recordUsage(
+                                        usage.input_tokens || 0,
+                                        usage.output_tokens || 0,
+                                        usage.input_tokens_details?.cached_tokens || 0,
+                                        responsesReq.model
+                                    );
+                                }
+                                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
+                            }
+                            releaseWSConnection(wsResult.conn);
+                        } catch (err) {
+                            discardWSConnection(wsResult.conn);
+                            throw err;
+                        }
+                        res.end();
+                    } else {
+                        let completedData = null;
+                        try {
+                            for await (const event of wsResult.eventStream) {
+                                if (event.type === 'response.completed') completedData = event.data;
+                            }
+                            releaseWSConnection(wsResult.conn);
+                        } catch (err) {
+                            discardWSConnection(wsResult.conn);
+                            throw err;
+                        }
+                        if (completedData?.response) {
+                            const usage = completedData.response.usage || {};
+                            recordUsage(
+                                usage.input_tokens || 0,
+                                usage.output_tokens || 0,
+                                usage.input_tokens_details?.cached_tokens || 0,
+                                responsesReq.model
+                            );
+                            sendJson(res, 200, completedData.response);
+                        } else {
+                            sendOpenAIError(res, 502, 'No response.completed event received from upstream');
+                        }
+                    }
+                    return;
+                } catch (wsError) {
+                    if (wsError instanceof ResponsesWSError) {
+                        if (res.headersSent) {
+                            if (!res.destroyed && !res.writableEnded) res.end();
+                            return;
+                        }
+                        sendJson(res, wsError.status || 400, wsError.event || {type: 'error', error: {message: wsError.message}});
+                        return;
+                    }
+                    if (res.headersSent) {
+                        logger.warn(`Relay Responses: WS stream failed after response started: ${wsError.message}`);
+                        if (!res.destroyed && !res.writableEnded) res.end();
+                        return;
+                    }
+                    logger.warn(`Relay Responses: WS failed, falling back to HTTP: ${wsError.message}`);
+                    // Fall through to HTTP logic below
+                }
+            }
+
+            // HTTP 模式：透传
             const {response} = await callUpstream(upstream, (up) =>
                 createResponses(
                     {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, up.index)},
@@ -1052,6 +1141,154 @@ async function handleResponsesCompact(req, res) {
         logger.error('Relay: Failed to handle Responses Compact:', error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
+}
+
+/* ==================== WebSocket 端点 ==================== */
+
+/**
+ * 处理 Relay Responses API WebSocket 连接
+ * 客户端通过 WS 连接 /relay/v1/responses，发送标准 Responses API WS 协议
+ * @param {import('ws').WebSocket} clientWs - 客户端 WebSocket 连接
+ * @param {http.IncomingMessage} req - 原始 HTTP 请求
+ */
+export function handleRelayResponsesWS(clientWs, req) {
+    handleWSConnection(clientWs, {
+        authenticate: (req) => {
+            if (req._gatewayAuthenticated) return true;
+            const authResult = authenticateRequest(req.headers);
+            return authResult.authenticated;
+        },
+        req,
+        handleRequest: async function* (payload, authResult, {signal}) {
+            const upstreamManager = relayStore.getUpstreamManager();
+            if (!upstreamManager) {
+                throw Object.assign(new Error('Relay upstream manager not found'), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: 'Relay upstream manager not found', code: 'server_error'}}
+                });
+            }
+
+            const upstream = upstreamManager.getActiveUpstream();
+            if (!upstream) {
+                throw Object.assign(new Error('未配置可用上游'), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: '未配置可用上游，请在管理面板 /relayFE 配置', code: 'no_upstream'}}
+                });
+            }
+
+            const resolvedModel = upstreamManager.resolveModel(payload.model, upstream.index);
+
+            if (isAnthropicUpstream(upstream)) {
+                throw Object.assign(new Error('当前上游为 Anthropic 协议，不支持 Responses API'), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: '当前上游为 Anthropic 协议，不支持 Responses API', code: 'protocol_mismatch'}}
+                });
+            }
+
+            // Responses 上游 + WS：直接 WS 连接上游，转发事件
+            if (isWSUpstream(upstream)) {
+                const wsPayload = {...payload, model: resolvedModel};
+                try {
+                    const wsResult = await createResponsesWS(wsPayload, upstream, {
+                        contextKey: payload.conversation_id || payload.metadata?.conversation_id
+                    });
+                    const eventStream = wsResult.eventStream;
+                    const conn = wsResult.conn;
+
+                    try {
+                        for await (const event of eventStream) {
+                            if (signal?.aborted) {
+                                discardWSConnection(conn);
+                                return;
+                            }
+                            yield event;
+                        }
+                        releaseWSConnection(conn);
+                    } catch (err) {
+                        discardWSConnection(conn);
+                        throw err;
+                    }
+                    return;
+                } catch (wsError) {
+                    if (wsError instanceof ResponsesWSError) throw wsError;
+                    logger.warn(`Relay WS: upstream WS failed, falling back to HTTP: ${wsError.message}`);
+                    // Fall through to HTTP
+                }
+            }
+
+            // Responses 上游（HTTP）：透传 SSE → WS 事件
+            if (isResponsesUpstream(upstream)) {
+                const responsesPayload = {...payload, model: resolvedModel};
+                const {response} = await callUpstream(upstream, (up) =>
+                    createResponses(responsesPayload, up, {
+                        requestType: 'ResponsesWS',
+                        stream: true,
+                        originalModel: payload.model
+                    })
+                );
+
+                // 读取 SSE 流并转换为 WS 事件
+                let buffer = '';
+                for await (const chunk of response.body) {
+                    if (signal?.aborted) break;
+                    buffer += chunk.toString('utf8');
+                    const parts = buffer.split(/\r?\n\r?\n/);
+                    buffer = parts.pop() || '';
+
+                    for (const part of parts) {
+                        const {event, data} = parseSSEBlock(part);
+                        if (!data || data === '[DONE]') continue;
+                        let parsed;
+                        try { parsed = JSON.parse(data); } catch { continue; }
+                        yield {type: event || parsed.type, data: parsed};
+                    }
+                }
+                return;
+            }
+
+            // OpenAI Chat 上游：Chat → Responses 事件转换
+            const chatReq = responsesRequestToChat({...payload, model: resolvedModel});
+            chatReq.messages = injectBehaviorRules(chatReq.messages);
+            chatReq.stream = true;
+
+            const {response} = await callUpstream(upstream, (up) =>
+                createChatCompletions(chatReq, up, {
+                    requestType: 'ResponsesWS',
+                    stream: true,
+                    originalModel: payload.model
+                })
+            );
+
+            const streamState = createResponsesStreamState();
+            let buffer = Buffer.alloc(0);
+
+            for await (const chunk of response.body) {
+                if (signal?.aborted) break;
+                buffer = Buffer.concat([buffer, chunk]);
+                let start = 0;
+                let newLineIndex;
+                while ((newLineIndex = buffer.indexOf(10, start)) !== -1) {
+                    const line = buffer.toString('utf8', start, newLineIndex).trim();
+                    start = newLineIndex + 1;
+                    if (!line || line.startsWith(':') || !line.startsWith('data: ')) continue;
+                    const raw = line.slice(6).trim();
+                    if (raw === '[DONE]') continue;
+
+                    let data;
+                    try { data = JSON.parse(raw); } catch { continue; }
+
+                    const events = chatChunkToResponsesEvents(data, streamState);
+                    for (const ev of events) {
+                        yield {type: ev.event, data: ev.data};
+                    }
+                }
+                if (start > 0) buffer = buffer.subarray(start);
+            }
+        },
+        onUsage: (inputTokens, outputTokens, cacheHitTokens, model) => {
+            recordUsage(inputTokens, outputTokens, cacheHitTokens, model);
+        }
+    });
 }
 
 /* ==================== 主路由 ==================== */

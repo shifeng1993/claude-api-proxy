@@ -1,5 +1,6 @@
 /**
  * CodeBuddy 路由处理器 - 支持 OpenAI 直出和 Claude 兼容模式
+ * 支持 Responses API WebSocket 端点
  * @module routes/codebuddy
  */
 
@@ -17,6 +18,7 @@ import {
 import {authenticateRequest, getCredential} from '../services/codebuddy/auth.js';
 import {credentialStore} from '../services/codebuddy/credential-store.js';
 import {BLOCKED_DOMAINS, getCodebuddyBaseUrl} from '../services/codebuddy/config.js';
+import {handleWSConnection} from '../services/ws/ws-server.js';
 import logger from '../utils/logger.js';
 import {isNetworkError} from '../utils/http-client.js';
 
@@ -893,6 +895,96 @@ function handleRoot(req, res) {
             autoRotation: tm.autoRotationEnabled,
             rotationCount: tm.rotationCount,
             credsDir: '.codebuddy'
+        }
+    });
+}
+
+/* ==================== WebSocket 端点 ==================== */
+
+/**
+ * 处理 CodeBuddy Responses API WebSocket 连接
+ * 客户端通过 WS 连接 /codebuddy/v1/responses，发送标准 Responses API WS 协议
+ * CodeBuddy 上游使用 OpenAI Chat HTTP，服务端做 WS→HTTP→WS 转换
+ * @param {import('ws').WebSocket} clientWs - 客户端 WebSocket 连接
+ * @param {http.IncomingMessage} req - 原始 HTTP 请求
+ */
+export function handleCodebuddyResponsesWS(clientWs, req) {
+    handleWSConnection(clientWs, {
+        authenticate: (req) => {
+            if (req._gatewayAuthenticated) return true;
+            const authResult = authenticateRequest(req.headers);
+            return authResult.authenticated;
+        },
+        req,
+        handleRequest: async function* (payload, authResult, {signal}) {
+            const authData = authenticateRequest(req.headers);
+            if (!authData.authenticated) {
+                throw Object.assign(new Error('Authentication failed'), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: 'Authentication failed', code: 'unauthorized'}}
+                });
+            }
+
+            const credential = getCredential(authData.apiKey);
+            if (!credential) {
+                throw Object.assign(new Error('No valid CodeBuddy credentials'), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: 'No valid CodeBuddy credentials', code: 'no_credentials'}}
+                });
+            }
+
+            // Responses → Chat Completions 转换
+            const mappedModel = mapCodebuddyModelName(payload.model);
+            const chatReq = responsesRequestToChat({...payload, model: mappedModel});
+            chatReq.messages = injectBehaviorRules(chatReq.messages);
+            chatReq.stream = true;
+
+            const response = await createChatCompletions(chatReq, {
+                credential,
+                conversationId: req.headers['x-conversation-id'],
+                conversationRequestId: req.headers['x-conversation-request-id'],
+                conversationMessageId: req.headers['x-conversation-message-id'],
+                requestId: req.headers['x-request-id']
+            });
+
+            if (response.status >= 400) {
+                throw Object.assign(new Error(`CodeBuddy API error: ${response.status}`), {
+                    name: 'ResponsesWSError',
+                    event: {type: 'error', error: {message: `Upstream error: ${response.status}`, code: 'upstream_error'}}
+                });
+            }
+
+            // 将 Chat SSE 流转换为 Responses WS 事件
+            const streamState = createResponsesStreamState();
+            let buffer = Buffer.alloc(0);
+
+            for await (const chunk of response.body) {
+                if (signal?.aborted) break;
+                buffer = Buffer.concat([buffer, chunk]);
+                let start = 0;
+                let newLineIndex;
+                while ((newLineIndex = buffer.indexOf(10, start)) !== -1) {
+                    const line = buffer.toString('utf8', start, newLineIndex).trim();
+                    start = newLineIndex + 1;
+                    if (!line || line.startsWith(':') || !line.startsWith('data: ')) continue;
+                    const raw = line.slice(6).trim();
+                    if (raw === '[DONE]') continue;
+
+                    let data;
+                    try { data = JSON.parse(raw); } catch { continue; }
+
+                    const events = chatChunkToResponsesEvents(data, streamState);
+                    for (const ev of events) {
+                        yield {type: ev.event, data: ev.data};
+                    }
+                }
+                if (start > 0) buffer = buffer.subarray(start);
+            }
+        },
+        onUsage: (inputTokens, outputTokens, cacheHitTokens, model) => {
+            credentialStore.incrementApiCallCount();
+            credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+            credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, model);
         }
     });
 }

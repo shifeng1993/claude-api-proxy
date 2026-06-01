@@ -87,6 +87,7 @@ export class UpstreamManager {
             models: u.models || [],
             model_map: u.model_map || {},
             protocol: u.protocol || '',
+            ws: u.ws || false,
             enabled: u.enabled !== false,
             created_at: u.created_at,
             is_active: i === activeIdx
@@ -184,6 +185,7 @@ export class UpstreamManager {
             models: data.models || [],
             model_map: data.model_map || {},
             protocol: data.protocol || '',
+            ws: data.ws === true,
             enabled: data.enabled !== false,
             created_at: Math.floor(Date.now() / 1000)
         };
@@ -206,6 +208,7 @@ export class UpstreamManager {
         if (data.models !== undefined) upstream.models = data.models;
         if (data.model_map !== undefined) upstream.model_map = data.model_map;
         if (data.protocol !== undefined) upstream.protocol = data.protocol;
+        if (data.ws !== undefined) upstream.ws = data.ws;
         this._saveUpstreams();
         return {index, ...upstream};
     }

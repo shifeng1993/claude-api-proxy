@@ -210,7 +210,7 @@ export function getGatewayTokenPrefix() {
 /**
  * 验证管理员凭证
  * @param {string} username - 用户名
- * @param {string} encryptedPassword - RSA 加密后的密码（Base64）
+ * @param {string} encryptedPassword - RSA 加密后的密码（Base64），或明文密码（非安全上下文降级）
  * @returns {{valid: boolean, error?: string}}
  */
 export function verifyAdminCredentials(username, encryptedPassword) {
@@ -223,12 +223,25 @@ export function verifyAdminCredentials(username, encryptedPassword) {
         return {valid: false, error: 'Invalid credentials'};
     }
 
-    // RSA 解密密码
-    const password = rsaKeyManager.decrypt(encryptedPassword);
-    if (password === null) {
-        return {valid: false, error: 'Decryption failed'};
-    }
+     let password;
 
+    // 判断是否为 RSA 加密数据（Base64 且长度 > 512 字节，RSA-4096 加密结果约 512+ 字节）
+    const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(encryptedPassword);
+    const isLikelyEncrypted = isBase64 && Buffer.from(encryptedPassword, 'base64').length >= 512;
+
+    if (isLikelyEncrypted) {
+        // RSA 解密
+        const decrypted = rsaKeyManager.decrypt(encryptedPassword);
+        if (decrypted !== null) {
+            password = decrypted;
+        } else {
+            return {valid: false, error: 'Decryption failed'};
+        }
+    } else {
+        // 明文密码（非安全上下降级）
+        password = encryptedPassword;
+    }
+    
     // SHA256 哈希比对
     const hash = createHash('sha256').update(password).digest('hex');
     if (hash === adminPasswordHash) {

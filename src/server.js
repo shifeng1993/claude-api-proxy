@@ -1,16 +1,18 @@
 /**
  * HTTP 服务器核心逻辑
+ * 支持 WebSocket 升级，将 WS 连接路由到对应的 Responses API WS 处理器
  * @module server
  */
 
 import http from 'http';
 import {URL} from 'url';
+import {WebSocketServer} from 'ws';
 import logger from './utils/logger.js';
-import {routeCopilotRequest} from './routes/copilot.js';
+import {routeCopilotRequest, handleCopilotResponsesWS} from './routes/copilot.js';
 import {routeCopilotFrontend} from './routes/copilot-frontend.js';
-import {routeCodebuddyRequest} from './routes/codebuddy.js';
+import {routeCodebuddyRequest, handleCodebuddyResponsesWS} from './routes/codebuddy.js';
 import {routeCodebuddyFrontend} from './routes/codebuddy-frontend.js';
-import {routeRelayRequest} from './routes/relay.js';
+import {routeRelayRequest, handleRelayResponsesWS} from './routes/relay.js';
 import {routeRelayFrontend} from './routes/relay-frontend.js';
 import {
     serveLoginPage,
@@ -20,6 +22,7 @@ import {
     requireAdminAuth,
     requireGatewayAuth
 } from './services/gateway/admin-auth.js';
+import {isGatewayAuthEnabled, verifyGatewayToken} from './services/gateway/auth.js';
 
 function sendJson(res, status, data) {
     res.writeHead(status, {'Content-Type': 'application/json'});
@@ -31,8 +34,41 @@ function sendError(res, status, message) {
     res.end(message);
 }
 
+/**
+ * WS 鉴权：检查网关令牌
+ * WS 握手时支持以下方式传递令牌：
+ * 1. Authorization: Bearer <token> header（随 upgrade 请求发送）
+ * 2. api_key URL 参数：?api_key=<token>
+ */
+function requireGatewayAuthWS(req) {
+    if (!isGatewayAuthEnabled()) {
+        req._gatewayAuthenticated = true;
+        return true;
+    }
+
+    // 从 URL 参数获取
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const apiKeyParam = url.searchParams.get('api_key');
+    if (apiKeyParam && verifyGatewayToken(apiKeyParam)) {
+        req._gatewayAuthenticated = true;
+        return true;
+    }
+
+    // 从 Authorization header 获取
+    const auth = req.headers['authorization'];
+    if (auth) {
+        const token = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+        if (verifyGatewayToken(token)) {
+            req._gatewayAuthenticated = true;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 export function createServer() {
-    return http.createServer(async (req, res) => {
+    const server = http.createServer(async (req, res) => {
         // 只打印已知路由的请求日志，忽略遥测等无关请求
         const isKnown =
             req.url.startsWith('/login') ||
@@ -243,4 +279,44 @@ export function createServer() {
 
         sendError(res, 404, 'Not found');
     });
+
+    // ============ WebSocket 升级处理 ============
+
+    const wss = new WebSocketServer({noServer: true});
+
+    server.on('upgrade', (req, socket, head) => {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const pathname = url.pathname;
+
+        logger.info(`WS upgrade: ${pathname}`);
+
+        // WS 鉴权
+        if (!requireGatewayAuthWS(req)) {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+
+        // WS 和 HTTP 使用同一个 URL，通过 upgrade 事件区分
+        // POST /xxx/v1/responses → HTTP handler（上面已处理）
+        // WS Upgrade /xxx/v1/responses → WS handler（下面处理）
+        if (pathname === '/copilot/v1/responses') {
+            wss.handleUpgrade(req, socket, head, (ws) => {
+                handleCopilotResponsesWS(ws, req);
+            });
+        } else if (pathname === '/relay/v1/responses') {
+            wss.handleUpgrade(req, socket, head, (ws) => {
+                handleRelayResponsesWS(ws, req);
+            });
+        } else if (pathname === '/codebuddy/v1/responses') {
+            wss.handleUpgrade(req, socket, head, (ws) => {
+                handleCodebuddyResponsesWS(ws, req);
+            });
+        } else {
+            socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+            socket.destroy();
+        }
+    });
+
+    return server;
 }

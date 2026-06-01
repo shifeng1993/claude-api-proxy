@@ -252,12 +252,18 @@ export function getLoginHtml(returnUrl, publicKeyPem) {
       document.getElementById('rateLimitMsg').classList.remove('visible');
     }
 
+   function isSecureContext() {
+     return window.isSecureContext || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+   }
     async function importPublicKey(pem) {
-      // 解析 PEM 格式公钥
+      if (!crypto.subtle) {
+        throw new Error('Web Crypto API is not available. Please access this page via HTTPS or localhost.');
+       }
+     // 解析 PEM 格式公钥
       const pemBody = pem
         .replace(/-----BEGIN PUBLIC KEY-----/, '')
         .replace(/-----END PUBLIC KEY-----/, '')
-        .replace(/\\s/g, '');
+        .replace(/\s/g, '');
       const binaryDer = atob(pemBody);
       const buffer = new Uint8Array(binaryDer.length);
       for (let i = 0; i < binaryDer.length; i++) {
@@ -273,6 +279,11 @@ export function getLoginHtml(returnUrl, publicKeyPem) {
     }
 
     async function encryptPassword(password) {
+      
+      if (!isSecureContext() || !crypto.subtle) {
+         // 非安全上下文：明文传输（仅用于开发/内网环境）
+         return password;
+      }
       const publicKey = await importPublicKey(PUBLIC_KEY_PEM);
       const encoder = new TextEncoder();
       const data = encoder.encode(password);

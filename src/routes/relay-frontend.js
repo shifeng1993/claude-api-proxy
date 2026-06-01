@@ -108,7 +108,8 @@ async function handleAddUpstream(req, res) {
             proxy: data.proxy,
             models: data.models,
             model_map: data.model_map,
-            protocol: data.protocol
+            protocol: data.protocol,
+            ws: data.ws
         });
         sendJson(res, 200, {message: '上游配置添加成功', upstream: result});
     } catch (error) {

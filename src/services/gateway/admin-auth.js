@@ -66,6 +66,20 @@ function sendJson(res, status, data) {
 export function serveLoginPage(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const returnUrl = url.searchParams.get('return') || '/';
+
+
+    // 已登录用户重定向到目标页
+    const cookies = parseCookies(req);
+    const sessionToken = cookies.get(getCookieName());
+    if (sessionToken) {
+        const result = verifySessionToken(sessionToken);
+        if (result.valid) {
+            res.writeHead(302, {'Location': returnUrl});
+            res.end();
+            return;
+        }
+    }
+
     const publicKey = rsaKeyManager.getPublicKey();
     const html = getLoginHtml(returnUrl, publicKey);
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
@@ -111,7 +125,7 @@ export async function handleLoginRequest(req, res) {
             return;
         }
 
-        // 验证凭证
+        // 验证凭证（支持加密密码和明文密码）
         const result = verifyAdminCredentials(username, encrypted_password);
         if (!result.valid) {
             adminRateLimiter.recordFailure(clientIp);
