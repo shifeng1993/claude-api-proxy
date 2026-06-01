@@ -1,18 +1,17 @@
 /**
  * 核心凭证验证
  * 管理员登录验证、网关令牌验证
- * 首次运行自动生成凭证并持久化到 .gateway/ 目录
+ * 从环境变量加载凭证配置
  * @module services/gateway/auth
  */
 
 import {createHash, randomBytes} from 'crypto';
-import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'fs';
+import {existsSync, mkdirSync, writeFileSync} from 'fs';
 import {join} from 'path';
 import {rsaKeyManager} from './rsa-keys.js';
 import logger from '../../utils/logger.js';
 
 const GATEWAY_DIR = '.gateway';
-const ADMIN_CRED_FILE = 'admin_credentials.json';
 const GATEWAY_TOKEN_FILE = 'gateway_token.json';
 
 // 缓存的配置值
@@ -24,20 +23,6 @@ let gatewayTokenPrefix = null;
 let _initialized = false;
 
 /**
- * 生成随机密码（8 位，字母数字混合，易读）
- * @returns {string}
- */
-function generatePassword() {
-    const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
-    const bytes = randomBytes(12);
-    let password = '';
-    for (let i = 0; i < 8; i++) {
-        password += chars[bytes[i] % chars.length];
-    }
-    return password;
-}
-
-/**
  * 生成网关令牌（格式：sk-xxx）
  * @returns {string}
  */
@@ -46,12 +31,10 @@ function generateGatewayToken() {
 }
 
 /**
- * 加载或生成管理员凭证
+ * 加载管理员凭证
+ * 优先从环境变量加载，不再自动生成随机密码
  */
 function _loadAdminCredentials() {
-    const baseDir = join(process.cwd(), GATEWAY_DIR);
-    const credFile = join(baseDir, ADMIN_CRED_FILE);
-
     // 环境变量优先
     if (process.env.ADMIN_PASSWORD_HASH) {
         adminUsername = process.env.ADMIN_USERNAME || 'admin';
@@ -62,78 +45,24 @@ function _loadAdminCredentials() {
     if (process.env.ADMIN_PASSWORD) {
         adminUsername = process.env.ADMIN_USERNAME || 'admin';
         adminPasswordHash = createHash('sha256').update(process.env.ADMIN_PASSWORD).digest('hex');
-        logger.warn('ADMIN_PASSWORD is set in plaintext. Consider using ADMIN_PASSWORD_HASH instead.');
+        logger.info('Admin credentials loaded from ADMIN_PASSWORD env');
         return;
     }
 
-    // 从文件加载
-    if (existsSync(credFile)) {
-        try {
-            const data = JSON.parse(readFileSync(credFile, 'utf8'));
-            adminUsername = data.username || 'admin';
-            adminPasswordHash = data.password_hash;
-            if (adminPasswordHash) {
-                logger.info('Admin credentials loaded from disk');
-                return;
-            }
-        } catch (err) {
-            logger.warn('Failed to load admin credentials:', err.message);
-        }
-    }
-
-    // 自动生成
-    if (!existsSync(baseDir)) {
-        mkdirSync(baseDir, {recursive: true});
-    }
-
-    adminUsername = 'admin';
-    const password = generatePassword();
-    adminPasswordHash = createHash('sha256').update(password).digest('hex');
-
-    writeFileSync(credFile, JSON.stringify({
-        username: adminUsername,
-        password_hash: adminPasswordHash,
-        created_at: new Date().toISOString()
-    }, null, 2), 'utf8');
-
-    logger.info('========================================');
-    logger.info('  Admin credentials auto-generated');
-    logger.info(`  Username: ${adminUsername}`);
-    logger.info(`  Password: ${password}`);
-    logger.info('  Please save this password, it will not be shown again.');
-    logger.info('========================================');
+    logger.error('========================================');
+    logger.error('  ADMIN_PASSWORD or ADMIN_PASSWORD_HASH is required');
+    logger.error('  Please set it in your .env file');
+    logger.error('========================================');
+    throw new Error('Admin password not configured. Set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env');
 }
 
 /**
  * 加载或生成网关令牌
+ * 不再支持环境变量配置，统一自动生成
  */
 function _loadGatewayToken() {
     const baseDir = join(process.cwd(), GATEWAY_DIR);
     const tokenFile = join(baseDir, GATEWAY_TOKEN_FILE);
-
-    // 环境变量优先
-    if (process.env.GATEWAY_TOKEN) {
-        gatewayToken = process.env.GATEWAY_TOKEN;
-        gatewayTokenHash = createHash('sha256').update(gatewayToken).digest('hex');
-        gatewayTokenPrefix = gatewayToken.substring(0, 3) + '****';
-        logger.info('Gateway token loaded from GATEWAY_TOKEN env');
-        return;
-    }
-
-    // 从文件加载
-    if (existsSync(tokenFile)) {
-        try {
-            const data = JSON.parse(readFileSync(tokenFile, 'utf8'));
-            gatewayTokenHash = data.token_hash;
-            gatewayTokenPrefix = data.token_prefix;
-            if (gatewayTokenHash) {
-                logger.info('Gateway token loaded from disk');
-                return;
-            }
-        } catch (err) {
-            logger.warn('Failed to load gateway token:', err.message);
-        }
-    }
 
     // 自动生成
     if (!existsSync(baseDir)) {
@@ -294,3 +223,4 @@ export function authenticateGatewayRequest(headers) {
 
     return {authenticated: true};
 }
+

@@ -261,9 +261,10 @@ export function getLoginHtml(returnUrl, publicKeyPem) {
        }
      // 解析 PEM 格式公钥
       const pemBody = pem
-        .replace(/-----BEGIN PUBLIC KEY-----/, '')
-        .replace(/-----END PUBLIC KEY-----/, '')
-        .replace(/\s/g, '');
+        .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+        .replace(/-----END PUBLIC KEY-----/g, '')
+        .replace(/\\n/g, '')
+        .replace(/\\s/g, '');
       const binaryDer = atob(pemBody);
       const buffer = new Uint8Array(binaryDer.length);
       for (let i = 0; i < binaryDer.length; i++) {

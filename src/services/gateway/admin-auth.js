@@ -238,7 +238,7 @@ export function requireGatewayAuth(req, res) {
     // 未启用网关令牌认证
     if (!isGatewayAuthEnabled()) {
         // 未启用时拒绝所有 API 请求（不再向后兼容旧的各后端 API Key）
-        sendGatewayError(res, req.url, 401, 'Gateway token not configured. Set GATEWAY_TOKEN environment variable.');
+        sendGatewayError(res, req.url, 401, 'Gateway token not initialized');
         return false;
     }
 
