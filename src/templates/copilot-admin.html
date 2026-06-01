@@ -1351,8 +1351,8 @@
                     const data = await response.json();
                     if (data.api_key) {
                         apiKeyPlain = data.api_key;
-                        const body = apiKeyPlain.slice('sk-copilot-'.length);
-                        apiKeyMasked = 'sk-copilot-' + body.slice(0, 8) + '****' + body.slice(-4);
+                        const body = apiKeyPlain.slice('sk-'.length);
+                        apiKeyMasked = 'sk-' + body.slice(0, 8) + '****' + body.slice(-4);
                         apiKeyVisible = true;
                         document.getElementById('apiKeyText').textContent = apiKeyPlain;
                         document.getElementById('toggleKeyBtn').textContent = '🙈';

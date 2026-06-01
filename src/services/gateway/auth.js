@@ -38,11 +38,11 @@ function generatePassword() {
 }
 
 /**
- * 生成网关令牌（格式：sk-gateway-xxx）
+ * 生成网关令牌（格式：sk-xxx）
  * @returns {string}
  */
 function generateGatewayToken() {
-    return 'sk-gateway-' + randomBytes(16).toString('hex');
+    return 'sk-' + randomBytes(16).toString('hex');
 }
 
 /**
@@ -115,7 +115,7 @@ function _loadGatewayToken() {
     if (process.env.GATEWAY_TOKEN) {
         gatewayToken = process.env.GATEWAY_TOKEN;
         gatewayTokenHash = createHash('sha256').update(gatewayToken).digest('hex');
-        gatewayTokenPrefix = gatewayToken.substring(0, 12) + '****';
+        gatewayTokenPrefix = gatewayToken.substring(0, 3) + '****';
         logger.info('Gateway token loaded from GATEWAY_TOKEN env');
         return;
     }

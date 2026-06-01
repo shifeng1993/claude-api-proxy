@@ -1490,8 +1490,8 @@
                     const data = await response.json();
                     if (data.api_key) {
                         apiKeyPlain = data.api_key;
-                        const body = apiKeyPlain.slice('sk-relay-'.length);
-                        apiKeyMasked = 'sk-relay-' + body.slice(0, 8) + '****' + body.slice(-4);
+                        const body = apiKeyPlain.slice('sk-'.length);
+                        apiKeyMasked = 'sk-' + body.slice(0, 8) + '****' + body.slice(-4);
                         apiKeyVisible = true;
                         document.getElementById('apiKeyText').textContent = apiKeyPlain;
                         document.getElementById('toggleKeyBtn').textContent = '🙈';

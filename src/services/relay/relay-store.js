@@ -66,10 +66,10 @@ class RelayStore {
     }
 
     _generateApiKey() {
-        const key = 'sk-relay-' + randomBytes(16).toString('hex');
+        const key = 'sk-' + randomBytes(16).toString('hex');
         this.apiKey = key;
         this.apiKeyHash = createHash('sha256').update(key).digest('hex');
-        this.apiKeyPrefix = key.substring(0, 10) + '****' + key.substring(key.length - 4);
+        this.apiKeyPrefix = key.substring(0, 3) + '****' + key.substring(key.length - 4);
         this._saveApiKey();
         logger.info(`Generated Relay API Key: ${key}`);
         logger.info('Please save this key, it will not be shown again.');
