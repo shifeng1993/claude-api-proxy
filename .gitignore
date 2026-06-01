@@ -11,3 +11,6 @@ node_modules/
 # Relay 凭证存储目录
 .relay/
 
+# Gateway 鉴权密钥和会话密钥
+.gateway/
+

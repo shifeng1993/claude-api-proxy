@@ -12,6 +12,7 @@ import {isAuthenticated, refreshCopilotToken} from './services/copilot/auth.js';
 import {copilotStore} from './services/copilot/copilot-store.js';
 import {credentialStore} from './services/codebuddy/credential-store.js';
 import {relayStore} from './services/relay/relay-store.js';
+import {initGatewayAuth, isAdminAuthEnabled, isGatewayAuthEnabled, getGatewayTokenPrefix} from './services/gateway/auth.js';
 import logger from './utils/logger.js';
 
 // 配置
@@ -80,6 +81,9 @@ function initializeRelay() {
 // 初始化并启动服务
 (async () => {
     try {
+        // 初始化 Gateway 鉴权（必须最早执行，读取环境变量并生成 RSA 密钥对）
+        initGatewayAuth();
+
         // 初始化 Copilot（后台异步，不阻塞）
         initializeCopilot();
 
@@ -100,7 +104,20 @@ function initializeRelay() {
             console.log(`✓ CodeBuddy proxy endpoint: http://${localIp}:${PORT}/codebuddy`);
             console.log(`✓ CodeBuddy admin UI: http://${localIp}:${PORT}/codebuddyFE`);
             console.log(`✓ Relay proxy endpoint: http://${localIp}:${PORT}/relay`);
-            console.log(`✓ Relay admin UI: http://${localIp}:${PORT}/relayFE\n`);
+            console.log(`✓ Relay admin UI: http://${localIp}:${PORT}/relayFE`);
+
+            // 鉴权状态提示
+            if (isAdminAuthEnabled()) {
+                console.log('✓ Admin panel authentication: enabled');
+            } else {
+                console.log('⚠ Admin panel authentication: disabled');
+            }
+            if (isGatewayAuthEnabled()) {
+                console.log(`✓ Gateway token authentication: enabled (${getGatewayTokenPrefix()})`);
+            } else {
+                console.log('⚠ Gateway token authentication: disabled');
+            }
+            console.log();
         });
 
         // 优雅关闭

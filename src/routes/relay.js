@@ -176,11 +176,18 @@ function getProtocolErrorMessage(upstream, expectedProtocol, endpoint) {
 
 /* ==================== 鉴权 ==================== */
 
-function authenticateAndGetUpstream(headers) {
-    const authResult = authenticateRequest(headers);
+/**
+ * 鉴权并获取上游配置
+ * 如果网关层已完成鉴权（req._gatewayAuthenticated），跳过后端 API Key 检查
+ */
+function authenticateAndGetUpstream(req) {
+    // 网关令牌已验证，跳过后端 API Key 检查
+    if (!req._gatewayAuthenticated) {
+        const authResult = authenticateRequest(req.headers);
 
-    if (!authResult.authenticated) {
-        return {error: {status: 401, message: authResult.error}};
+        if (!authResult.authenticated) {
+            return {error: {status: 401, message: authResult.error}};
+        }
     }
 
     const upstreamManager = relayStore.getUpstreamManager();
@@ -225,7 +232,7 @@ function recordUsage(inputTokens, outputTokens, cacheHitTokens = 0, model = 'unk
  */
 async function handleOpenAIChatCompletions(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -403,7 +410,7 @@ async function handleOpenAIChatCompletions(req, res) {
  */
 async function handleAnthropicMessages(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -693,7 +700,7 @@ function _streamOpenAIPassthrough(response, res, model = 'unknown') {
 
 async function handleOpenAIModels(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -708,7 +715,7 @@ async function handleOpenAIModels(req, res) {
 
 async function handleAnthropicModels(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -723,7 +730,7 @@ async function handleAnthropicModels(req, res) {
 
 async function handleAnthropicCountTokens(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -765,7 +772,7 @@ async function handleAnthropicCountTokens(req, res) {
  */
 async function handleResponsesAPI(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -965,7 +972,7 @@ async function handleResponsesAPI(req, res) {
  */
 async function handleResponsesCompact(req, res) {
     try {
-        const authResult = authenticateAndGetUpstream(req.headers);
+        const authResult = authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;

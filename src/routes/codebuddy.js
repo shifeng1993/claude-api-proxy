@@ -96,9 +96,19 @@ function upstreamErrorStatus(err) {
 
 /**
  * 鉴权并获取凭证
+ * 如果网关层已完成鉴权（req._gatewayAuthenticated），跳过后端 API Key 检查
  */
-function authenticateAndGetCredential(headers) {
-    const authResult = authenticateRequest(headers);
+function authenticateAndGetCredential(req) {
+    // 网关令牌已验证，直接通过
+    if (req._gatewayAuthenticated) {
+        const credential = getCredential();
+        if (!credential) {
+            return {error: {status: 503, message: 'No available credentials'}};
+        }
+        return {credential};
+    }
+
+    const authResult = authenticateRequest(req.headers);
 
     if (!authResult.authenticated) {
         return {
@@ -139,7 +149,7 @@ async function parseBody(req) {
  */
 async function handleOpenAIChatCompletions(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -230,7 +240,7 @@ async function handleOpenAIChatCompletions(req, res) {
  */
 async function handleOpenAIModels(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -264,7 +274,7 @@ async function handleOpenAIModels(req, res) {
  */
 async function handleAnthropicMessages(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -495,7 +505,7 @@ async function handleAnthropicMessages(req, res) {
  */
 async function handleAnthropicCountTokens(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -519,7 +529,7 @@ async function handleAnthropicCountTokens(req, res) {
  */
 async function handleAnthropicModels(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -550,7 +560,7 @@ async function handleAnthropicModels(req, res) {
  */
 async function handleResponsesAPI(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -689,7 +699,7 @@ async function handleResponsesAPI(req, res) {
  */
 async function handleResponsesCompact(req, res) {
     try {
-        const authResult = authenticateAndGetCredential(req.headers);
+        const authResult = authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;

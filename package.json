@@ -5,9 +5,9 @@
     "type": "module",
     "main": "src/index.js",
     "scripts": {
-        "start": "node --use-system-ca src/index.js",
+        "start": "node src/index.js",
         "debug": "cross-env LOG_LEVEL=DEBUG node --use-system-ca src/index.js",
-        "dev": "node --watch --use-system-ca src/index.js",
+        "dev": "node --watch src/index.js",
         "startup:enable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 enable",
         "startup:disable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 disable",
         "startup:status": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 status"

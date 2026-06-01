@@ -12,6 +12,14 @@ import {routeCodebuddyRequest} from './routes/codebuddy.js';
 import {routeCodebuddyFrontend} from './routes/codebuddy-frontend.js';
 import {routeRelayRequest} from './routes/relay.js';
 import {routeRelayFrontend} from './routes/relay-frontend.js';
+import {
+    serveLoginPage,
+    getPublicKeyEndpoint,
+    handleLoginRequest,
+    handleLogoutRequest,
+    requireAdminAuth,
+    requireGatewayAuth
+} from './services/gateway/admin-auth.js';
 
 function sendJson(res, status, data) {
     res.writeHead(status, {'Content-Type': 'application/json'});
@@ -27,6 +35,8 @@ export function createServer() {
     return http.createServer(async (req, res) => {
         // 只打印已知路由的请求日志，忽略遥测等无关请求
         const isKnown =
+            req.url.startsWith('/login') ||
+            req.url.startsWith('/logout') ||
             req.url.startsWith('/copilotFE') ||
             req.url.startsWith('/copilot/') ||
             req.url.startsWith('/copilot/anthropic/v1/') ||
@@ -40,8 +50,53 @@ export function createServer() {
             logger.info(`${req.method} ${req.url}`);
         }
 
+        // ============ 鉴权路由 ============
+
+        // POST /login — 处理登录请求
+        if (req.method === 'POST' && req.url === '/login') {
+            try {
+                await handleLoginRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Login error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // GET /login — 登录页面
+        if (req.method === 'GET' && req.url.startsWith('/login')) {
+            try {
+                if (req.url === '/login/public-key') {
+                    getPublicKeyEndpoint(req, res);
+                } else {
+                    serveLoginPage(req, res);
+                }
+                return;
+            } catch (err) {
+                logger.error('Login page error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // GET/POST /logout — 登出
+        if (req.url === '/logout') {
+            try {
+                handleLogoutRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Logout error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // ============ 管理后台路由（需要管理员认证） ============
+
         // Copilot 前端管理界面（必须在 /copilot 通用路由之前）
         if (req.url.startsWith('/copilotFE')) {
+            if (!requireAdminAuth(req, res)) return;
             try {
                 await routeCopilotFrontend(req, res);
                 return;
@@ -52,44 +107,9 @@ export function createServer() {
             }
         }
 
-        // Copilot 路由
-        if (req.url.startsWith('/copilot')) {
-            try {
-                await routeCopilotRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Copilot route error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // Relay 前端管理界面
-        if (req.url.startsWith('/relayFE')) {
-            try {
-                await routeRelayFrontend(req, res);
-                return;
-            } catch (err) {
-                logger.error('Relay frontend error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // Relay 路由
-        if (req.url.startsWith('/relay')) {
-            try {
-                await routeRelayRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Relay route error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
         // CodeBuddy 前端管理界面
         if (req.url.startsWith('/codebuddyFE')) {
+            if (!requireAdminAuth(req, res)) return;
             try {
                 await routeCodebuddyFrontend(req, res);
                 return;
@@ -100,8 +120,37 @@ export function createServer() {
             }
         }
 
+        // Relay 前端管理界面
+        if (req.url.startsWith('/relayFE')) {
+            if (!requireAdminAuth(req, res)) return;
+            try {
+                await routeRelayFrontend(req, res);
+                return;
+            } catch (err) {
+                logger.error('Relay frontend error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // ============ API 路由（需要网关令牌认证） ============
+
+        // Copilot 路由
+        if (req.url.startsWith('/copilot')) {
+            if (!requireGatewayAuth(req, res)) return;
+            try {
+                await routeCopilotRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Copilot route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
         // CodeBuddy 路由
         if (req.url.startsWith('/codebuddy')) {
+            if (!requireGatewayAuth(req, res)) return;
             try {
                 await routeCodebuddyRequest(req, res);
                 return;
@@ -112,8 +161,23 @@ export function createServer() {
             }
         }
 
-        // 根路径欢迎信息
+        // Relay 路由
+        if (req.url.startsWith('/relay')) {
+            if (!requireGatewayAuth(req, res)) return;
+            try {
+                await routeRelayRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Relay route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // ============ 根路径（需要管理员认证） ============
+
         if (req.method === 'GET' && req.url === '/') {
+            if (!requireAdminAuth(req, res)) return;
             const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -134,6 +198,8 @@ export function createServer() {
     .card-desc { font-size: 0.85rem; color: #8b949e; }
     .card-arrow { color: #58a6ff; font-size: 1.2rem; }
     .badge { display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 20px; margin-top: 4px; background: #21262d; color: #79c0ff; border: 1px solid #388bfd44; }
+    .logout-btn { display: inline-block; margin-top: 24px; padding: 8px 16px; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #8b949e; text-decoration: none; font-size: 0.85rem; transition: border-color 0.2s; }
+    .logout-btn:hover { border-color: #f85149; color: #f85149; }
   </style>
 </head>
 <body>
@@ -166,6 +232,7 @@ export function createServer() {
         <span class="card-arrow">→</span>
       </a>
     </div>
+    <a class="logout-btn" href="/logout">Sign Out</a>
   </div>
 </body>
 </html>`;

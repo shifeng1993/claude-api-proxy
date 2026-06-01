@@ -177,8 +177,12 @@ function ensureResponsesWebSocketSupported(model) {
 
 /**
  * API Key 鉴权
+ * 如果网关层已完成鉴权（req._gatewayAuthenticated），直接通过
  */
 function authenticateRequest(req) {
+    // 网关令牌已验证，跳过后端 API Key 检查
+    if (req._gatewayAuthenticated) return true;
+
     // 优先从 Authorization: Bearer 提取
     const auth = req.headers['authorization'];
     let token = auth?.startsWith('Bearer ') ? auth.slice(7) : auth;
