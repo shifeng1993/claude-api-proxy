@@ -291,7 +291,9 @@ export function injectBehaviorRules(messages) {
  * 直接丢弃而非追加到 user 消息，避免动态内容污染 messages 前缀导致缓存 miss
  */
 function extractStableContent(systemContent) {
-    const lines = systemContent.split('\n');
+    // 统一换行符：CRLF → LF，避免不同抓包工具产生不一致的过滤结果
+    const normalized = systemContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalized.split('\n');
     const stableLines = [];
     let insideProxyTag = false;
 
@@ -319,15 +321,45 @@ function extractStableContent(systemContent) {
         stableLines.push(line);
     }
 
-    return stableLines
+    let result = stableLines
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trimEnd();
+
+    // 段落去重：harness 可能重复注入相同的提示段落
+    // 段落 = 被空行分隔的非空文本块
+    // 当检测到重复段落时，意味着 harness 开始重复注入系统提示前缀，
+    // 此段落及之后的所有内容都应截断丢弃，避免后续被污染的内容混入
+    const parts = result.split(/(\n\n+)/);
+    const out = [];
+    let pendingSep = '';
+    const seen = new Set();
+    for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) {
+            const p = parts[i].trimEnd();
+            if (!p) { pendingSep = ''; continue; }
+            if (seen.has(p)) break;
+            seen.add(p);
+            if (out.length > 0) out.push(pendingSep);
+            out.push(p);
+        } else {
+            pendingSep = parts[i];
+        }
+    }
+    result = out.join('');
+
+    return result.trimEnd();
 }
 
 function isDynamicLine(line) {
+    // HTTP header 格式的动态行（如 x-anthropic-billing-header）
     if (/^x-[a-z]/i.test(line)) return true;
+    // 已知的动态字段
     if (/^(currentDate|currentDateIso|sessionId|memory):/i.test(line)) return true;
+    // harness 动态注入的行（可能因无空行分隔而与上一个段落合并）
+    if (/^The task tools haven't been used/i.test(line)) return true;
+    if (/^Here are the existing tasks:/i.test(line)) return true;
+    if (/^#\d+\.\s*\[/i.test(line)) return true;
     return false;
 }
 
@@ -345,6 +377,83 @@ function sortObjectKeys(obj) {
         return sorted;
     }
     return obj;
+}
+
+/**
+ * 将 JSON 字符串重新序列化为 key 排序的版本
+ * 确保 DeepSeek/Kimi 前缀匹配缓存不因嵌入 JSON 的 key 顺序不同而 miss
+ * 非法 JSON 或非对象/数组开头的字符串原样返回
+ */
+function sortJsonString(str) {
+    if (!str || typeof str !== 'string') return str;
+    const first = str[0];
+    if (first !== '{' && first !== '[') return str;
+    try {
+        const parsed = JSON.parse(str);
+        return JSON.stringify(sortObjectKeys(parsed));
+    } catch {
+        return str;
+    }
+}
+
+/**
+ * 消息对象字段顺序
+ * 确保 JSON.stringify 时消息对象输出稳定，DeepSeek/Kimi 前缀匹配缓存不因 key 顺序不同而 miss
+ */
+const MESSAGE_FIELD_ORDER = ['role', 'content', 'reasoning_content', 'tool_calls', 'tool_call_id', 'name'];
+
+/**
+ * 标准化消息数组，确保相同语义内容产生相同字节序列
+ * DeepSeek 和 Kimi 使用前缀匹配缓存，messages 前缀必须逐字节一致
+ *
+ * 优化点：
+ * 1. 消息对象字段排序：确保 JSON.stringify 输出稳定
+ * 2. system 消息：行尾空白去除、换行统一、多余空行合并
+ * 3. assistant.tool_calls.arguments：JSON key 排序
+ * 4. tool 消息 content：如果是 JSON，key 排序
+ */
+function normalizeMessages(messages) {
+    if (!Array.isArray(messages)) return messages;
+
+    return messages.map(msg => {
+        // 1. 字段排序：确保 JSON.stringify 输出稳定
+        const ordered = {};
+        for (const key of MESSAGE_FIELD_ORDER) {
+            if (msg[key] !== undefined) ordered[key] = msg[key];
+        }
+        for (const key of Object.keys(msg)) {
+            if (!(key in ordered)) ordered[key] = msg[key];
+        }
+
+        // 2. system 消息空白统一
+        if (ordered.role === 'system' && typeof ordered.content === 'string') {
+            ordered.content = ordered.content
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .replace(/[ \t]+$/gm, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trimEnd();
+        }
+
+        // 3. assistant.tool_calls.arguments key 排序
+        if (ordered.role === 'assistant' && Array.isArray(ordered.tool_calls)) {
+            ordered.tool_calls = ordered.tool_calls.map(tc => ({
+                id: tc.id,
+                type: tc.type || 'function',
+                function: {
+                    name: tc.function?.name,
+                    arguments: sortJsonString(tc.function?.arguments)
+                }
+            }));
+        }
+
+        // 4. tool 消息 content key 排序
+        if (ordered.role === 'tool' && typeof ordered.content === 'string') {
+            ordered.content = sortJsonString(ordered.content);
+        }
+
+        return ordered;
+    });
 }
 
 /**
@@ -389,11 +498,18 @@ export function normalizePayload(payload, meta = {}) {
     }
 
     // tools 排序：递归排序 key + 按 function.name 排序，保证 JSON.stringify 输出稳定
-    // messages 不排序：开销大且改变结构会破坏已有缓存兼容性
     if (ordered.tools) {
         ordered.tools = ordered.tools
             .map((t) => sortObjectKeys(t))
             .sort((a, b) => (a.function?.name || '').localeCompare(b.function?.name || ''));
+    }
+
+    // 消息标准化：确保 DeepSeek/Kimi 前缀匹配缓存能命中
+    // - 消息对象字段排序，确保 JSON.stringify 输出稳定
+    // - tool_calls.arguments / tool content 的 JSON key 排序
+    // - system 消息空白统一
+    if (ordered.messages) {
+        ordered.messages = normalizeMessages(ordered.messages);
     }
 
     return ordered;
