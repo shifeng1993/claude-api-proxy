@@ -334,11 +334,16 @@
                 margin-bottom: 10px;
                 border-left: 4px solid #d1d5db;
                 transition: all 0.2s;
-                cursor: default;
+                cursor: pointer;
+            }
+            .upstream-item:hover:not(.active-upstream) {
+                background: #eef2ff;
+                border-left-color: #667eea;
             }
             .upstream-item.active-upstream {
                 border-left-color: #10b981;
                 background: #f0fdf4;
+                cursor: default;
             }
             .drag-handle {
                 cursor: grab;
@@ -347,7 +352,6 @@
                 padding: 4px 8px;
                 user-select: none;
                 flex-shrink: 0;
-            }
             }
             .upstream-info p {
                 color: #6b7280;
@@ -538,14 +542,22 @@
                 </div>
                 <div class="form-group">
                     <label for="upstreamProtocol">上游协议</label>
-                    <select id="upstreamProtocol" style="width: 100%; padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;">
+                    <select
+                        id="upstreamProtocol"
+                        style="
+                            width: 100%;
+                            padding: 10px 14px;
+                            border: 1px solid #d1d5db;
+                            border-radius: 8px;
+                            font-size: 0.9rem;
+                        ">
                         <option value="openai">OpenAI Chat Completions</option>
                         <option value="responses">OpenAI Responses API</option>
                         <option value="anthropic">Anthropic Messages API</option>
                     </select>
                 </div>
-                <div class="form-group" id="upstreamWSGroup" style="display: none;">
-                    <label class="proxy-options-row" for="upstreamWS">
+                <div class="form-group" id="upstreamWSGroup" style="display: none">
+                    <label class="proxy-options-row" for="upstreamWS" style="margin: 0">
                         <input type="checkbox" id="upstreamWS" />
                         <span class="proxy-option-text">
                             <span class="proxy-option-title">WebSocket 模式（仅 Responses 协议）</span>
@@ -559,6 +571,8 @@
                 <div class="form-group">
                     <label for="upstreamProxy">代理地址（可选）</label>
                     <input type="text" id="upstreamProxy" />
+                </div>
+                <div class="form-group">
                     <label class="proxy-options-row" for="upstreamSkipTls">
                         <input type="checkbox" id="upstreamSkipTls" />
                         <span class="proxy-option-text">
@@ -683,9 +697,7 @@
             async function loadDailyChartData() {
                 if (!currentMonth) return;
                 try {
-                    const response = await fetch(
-                        `/relayFE/stats/daily?month=${currentMonth}`
-                    );
+                    const response = await fetch(`/relayFE/stats/daily?month=${currentMonth}`);
                     const result = await response.json();
                     renderCharts(result.data || {}, currentMonth);
                 } catch (error) {
@@ -713,7 +725,12 @@
 
                 for (let d = 1; d <= daysInMonth; d++) {
                     const dayKey = String(d).padStart(2, '0');
-                    const dayData = dailyData[dayKey] || {api_calls: 0, input_tokens: 0, output_tokens: 0, cache_hit_tokens: 0};
+                    const dayData = dailyData[dayKey] || {
+                        api_calls: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_hit_tokens: 0
+                    };
                     dates.push(d);
                     apiCallsData.push(dayData.api_calls);
                     inputTokensData.push(dayData.input_tokens);
@@ -749,7 +766,10 @@
                 }
                 const cacheRateEl = document.getElementById('cacheHitRate');
                 if (cacheRateEl) {
-                    const cacheRate = totalInputTokens > 0 ? Math.min(100, Math.round(totalCacheHitTokens / totalInputTokens * 100)) : 0;
+                    const cacheRate =
+                        totalInputTokens > 0
+                            ? Math.min(100, Math.round((totalCacheHitTokens / totalInputTokens) * 100))
+                            : 0;
                     cacheRateEl.textContent = cacheRate + '%';
                     cacheRateEl.title = cacheRate + '%';
                 }
@@ -814,7 +834,12 @@
                                     return tip;
                                 }
                             },
-                            legend: {data: ['输入(命中缓存)', '输入(未命中缓存)', '输出'], top: '30px', right: '0', textStyle: {fontSize: 12}},
+                            legend: {
+                                data: ['输入(命中缓存)', '输入(未命中缓存)', '输出'],
+                                top: '30px',
+                                right: '0',
+                                textStyle: {fontSize: 12}
+                            },
                             grid: {left: '80px', right: '30px', top: '70px', bottom: '30px'},
                             xAxis: {type: 'category', data: dates, name: '日', axisLabel: {fontSize: 11}},
                             yAxis: {type: 'value', name: 'Tokens', axisLabel: {fontSize: 11}, splitNumber: 1},
@@ -900,9 +925,13 @@
                     }
                     const cCacheRateEl = document.getElementById('customCacheHitRate');
                     if (cCacheRateEl) {
-                        const cacheRate = (data.custom_input_tokens || 0) > 0
-                            ? Math.min(100, Math.round((data.custom_cache_hit_tokens || 0) / data.custom_input_tokens * 100))
-                            : 0;
+                        const cacheRate =
+                            (data.custom_input_tokens || 0) > 0
+                                ? Math.min(
+                                      100,
+                                      Math.round(((data.custom_cache_hit_tokens || 0) / data.custom_input_tokens) * 100)
+                                  )
+                                : 0;
                         cCacheRateEl.textContent = cacheRate + '%';
                         cCacheRateEl.title = cacheRate + '%';
                     }
@@ -927,7 +956,8 @@
                 document.getElementById('mainContent').innerHTML = `
                 <div class="card">
                     <h2>上游配置管理
-                        <button class="btn btn-primary btn-small" onclick="openAddUpstreamModal()" style="margin-left: auto;">+ 添加上游</button>
+                        <button class="btn btn-success btn-small" id="testAllBtn" onclick="testAllUpstreams()" style="margin-left: auto; margin-right: 8px;">批量测试</button>
+                        <button class="btn btn-primary btn-small" onclick="openAddUpstreamModal()">+ 添加上游</button>
                     </h2>
                     <div id="upstreamsList">
                         <div class="empty-state"><p>加载中...</p></div>
@@ -1159,7 +1189,9 @@
                                 : `<span class="tag tag-priority">#${idx + 1}</span>`;
                             const proxyText = up.proxy || '直连';
                             const protocolText = up.protocol || 'openai';
-                            const wsTag = up.ws ? '<span class="tag" style="background:#58a6ff;color:white">WS</span>' : '';
+                            const wsTag = up.ws
+                                ? '<span class="tag" style="background:#58a6ff;color:white">WS</span>'
+                                : '';
                             const maskedKey = maskApiKey(up.api_key || '');
                             const modelMapEntries =
                                 up.model_map && typeof up.model_map === 'object' ? Object.entries(up.model_map) : [];
@@ -1169,29 +1201,25 @@
                                         `<span class="tag tag-model" style="background:#e0f2fe;color:#0369a1">${k}→${v}</span>`
                                 )
                                 .join(' ');
-                            const setActiveBtn =
-                                !isActive && up.enabled
-                                    ? `<button class="btn btn-secondary btn-small" onclick="setActiveUpstream(${idx})">设为活跃</button>`
-                                    : '';
-
-                            const testBtn = `<button class="btn btn-success btn-small" id="testBtn${idx}" onclick="testUpstream(${idx})">测试连接</button>`;
-                            const editBtn = `<button class="btn btn-secondary btn-small" onclick="openEditUpstreamModal(${idx})">编辑</button>`;
-                            const deleteBtn = `<button class="btn btn-danger btn-small" onclick="deleteUpstream(${idx})">删除</button>`;
+                            const editBtn = `<button class="btn btn-secondary btn-small" onclick="event.stopPropagation();openEditUpstreamModal(${idx})">编辑</button>`;
+                            const cloneBtn = `<button class="btn btn-secondary btn-small" onclick="event.stopPropagation();cloneUpstream(${idx})">复制</button>`;
+                            const deleteBtn = `<button class="btn btn-danger btn-small" onclick="event.stopPropagation();deleteUpstream(${idx})">删除</button>`;
 
                             return `
                         <li class="upstream-item ${itemClass}"
-                            data-index="${idx}">
+                            data-index="${idx}"
+                            ${!isActive && up.enabled ? `onclick="setActiveUpstream(${idx})"` : ''}
+                            title="${!isActive && up.enabled ? '点击设为活跃上游' : '当前活跃上游'}">
                             <div class="upstream-info" style="flex:1">
                                 <h4>${up.name || '未命名'} ${activeTag} ${wsTag}</h4>
                                 <p>${up.base_url || ''}</p>
                                 <p class="upstream-proxy">协议: ${protocolText}</p>
                                 <p class="upstream-proxy">代理: ${proxyText}${up.skip_tls_verify ? ' <span style="color:#f59e0b">（跳过TLS验证）</span>' : ''}</p>
                                 <p style="font-size:0.78rem;margin-top:4px">${modelMapTags ? '映射: ' + modelMapTags : ''}</p>
-                                <span id="testResult${idx}" class="test-result"></span>
+                                <span id="testResult${idx}" class="test-result" style="display:none"></span>
                             </div>
                             <div class="upstream-actions">
-                                ${setActiveBtn}
-                                ${testBtn}
+                                ${cloneBtn}
                                 ${editBtn}
                                 ${deleteBtn}
                             </div>
@@ -1306,7 +1334,17 @@
                 submitBtn.disabled = true;
 
                 try {
-                    const body = {name, base_url, protocol, ws: ws || undefined, api_key, proxy: proxy || undefined, skip_tls_verify, models, model_map};
+                    const body = {
+                        name,
+                        base_url,
+                        protocol,
+                        ws: ws || undefined,
+                        api_key,
+                        proxy: proxy || undefined,
+                        skip_tls_verify,
+                        models,
+                        model_map
+                    };
                     let url, method;
                     if (editingUpstreamIndex !== null) {
                         url = `/relayFE/upstreams/${editingUpstreamIndex}`;
@@ -1333,6 +1371,28 @@
                 } finally {
                     submitBtn.classList.remove('btn-loading');
                     submitBtn.disabled = false;
+                }
+            }
+
+            async function cloneUpstream(index) {
+                const up = upstreams[index];
+                if (!up) {
+                    showToast('无效的上游索引', 'error');
+                    return;
+                }
+                try {
+                    const response = await fetch(`/relayFE/upstreams/${index}/clone`, {
+                        method: 'POST'
+                    });
+                    if (response.ok) {
+                        showToast('上游已复制');
+                        loadUpstreams();
+                    } else {
+                        const err = await response.json();
+                        throw new Error(err.error || '复制失败');
+                    }
+                } catch (error) {
+                    showToast('复制上游失败: ' + error.message, 'error');
                 }
             }
 
@@ -1373,46 +1433,60 @@
                 }
             }
 
-            async function testUpstream(index) {
-                const btn = document.getElementById('testBtn' + index);
-                const resultEl = document.getElementById('testResult' + index);
+            async function testAllUpstreams() {
+                const btn = document.getElementById('testAllBtn');
                 if (!btn) return;
                 btn.disabled = true;
                 btn.classList.add('btn-loading');
-                if (resultEl) {
-                    resultEl.textContent = '测试中...';
-                    resultEl.className = 'test-result';
-                }
-                try {
-                    const response = await fetch(`/relayFE/upstreams/test`, {
+                btn.textContent = '测试中...';
+
+                // Clear all previous test results, show "testing" for each
+                upstreams.forEach((_, i) => {
+                    const el = document.getElementById('testResult' + i);
+                    if (el) { el.textContent = '⏳ 测试中...'; el.className = 'test-result'; el.style.display = ''; }
+                });
+
+                let pass = 0, fail = 0;
+                const total = upstreams.length;
+
+                const promises = upstreams.map((_, i) =>
+                    fetch('/relayFE/upstreams/test', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({index})
-                    });
-                    const data = await response.json();
-                    if (response.ok && data.success) {
-                        if (resultEl) {
-                            resultEl.textContent = '连接成功';
-                            resultEl.className = 'test-result success';
-                        }
-                        showToast('连接测试成功');
+                        body: JSON.stringify({index: i})
+                    })
+                        .then(r => r.json())
+                        .then(data => ({index: i, success: data.success, message: data.message || data.error || '未知错误'}))
+                        .catch(err => ({index: i, success: false, message: err.message}))
+                        .then(r => {
+                            const el = document.getElementById('testResult' + r.index);
+                            if (el) {
+                                if (r.success) {
+                                    el.textContent = '✓ ' + r.message;
+                                    el.className = 'test-result success';
+                                    pass++;
+                                } else {
+                                    el.textContent = '✗ ' + r.message;
+                                    el.className = 'test-result error';
+                                    fail++;
+                                }
+                            }
+                        })
+                );
+
+                try {
+                    await Promise.all(promises);
+                    if (fail === 0) {
+                        showToast(`全部通过 (${pass}/${total})`);
                     } else {
-                        const errorMessage = data.error || data.message || '未知错误';
-                        if (resultEl) {
-                            resultEl.textContent = '连接失败: ' + errorMessage;
-                            resultEl.className = 'test-result error';
-                        }
-                        showToast('连接测试失败: ' + errorMessage, 'error');
+                        showToast(`${pass} 通过, ${fail} 失败 (共 ${total})`, fail === total ? 'error' : 'success');
                     }
-                } catch (error) {
-                    if (resultEl) {
-                        resultEl.textContent = '连接失败: ' + error.message;
-                        resultEl.className = 'test-result error';
-                    }
-                    showToast('测试失败: ' + error.message, 'error');
+                } catch {
+                    // Individual fetch errors already handled in .catch() above
                 } finally {
                     btn.disabled = false;
                     btn.classList.remove('btn-loading');
+                    btn.textContent = '批量测试';
                 }
             }
 

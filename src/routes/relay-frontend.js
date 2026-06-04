@@ -159,6 +159,36 @@ function handleDeleteUpstream(req, res, index) {
 }
 
 /**
+ * 复制上游配置
+ */
+async function handleCloneUpstream(req, res, index) {
+    try {
+        const manager = relayStore.getUpstreamManager();
+        const upstreams = manager.listUpstreams();
+        if (index < 0 || index >= upstreams.length) {
+            return sendJson(res, 400, {error: '无效的上游索引'});
+        }
+        const source = upstreams[index];
+        const clone = {
+            name: `${source.name || '未命名'} (副本)`,
+            base_url: source.base_url,
+            api_key: source.api_key_full || source.api_key,
+            proxy: source.proxy,
+            skip_tls_verify: source.skip_tls_verify,
+            models: source.models ? [...source.models] : undefined,
+            model_map: source.model_map ? {...source.model_map} : undefined,
+            protocol: source.protocol,
+            ws: source.ws
+        };
+        const result = manager.addUpstream(clone);
+        sendJson(res, 200, {message: '上游配置复制成功', upstream: result});
+    } catch (error) {
+        logger.error('Relay 复制上游配置失败:', error);
+        sendJson(res, 500, {error: error.message});
+    }
+}
+
+/**
  * 测试上游连通性
  */
 async function handleTestUpstream(req, res) {
@@ -304,6 +334,13 @@ export async function routeRelayFrontend(req, res) {
         if (method === 'DELETE') {
             return handleDeleteUpstream(req, res, index);
         }
+    }
+
+    // 复制上游配置
+    const upstreamCloneMatch = pathname.match(/^\/relayFE\/upstreams\/(\d+)\/clone$/);
+    if (upstreamCloneMatch && method === 'POST') {
+        const cloneIndex = parseInt(upstreamCloneMatch[1], 10);
+        return handleCloneUpstream(req, res, cloneIndex);
     }
 
     // 测试上游连通性
