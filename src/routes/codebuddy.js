@@ -1,12 +1,17 @@
 /**
  * CodeBuddy 路由处理器 - 支持 OpenAI 直出和 Claude 兼容模式
- * 支持 Responses API WebSocket 端点
  * @module routes/codebuddy
  */
 
-import {createChatCompletions, getModels, CodeBuddyApiError} from '../services/codebuddy/api.js';
+import {createChatCompletions, getModels} from '../services/codebuddy/api.js';
 import {anthropicToOpenAI, openAIToAnthropic, ClaudeStreamState, SSEWriter} from '../services/codebuddy/translator.js';
-import {rewriteOpenAIStream, injectBehaviorRules} from '../transformer/shared-translator.js';
+import {rewriteOpenAIStream} from '../transformer/shared-translator.js';
+import {
+    buildConversationAnchorKey,
+    injectBehaviorRules,
+    stripDynamicReminders,
+    sanitizeAnthropicPayload
+} from '../transformer/shared-translator.js';
 import {
     responsesRequestToChat,
     chatResponseToResponses,
@@ -15,12 +20,13 @@ import {
     compactRequestToChat,
     chatResponseToCompact
 } from '../transformer/responses-translator.js';
-import {getCredential, markLastReturnedRateLimited} from '../services/codebuddy/auth.js';
-import {credentialStore} from '../services/codebuddy/credential-store.js';
+import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
+import {resolveCredential} from '../services/gateway/gateway-auth.js';
 import {BLOCKED_DOMAINS, getCodebuddyBaseUrl} from '../services/codebuddy/config.js';
-import {handleWSConnection} from '../services/ws/ws-server.js';
+import {handleWSConnection} from '../services/shared/responses-ws-server.js';
 import logger from '../utils/logger.js';
 import {isNetworkError} from '../utils/http-client.js';
+import {sampleRequest} from '../services/coach/sampler.js';
 
 /**
  * 从上游 usage 中提取缓存命中 token 数
@@ -34,13 +40,20 @@ function extractCacheHitTokens(usage) {
     return 0;
 }
 
-// 主要是处理codex兼容
-export function mapCodebuddyModelName(model) {
+/**
+ * 基于规则映射 Codex 传入的模型名到 CodeBuddy 实际可用模型
+ * - gpt- 开头且不含 mini → kimi-k2.6
+ * - gpt- 开头且含 mini，或含 codex → deepseek-v4-flash
+ * - 其他保持不变
+ */
+function mapModelName(model) {
     if (!model || typeof model !== 'string') return model;
     const lower = model.toLowerCase();
-    if (lower.includes('codex')) return 'deepseek-v4-flash';
     if (lower.startsWith('gpt-')) {
         return lower.includes('mini') ? 'deepseek-v4-flash' : 'kimi-k2.6';
+    }
+    if (lower.includes('codex')) {
+        return 'deepseek-v4-flash';
     }
     return model;
 }
@@ -93,36 +106,95 @@ function sendAnthropicError(res, status, message) {
 }
 
 function upstreamErrorStatus(err) {
-    if (err instanceof CodeBuddyApiError) {
-        // 429 保持原样返回，其余 >= 400 的上游错误映射为 502
-        if (err.status === 429) return 429;
-        return 502;
-    }
     return isNetworkError(err) ? 502 : 500;
 }
 
 /**
- * 检测并处理上游 429 限速错误
- * 当检测到 429 时，标记当前凭证为限速状态
- * @param {Error} error - 捕获的错误
+ * 从请求头或 payload 消息中提取稳定的会话标识
+ *
+ * 优先级：x-conversation-id 请求头 > 从 messages 前缀推算的会话指纹
+ *
+ * 推算策略：用 system、tools、第一条 user 和 tenantId 作为对话锚点，
+ * 避免多轮追加消息时 prompt_cache_key 每轮变化。
+ * 这确保 prompt_cache_key 在同一对话内保持一致，
+ * 让 GLM 等依赖 cache key 做实例路由的厂商能正确复用 KV Cache。
  */
-function handleUpstreamRateLimit(error) {
-    if (error instanceof CodeBuddyApiError && error.status === 429) {
-        logger.warn('Upstream 429 rate limit detected, marking current credential as rate-limited');
-        markLastReturnedRateLimited();
+function normalizeConversationId(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function extractConversationIdFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return undefined;
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : undefined;
+    const candidates = [
+        payload.conversation_id,
+        payload.conversationId,
+        payload.session_id,
+        payload.sessionId,
+        payload.thread_id,
+        payload.threadId,
+        metadata?.conversation_id,
+        metadata?.conversationId,
+        metadata?.session_id,
+        metadata?.sessionId,
+        metadata?.thread_id,
+        metadata?.threadId
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizeConversationId(candidate);
+        if (normalized) return normalized;
     }
+    return undefined;
+}
+
+function resolveConversationId(req, messages, payload = {}, meta = {}) {
+    // 1. 优先使用客户端显式传入的 conversation-id
+    const headerCandidates = [
+        req.headers['x-conversation-id'],
+        req.headers['x-session-id'],
+        req.headers['x-chat-id'],
+        req.headers['x-thread-id']
+    ];
+
+    for (const candidate of headerCandidates) {
+        const value = Array.isArray(candidate) ? candidate[0] : candidate;
+        const normalized = normalizeConversationId(value);
+        if (normalized) return normalized;
+    }
+
+    const payloadResult = extractConversationIdFromPayload(payload);
+    if (payloadResult) return payloadResult;
+
+    const anchorPayload = payload && typeof payload === 'object'
+        ? {...payload, messages: Array.isArray(messages) ? messages : payload.messages}
+        : {messages};
+    return buildConversationAnchorKey(anchorPayload, meta);
 }
 
 /**
- * 获取凭证，若无可用凭证则返回错误
- * 网关层已统一完成客户端 API Key 鉴权
+ * 鉴权并获取租户凭证
+ * @param {Object} req - 请求对象（必须已通过中间件注入 req.tenantId）
  */
-function getCredentialOrFail() {
-    const credential = getCredential();
-    if (!credential) {
-        return {error: {status: 503, message: 'No available credentials'}};
+async function authenticateAndGetCredential(req) {
+    const tenantId = req.tenantId;
+    if (!tenantId) {
+        return {error: {status: 503, message: 'CodeBuddy tenant system is not enabled'}};
     }
-    return {credential};
+
+    // Get the codebuddy credential manager for this tenant
+    // This uses the existing TokenManager logic via tenant-manager
+    const credentials = await unifiedTenantManager.listCodebuddyCredentials
+        ? await unifiedTenantManager.listCodebuddyCredentials(tenantId)
+        : [];
+
+    const credential = resolveCredential(req.headers, credentials);
+
+    if (!credential) {
+        return {error: {status: 503, message: 'No available credentials for tenant'}};
+    }
+
+    return {credential, tenantId};
 }
 
 /**
@@ -140,8 +212,13 @@ async function parseBody(req) {
  * 处理 OpenAI 格式的 /v1/chat/completions 请求 - 直接透传
  */
 async function handleOpenAIChatCompletions(req, res) {
+    let tenantInfo = '';
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
+        if (!authResult.error) {
+            const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+            if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
+        }
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -155,21 +232,36 @@ async function handleOpenAIChatCompletions(req, res) {
         // 解析 OpenAI 格式的请求
         const body = await parseBody(req);
         const openAIPayload = JSON.parse(body);
-        openAIPayload.model = mapCodebuddyModelName(openAIPayload.model);
+
+        // 映射 Codex 传入的模型名到实际可用模型
+        if (openAIPayload.model) {
+            openAIPayload.model = mapModelName(openAIPayload.model);
+        }
 
         // 注入行为规则（统一在路由层注入一次）
         openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
+        const conversationId = resolveConversationId(req, openAIPayload.messages, openAIPayload, {
+            tenantId: authResult.tenantId
+        });
+
+        const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
         // 直接调用 CodeBuddy API（已经是 OpenAI 格式）
         const response = await createChatCompletions(openAIPayload, {
             credential: authResult.credential,
-            conversationId: req.headers['x-conversation-id'],
+            conversationId,
             conversationRequestId: req.headers['x-conversation-request-id'],
             conversationMessageId: req.headers['x-conversation-message-id'],
-            requestId: req.headers['x-request-id']
+            requestId: req.headers['x-request-id'],
+            ...tenantMeta
         });
 
-        // 流式响应：使用 rewriteOpenAIStream 对 reasoning_content 做缓冲合并，避免 thinking 被逐 token 刷成多个块
+        // 流式响应：对 reasoning_content 做缓冲合并，避免 thinking 被逐 token 刷成多个块
         if (openAIPayload.stream) {
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
@@ -178,23 +270,36 @@ async function handleOpenAIChatCompletions(req, res) {
             });
 
             rewriteOpenAIStream(res, response.body, (inputTokens, outputTokens, cacheHitTokens, credit, model) => {
-                credentialStore.incrementApiCallCount();
-                credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-                credentialStore.incrementCreditUsage(credit);
-                credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, credit);
+                if (authResult.tenantId) {
+                    unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                    unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+                    unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+                    unifiedTenantManager.recordDailyUsage(
+                        authResult.tenantId, 'codebuddy',
+                        inputTokens,
+                        outputTokens,
+                        cacheHitTokens,
+                        credit,
+                        pickModelName(model, openAIPayload.model)
+                    );
+                    sampleRequest(authResult.tenantId, 'codebuddy', openAIPayload, null, pickModelName(model, openAIPayload.model)).catch(() => {});
+                }
             });
         } else {
             const {aggregateStreamResponse} = await import('../services/codebuddy/api.js');
             const aggregated = await aggregateStreamResponse(response.body);
 
-            const inputTokens = aggregated.usage ? aggregated.usage.prompt_tokens || 0 : 0;
-            const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
-            const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-            const credit = aggregated.usage ? aggregated.usage.credit || 0 : 0;
-            credentialStore.incrementApiCallCount();
-            credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-            credentialStore.incrementCreditUsage(credit);
-            credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, credit);
+            if (authResult.tenantId) {
+                const inputTokens = aggregated.usage ? aggregated.usage.prompt_tokens || 0 : 0;
+                const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
+                const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
+                const credit = aggregated.usage ? aggregated.usage.credit || 0 : 0;
+                unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+                unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+                unifiedTenantManager.recordDailyUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens, credit, pickModelName(aggregated.model, openAIPayload.model));
+                sampleRequest(authResult.tenantId, 'codebuddy', openAIPayload, aggregated, pickModelName(aggregated.model, openAIPayload.model)).catch(() => {});
+            }
 
             const openAIResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -222,8 +327,7 @@ async function handleOpenAIChatCompletions(req, res) {
             sendJson(res, 200, openAIResponse);
         }
     } catch (error) {
-        logger.error('Failed to handle OpenAI chat completions:', error);
-        handleUpstreamRateLimit(error);
+        logger.error(`Failed to handle OpenAI chat completions${tenantInfo ? `, ${tenantInfo}` : ''}:`, error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -233,7 +337,7 @@ async function handleOpenAIChatCompletions(req, res) {
  */
 async function handleOpenAIModels(req, res) {
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -253,12 +357,11 @@ async function handleOpenAIModels(req, res) {
                 id: model.id,
                 object: 'model',
                 created: Math.floor(Date.now() / 1000),
-                owned_by: model.vendor || 'codebuddy'
+                owned_by: 'codebuddy'
             }))
         });
     } catch (error) {
         logger.error('Failed to get OpenAI models:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -267,8 +370,13 @@ async function handleOpenAIModels(req, res) {
  * 处理 Anthropic 格式的 /v1/messages 请求
  */
 async function handleAnthropicMessages(req, res) {
+    let tenantInfo = '';
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
+        if (!authResult.error) {
+            const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+            if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
+        }
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -276,22 +384,37 @@ async function handleAnthropicMessages(req, res) {
 
         // 解析 Anthropic 格式的请求
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
+
+        const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
         // 转换为 OpenAI 格式
         const openAIPayload = anthropicToOpenAI(anthropicPayload);
-        openAIPayload.model = mapCodebuddyModelName(openAIPayload.model);
+
+        // 映射 Codex 传入的模型名到实际可用模型
+        if (openAIPayload.model) {
+            openAIPayload.model = mapModelName(openAIPayload.model);
+        }
 
         // 注入行为规则（translateMessages 不再内部注入，统一在路由层注入一次）
         openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
+        const conversationId = resolveConversationId(req, openAIPayload.messages, openAIPayload, {
+            tenantId: authResult.tenantId
+        });
 
         // 调用 CodeBuddy API
         const response = await createChatCompletions(openAIPayload, {
             credential: authResult.credential,
-            conversationId: req.headers['x-conversation-id'],
+            conversationId,
             conversationRequestId: req.headers['x-conversation-request-id'],
             conversationMessageId: req.headers['x-conversation-message-id'],
-            requestId: req.headers['x-request-id']
+            requestId: req.headers['x-request-id'],
+            ...tenantMeta
         });
 
         // 判断是否为流式响应
@@ -427,20 +550,31 @@ async function handleAnthropicMessages(req, res) {
                     state.appendText(partialTextBuffer);
                     partialTextBuffer = '';
                 }
-                state.endMessage(state.finalStopReason, {
-                    inputTokens: streamInputTokens,
-                    outputTokens: streamOutputTokens,
-                    cacheHitTokens: streamCacheHitTokens
-                });
-                credentialStore.incrementApiCallCount();
-                credentialStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
-                credentialStore.incrementCreditUsage(streamCredit);
-                credentialStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCredit);
+                state.endMessage(state.finalStopReason);
+                if (authResult.tenantId) {
+                    unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                    unifiedTenantManager.incrementTokenUsage(
+                        authResult.tenantId, 'codebuddy',
+                        streamInputTokens,
+                        streamOutputTokens,
+                        streamCacheHitTokens
+                    );
+                    unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', streamCredit);
+                    unifiedTenantManager.recordDailyUsage(
+                        authResult.tenantId, 'codebuddy',
+                        streamInputTokens,
+                        streamOutputTokens,
+                        streamCacheHitTokens,
+                        streamCredit,
+                        pickModelName(streamModel, anthropicPayload.model)
+                    );
+                    sampleRequest(authResult.tenantId, 'codebuddy', anthropicPayload, null, pickModelName(streamModel, anthropicPayload.model)).catch(() => {});
+                }
                 res.end();
             });
 
             responseBody.on('error', (err) => {
-                logger.error('Stream error:', err);
+                logger.error(`Stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
                 state.emitErrorText('模型请求异常，请稍后重试。\n' + (err?.message || ''));
                 state.finalStopReason = 'error';
                 state.endMessage('error');
@@ -451,14 +585,17 @@ async function handleAnthropicMessages(req, res) {
             const {aggregateStreamResponse} = await import('../services/codebuddy/api.js');
             const aggregated = await aggregateStreamResponse(response.body);
 
-            const inputTokens = aggregated.usage ? aggregated.usage.prompt_tokens || 0 : 0;
-            const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
-            const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-            const credit = aggregated.usage ? aggregated.usage.credit || 0 : 0;
-            credentialStore.incrementApiCallCount();
-            credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-            credentialStore.incrementCreditUsage(credit);
-            credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, credit);
+            if (authResult.tenantId) {
+                const inputTokens = aggregated.usage ? aggregated.usage.prompt_tokens || 0 : 0;
+                const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
+                const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
+                const credit = aggregated.usage ? aggregated.usage.credit || 0 : 0;
+                unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+                unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+                unifiedTenantManager.recordDailyUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens, credit, pickModelName(aggregated.model, anthropicPayload.model));
+                sampleRequest(authResult.tenantId, 'codebuddy', anthropicPayload, aggregated, pickModelName(aggregated.model, anthropicPayload.model)).catch(() => {});
+            }
 
             const openAIResponse = {
                 id: aggregated.id || `msg_${Date.now()}`,
@@ -489,8 +626,7 @@ async function handleAnthropicMessages(req, res) {
             sendJson(res, 200, anthropicResponse);
         }
     } catch (error) {
-        logger.error('Failed to handle Anthropic messages:', error);
-        handleUpstreamRateLimit(error);
+        logger.error(`Failed to handle Anthropic messages${tenantInfo ? `, ${tenantInfo}` : ''}:`, error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -500,14 +636,14 @@ async function handleAnthropicMessages(req, res) {
  */
 async function handleAnthropicCountTokens(req, res) {
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
 
         const text = JSON.stringify(anthropicPayload.messages);
         const estimatedTokens = Math.ceil(text.length / 4);
@@ -515,7 +651,6 @@ async function handleAnthropicCountTokens(req, res) {
         sendJson(res, 200, {input_tokens: estimatedTokens});
     } catch (error) {
         logger.error('Failed to count tokens:', error);
-        handleUpstreamRateLimit(error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -525,7 +660,7 @@ async function handleAnthropicCountTokens(req, res) {
  */
 async function handleAnthropicModels(req, res) {
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -538,7 +673,7 @@ async function handleAnthropicModels(req, res) {
                 id: model.id,
                 object: 'model',
                 created: 0,
-                owned_by: model.vendor || 'codebuddy',
+                owned_by: 'codebuddy',
                 name: model.name,
                 capabilities: {}
             })),
@@ -546,9 +681,23 @@ async function handleAnthropicModels(req, res) {
         });
     } catch (error) {
         logger.error('Failed to get Anthropic models:', error);
-        handleUpstreamRateLimit(error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
+}
+
+/**
+ * 获取租户的凭证管理器（用于凭证管理端点）
+ */
+async function resolveTenantManager(req) {
+    const tenantId = req.tenantId;
+    if (!tenantId) return {error: {status: 401, message: 'Unauthorized'}};
+    // Use the existing codebuddy tenant-manager for credential operations
+    // (still needed until Task 20 extracts credential manager)
+    const manager = await unifiedTenantManager.getCodebuddyCredentialManager
+        ? await unifiedTenantManager.getCodebuddyCredentialManager(tenantId)
+        : null;
+    if (!manager) return {error: {status: 404, message: 'Tenant credential manager not available'}};
+    return {manager, tenantId};
 }
 
 /**
@@ -556,8 +705,13 @@ async function handleAnthropicModels(req, res) {
  * 将 Responses 格式转为 Chat Completions 发给上游，再将响应转回 Responses 格式
  */
 async function handleResponsesAPI(req, res) {
+    let tenantInfo = '';
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
+        if (!authResult.error) {
+            const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+            if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
+        }
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -566,21 +720,37 @@ async function handleResponsesAPI(req, res) {
         const body = await parseBody(req);
         const responsesReq = JSON.parse(body);
 
-        // Responses -> Chat Completions
+        // Responses → Chat Completions
         const chatReq = responsesRequestToChat(responsesReq);
-        chatReq.model = mapCodebuddyModelName(chatReq.model);
+
+        // 映射 Codex 传入的模型名到实际可用模型
+        if (chatReq.model) {
+            chatReq.model = mapModelName(chatReq.model);
+        }
+
         chatReq.messages = injectBehaviorRules(chatReq.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        chatReq.messages = stripDynamicReminders(chatReq.messages);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
+        const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {
+            tenantId: authResult.tenantId
+        });
+
+        const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
         const response = await createChatCompletions(chatReq, {
             credential: authResult.credential,
-            conversationId: req.headers['x-conversation-id'],
+            conversationId,
             conversationRequestId: req.headers['x-conversation-request-id'],
             conversationMessageId: req.headers['x-conversation-message-id'],
-            requestId: req.headers['x-request-id']
+            requestId: req.headers['x-request-id'],
+            ...tenantMeta
         });
 
         if (responsesReq.stream) {
-            // 流式：解析 Chat SSE -> Responses SSE
+            // 流式：解析 Chat SSE → Responses SSE
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
@@ -630,25 +800,32 @@ async function handleResponsesAPI(req, res) {
                 // 如果没有正常完成，兜底发送 response.completed
                 if (!streamState.started || !streamState.finished) {
                     if (streamState.reasoningOpen) {
+                        const item = {type: 'reasoning', id: streamState.reasoningItemId, status: 'completed', summary: [{type: 'summary_text', text: streamState.reasoningText}]};
                         res.write(`event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`);
-                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'reasoning', id: streamState.reasoningItemId, status: 'completed', summary: [{type: 'summary_text', text: streamState.reasoningText}]}})}\n\n`);
+                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
+                        streamState.output.push(item);
                         streamState.outputIndex++;
                     }
                     if (streamState.messageOpen) {
+                        const item = {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]};
                         res.write(`event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`);
-                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item: {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]}})}\n\n`);
+                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
+                        streamState.output.push(item);
                     }
-                    res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: [], usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
+                    res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
                 }
-                credentialStore.incrementApiCallCount();
-                credentialStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
-                credentialStore.incrementCreditUsage(streamCredit);
-                credentialStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCredit);
+                if (authResult.tenantId) {
+                    unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                    unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', streamCredit);
+                    unifiedTenantManager.recordDailyUsage(authResult.tenantId, 'codebuddy', streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCredit, pickModelName(streamModel, responsesReq.model));
+                    sampleRequest(authResult.tenantId, 'codebuddy', responsesReq, null, pickModelName(streamModel, responsesReq.model)).catch(() => {});
+                }
                 res.end();
             });
 
             response.body.on('error', (err) => {
-                logger.error('Responses stream error:', err);
+                logger.error(`Responses stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
                 res.end();
             });
         } else {
@@ -656,14 +833,17 @@ async function handleResponsesAPI(req, res) {
             const {aggregateStreamResponse} = await import('../services/codebuddy/api.js');
             const aggregated = await aggregateStreamResponse(response.body);
 
-            const inputTokens = aggregated.usage?.prompt_tokens || 0;
-            const outputTokens = aggregated.usage?.completion_tokens || 0;
-            const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-            const credit = aggregated.usage?.credit || 0;
-            credentialStore.incrementApiCallCount();
-            credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-            credentialStore.incrementCreditUsage(credit);
-            credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, credit);
+            if (authResult.tenantId) {
+                const inputTokens = aggregated.usage?.prompt_tokens || 0;
+                const outputTokens = aggregated.usage?.completion_tokens || 0;
+                const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
+                const credit = aggregated.usage?.credit || 0;
+                unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+                unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+                unifiedTenantManager.recordDailyUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens, credit, pickModelName(aggregated.model, responsesReq.model));
+                sampleRequest(authResult.tenantId, 'codebuddy', responsesReq, aggregated, pickModelName(aggregated.model, responsesReq.model)).catch(() => {});
+            }
 
             const chatResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -686,8 +866,7 @@ async function handleResponsesAPI(req, res) {
             sendJson(res, 200, chatResponseToResponses(chatResponse));
         }
     } catch (error) {
-        logger.error('Failed to handle Responses API:', error);
-        handleUpstreamRateLimit(error);
+        logger.error(`Failed to handle Responses API${tenantInfo ? `, ${tenantInfo}` : ''}:`, error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -697,7 +876,7 @@ async function handleResponsesAPI(req, res) {
  */
 async function handleResponsesCompact(req, res) {
     try {
-        const authResult = getCredentialOrFail();
+        const authResult = await authenticateAndGetCredential(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -706,27 +885,46 @@ async function handleResponsesCompact(req, res) {
         const body = await parseBody(req);
         const compactReq = JSON.parse(body);
 
-        // Compact -> Chat Completions
+        // Compact → Chat Completions
         const chatReq = compactRequestToChat(compactReq);
-        chatReq.model = mapCodebuddyModelName(chatReq.model);
+
+        // 映射 Codex 传入的模型名到实际可用模型
+        if (chatReq.model) {
+            chatReq.model = mapModelName(chatReq.model);
+        }
+
         chatReq.messages = injectBehaviorRules(chatReq.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        chatReq.messages = stripDynamicReminders(chatReq.messages);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
+        const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {
+            tenantId: authResult.tenantId
+        });
+
+        const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
         const response = await createChatCompletions(chatReq, {
             credential: authResult.credential,
-            conversationId: req.headers['x-conversation-id']
+            conversationId,
+            ...tenantMeta
         });
 
         const {aggregateStreamResponse} = await import('../services/codebuddy/api.js');
         const aggregated = await aggregateStreamResponse(response.body);
 
-        const inputTokens = aggregated.usage?.prompt_tokens || 0;
-        const outputTokens = aggregated.usage?.completion_tokens || 0;
-        const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-        const credit = aggregated.usage?.credit || 0;
-        credentialStore.incrementApiCallCount();
-        credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-        credentialStore.incrementCreditUsage(credit);
-        credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, credit);
+        if (authResult.tenantId) {
+            const inputTokens = aggregated.usage?.prompt_tokens || 0;
+            const outputTokens = aggregated.usage?.completion_tokens || 0;
+            const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
+            const credit = aggregated.usage?.credit || 0;
+            unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+            unifiedTenantManager.incrementTokenUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+            unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+            unifiedTenantManager.recordDailyUsage(authResult.tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens, credit, pickModelName(aggregated.model, compactReq.model));
+            sampleRequest(authResult.tenantId, 'codebuddy', compactReq, aggregated, pickModelName(aggregated.model, compactReq.model)).catch(() => {});
+        }
 
         const chatResponse = {
             id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -744,28 +942,35 @@ async function handleResponsesCompact(req, res) {
         sendJson(res, 200, chatResponseToCompact(chatResponse));
     } catch (error) {
         logger.error('Failed to handle Responses Compact:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
 
 /**
- * 处理凭证管理端点
+ * 处理凭证管理端点 - 基于租户体系
  */
 async function handleCredentials(req, res, method, pathname) {
-    const tm = credentialStore.getTokenManager();
-
     try {
         // GET /v1/credentials - 列出所有凭证
         if (method === 'GET' && pathname === '/v1/credentials') {
-            const credentials = tm.getCredentialsInfo();
+            const resolved = await resolveTenantManager(req);
+            if (resolved.error) {
+                sendOpenAIError(res, resolved.error.status, resolved.error.message);
+                return;
+            }
+            const credentials = resolved.manager.getCredentialsInfo();
             sendJson(res, 200, {credentials});
             return;
         }
 
         // GET /v1/credentials/current - 获取当前凭证
         if (method === 'GET' && pathname === '/v1/credentials/current') {
-            const info = tm.getCurrentCredentialInfo();
+            const resolved = await resolveTenantManager(req);
+            if (resolved.error) {
+                sendOpenAIError(res, resolved.error.status, resolved.error.message);
+                return;
+            }
+            const info = resolved.manager.getCurrentCredentialInfo();
             sendJson(res, 200, info);
             return;
         }
@@ -781,18 +986,20 @@ async function handleCredentials(req, res, method, pathname) {
             }
 
             // 阻止使用已废弃域名
-            try {
-                const credentialHost = new URL(getCodebuddyBaseUrl(data.base_url)).host;
-                if (BLOCKED_DOMAINS.includes(credentialHost)) {
-                    sendOpenAIError(res, 400, `域名 ${credentialHost} 已废弃，不允许添加凭证`);
-                    return;
-                }
-            } catch {
-                // base_url 格式无效，由下游处理
+            const credentialHost = new URL(getCodebuddyBaseUrl(data.base_url)).host;
+            if (BLOCKED_DOMAINS.includes(credentialHost)) {
+                sendOpenAIError(res, 400, `域名 ${credentialHost} 已废弃，不允许添加凭证`);
+                return;
             }
 
-            const success = tm.addCredentialWithData(data, data.filename);
+            const resolved = await resolveTenantManager(req);
+            if (resolved.error) {
+                sendOpenAIError(res, resolved.error.status, resolved.error.message);
+                return;
+            }
+            const success = await resolved.manager.addCredentialWithData(data, data.filename);
             if (success) {
+                unifiedTenantManager.syncCredentialCount(resolved.tenantId);
                 sendJson(res, 200, {message: 'Credential added successfully'});
             } else {
                 sendOpenAIError(res, 500, 'Failed to save credential');
@@ -810,29 +1017,17 @@ async function handleCredentials(req, res, method, pathname) {
                 return;
             }
 
-            const success = tm.setManualCredential(data.index);
+            const resolved = await resolveTenantManager(req);
+            if (resolved.error) {
+                sendOpenAIError(res, resolved.error.status, resolved.error.message);
+                return;
+            }
+            const success = await resolved.manager.setActiveCredential(data.index);
             if (success) {
-                sendJson(res, 200, {message: `Credential #${data.index + 1} selected successfully`});
+                sendJson(res, 200, {message: `Credential #${data.index + 1} set as active`});
             } else {
                 sendOpenAIError(res, 400, 'Invalid credential index');
             }
-            return;
-        }
-
-        // POST /v1/credentials/auto - 恢复自动轮换
-        if (method === 'POST' && pathname === '/v1/credentials/auto') {
-            tm.clearManualSelection();
-            sendJson(res, 200, {message: 'Resumed automatic credential rotation'});
-            return;
-        }
-
-        // POST /v1/credentials/toggle-rotation - 切换自动轮换
-        if (method === 'POST' && pathname === '/v1/credentials/toggle-rotation') {
-            const isEnabled = tm.toggleAutoRotation();
-            sendJson(res, 200, {
-                message: `Auto rotation ${isEnabled ? 'enabled' : 'disabled'}`,
-                auto_rotation_enabled: isEnabled
-            });
             return;
         }
 
@@ -846,8 +1041,14 @@ async function handleCredentials(req, res, method, pathname) {
                 return;
             }
 
-            const success = tm.deleteCredential(data.index);
+            const resolved = await resolveTenantManager(req);
+            if (resolved.error) {
+                sendOpenAIError(res, resolved.error.status, resolved.error.message);
+                return;
+            }
+            const success = await resolved.manager.deleteCredential(data.index);
             if (success) {
+                unifiedTenantManager.syncCredentialCount(resolved.tenantId);
                 sendJson(res, 200, {message: `Credential #${data.index + 1} deleted successfully`});
             } else {
                 sendOpenAIError(res, 400, 'Invalid index or failed to delete credential');
@@ -858,7 +1059,6 @@ async function handleCredentials(req, res, method, pathname) {
         sendOpenAIError(res, 404, 'Credential endpoint not found');
     } catch (error) {
         logger.error('Credential management error:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -867,14 +1067,12 @@ async function handleCredentials(req, res, method, pathname) {
  * 处理根路径 - 服务信息
  */
 function handleRoot(req, res) {
-    const tm = credentialStore.getTokenManager();
-    const info = tm.getCurrentCredentialInfo();
+    const tenantCount = unifiedTenantManager.listTenants().length;
     sendJson(res, 200, {
         name: 'CodeBuddy API Proxy',
         version: '1.0.0',
         modes: ['openai', 'anthropic'],
-        authenticated: tm.hasCredentials(),
-        currentCredential: info,
+        tenantCount,
         endpoints: {
             openai: {
                 chatCompletions: 'POST /codebuddy/v1/chat/completions - OpenAI format',
@@ -888,11 +1086,6 @@ function handleRoot(req, res) {
                 models: 'GET /codebuddy/anthropic/v1/models - Claude format models'
             },
             credentials: 'GET/POST /codebuddy/v1/credentials - Manage credentials'
-        },
-        configuration: {
-            autoRotation: tm.autoRotationEnabled,
-            rotationCount: tm.rotationCount,
-            credsDir: '.codebuddy'
         }
     });
 }
@@ -903,46 +1096,47 @@ function handleRoot(req, res) {
  * 处理 CodeBuddy Responses API WebSocket 连接
  * 客户端通过 WS 连接 /codebuddy/v1/responses，发送标准 Responses API WS 协议
  * CodeBuddy 上游使用 OpenAI Chat HTTP，服务端做 WS→HTTP→WS 转换
+ *
+ * 注意：鉴权已在 server.js 的 upgrade handler 中完成，
+ * 并通过 req.tenantId 注入到这里。
+ *
  * @param {import('ws').WebSocket} clientWs - 客户端 WebSocket 连接
- * @param {http.IncomingMessage} req - 原始 HTTP 请求
+ * @param {import('http').IncomingMessage} req - 原始 HTTP 请求（已注入 tenantId）
  */
 export function handleCodebuddyResponsesWS(clientWs, req) {
     handleWSConnection(clientWs, {
         authenticate: () => true,
         req,
         handleRequest: async function* (payload, authResult, {signal}) {
-            const credential = getCredential();
+            const tenantId = req.tenantId;
+            const credential = await unifiedTenantManager.listCodebuddyCredentials(tenantId)
+                .then(creds => resolveCredential(req.headers, creds));
             if (!credential) {
-                throw Object.assign(new Error('No valid CodeBuddy credentials'), {
-                    name: 'ResponsesWSError',
-                    event: {type: 'error', error: {message: 'No valid CodeBuddy credentials', code: 'no_credentials'}}
+                throw Object.assign(new Error('No available credentials for tenant'), {
+                    name: 'ResponsesWebSocketError',
+                    event: {type: 'error', error: {message: 'No available credentials for tenant', code: 'no_credentials'}}
                 });
             }
 
-            // Responses → Chat Completions 转换
-            const mappedModel = mapCodebuddyModelName(payload.model);
-            const chatReq = responsesRequestToChat({...payload, model: mappedModel});
+            // Responses → Chat Completions
+            const chatReq = responsesRequestToChat(payload);
+            if (chatReq.model) chatReq.model = mapModelName(chatReq.model);
             chatReq.messages = injectBehaviorRules(chatReq.messages);
+            chatReq.messages = stripDynamicReminders(chatReq.messages);
             chatReq.stream = true;
+
+            const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {tenantId});
+            const tenant = unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
             const response = await createChatCompletions(chatReq, {
                 credential,
-                conversationId: req.headers['x-conversation-id'],
+                conversationId,
                 conversationRequestId: req.headers['x-conversation-request-id'],
                 conversationMessageId: req.headers['x-conversation-message-id'],
-                requestId: req.headers['x-request-id']
+                requestId: req.headers['x-request-id'],
+                ...tenantMeta
             });
-
-            if (response.status >= 400) {
-                const err = new CodeBuddyApiError(response.status, `CodeBuddy API error: ${response.status}`);
-                if (response.status === 429) {
-                    markLastReturnedRateLimited();
-                }
-                throw Object.assign(err, {
-                    name: 'ResponsesWSError',
-                    event: {type: 'error', error: {message: `Upstream error: ${response.status}`, code: 'upstream_error'}}
-                });
-            }
 
             // 将 Chat SSE 流转换为 Responses WS 事件
             const streamState = createResponsesStreamState();
@@ -972,9 +1166,11 @@ export function handleCodebuddyResponsesWS(clientWs, req) {
             }
         },
         onUsage: (inputTokens, outputTokens, cacheHitTokens, model) => {
-            credentialStore.incrementApiCallCount();
-            credentialStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-            credentialStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, model);
+            const tenantId = req.tenantId;
+            if (!tenantId) return;
+            unifiedTenantManager.incrementApiCallCount(tenantId, 'codebuddy');
+            unifiedTenantManager.incrementTokenUsage(tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens);
+            unifiedTenantManager.recordDailyUsage(tenantId, 'codebuddy', inputTokens, outputTokens, cacheHitTokens, 0, model);
         }
     });
 }

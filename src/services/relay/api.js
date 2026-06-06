@@ -1,31 +1,36 @@
 /**
  * Relay API 调用模块
  * 向上游 LLM API 发送请求，支持 per-upstream 代理（HTTP/HTTPS/SOCKS5）及 agent 缓存
- * 支持 Responses API WebSocket 模式
  * @module services/relay/api
  */
 
+import https from 'https';
 import {request, readBody} from '../../utils/http-client.js';
 import {HttpsProxyAgent} from 'https-proxy-agent';
 import {SocksProxyAgent} from 'socks-proxy-agent';
 import {buildUrl} from '../../utils/helpers.js';
-import {normalizePayload} from '../../transformer/shared-translator.js';
-import {ResponsesWSPool} from '../ws/ws-pool.js';
-import {connectWebSocket, ResponsesWSError, sendRequest} from '../ws/ws-client.js';
+import {normalizePayload, normalizeResponsesPayload} from '../../transformer/shared-translator.js';
+import {interceptAndSerialize} from '../../utils/payload-interceptor.js';
+import {
+    acquire as acquireResponsesWS,
+    release as releaseResponsesWS,
+    discard as discardResponsesWS,
+    sendRequest as sendResponsesWSRequest
+} from '../shared/responses-ws-pool.js';
 import logger from '../../utils/logger.js';
 
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 
 /**
  * Relay 上游错误
- * 保留上游 HTTP 状态码，便于路由层区分 429 等特殊状态
+ * 保留上游 HTTP 状态码，便于路由层区分 429 等特殊状态并透传
  */
 export class RelayUpstreamError extends Error {
     /**
+     * @param {string} message - 错误信息（保持与原错误格式一致）
      * @param {number} status - 上游 HTTP 状态码
-     * @param {string} message - 错误信息
      */
-    constructor(status, message) {
+    constructor(message, status) {
         super(message);
         this.name = 'RelayUpstreamError';
         this.status = status;
@@ -35,68 +40,81 @@ export class RelayUpstreamError extends Error {
 // ==================== 代理 Agent 缓存 ====================
 
 /**
- * 按 proxy URL 缓存的 agent 实例，避免每次请求重复创建
- * @type {Map<string, HttpsProxyAgent|SocksProxyAgent>}
+ * 按 "proxyUrl|tls-mode" 联合 key 缓存的 agent 实例，避免每次请求重复创建
+ * - tls-mode: skip-tls 表示 rejectUnauthorized=false（跳过 TLS 校验）
+ * @type {Map<string, HttpsProxyAgent|SocksProxyAgent|https.Agent>}
  */
 const proxyAgentCache = new Map();
 
 /**
- * 获取代理 Agent（带缓存）
- * - 代理 URL 为空或 falsy 时返回 undefined（直连）
- * - socks5:// / socks4:// 开头使用 SocksProxyAgent
- * - http:// / https:// 开头使用 HttpsProxyAgent
+ * 获取代理 / TLS Agent（带缓存）
+ * - 无 proxy 且非 skip_tls_verify：返回 undefined（直连，使用 Node 默认 agent）
+ * - 无 proxy 但 skip_tls_verify：返回 https.Agent({rejectUnauthorized:false})（仅作用于 HTTPS）
+ * - 有 proxy：根据协议构造 HttpsProxyAgent / SocksProxyAgent，并把 rejectUnauthorized 透传
  *
- * @param {string} [proxyUrl] - 代理地址
- * @param {boolean} [rejectUnauthorized=true] - 是否校验 TLS 证书
- * @returns {HttpsProxyAgent|SocksProxyAgent|undefined}
+ * @param {object} upstream - 上游配置
+ * @param {string} [upstream.proxy] - 代理地址
+ * @param {boolean} [upstream.skip_tls_verify] - 是否跳过上游 TLS 证书校验
+ * @returns {HttpsProxyAgent|SocksProxyAgent|https.Agent|undefined}
  */
-export function getProxyAgent(proxyUrl, rejectUnauthorized = true) {
-    if (!proxyUrl) {
-        return undefined;
-    }
+export function getProxyAgent(upstream) {
+    const proxyUrl = upstream.proxy;
+    const skipTls = upstream.skip_tls_verify === true;
+    const tlsKey = skipTls ? 'skip-tls' : 'verify-tls';
+    const cacheKey = `${proxyUrl || 'no-proxy'}|${tlsKey}`;
 
-    // 命中缓存（区分 TLS 校验模式）
-    const cacheKey = `${proxyUrl}:${rejectUnauthorized ? 'tls-verify' : 'tls-skip'}`;
+    // 命中缓存
     if (proxyAgentCache.has(cacheKey)) {
         return proxyAgentCache.get(cacheKey);
     }
 
+    // 无 proxy 分支：只有需要跳过 TLS 校验时才创建专用 Agent；否则直连
+    if (!proxyUrl) {
+        if (!skipTls) return undefined;
+        const agent = new https.Agent({rejectUnauthorized: false});
+        proxyAgentCache.set(cacheKey, agent);
+        return agent;
+    }
+
+    // 有 proxy 分支
     let agent;
     try {
-        const agentOptions = {rejectUnauthorized};
+        const agentOptions = skipTls ? {rejectUnauthorized: false} : {};
         if (proxyUrl.startsWith('socks5://') || proxyUrl.startsWith('socks4://') || proxyUrl.startsWith('socks://')) {
             agent = new SocksProxyAgent(proxyUrl, agentOptions);
         } else if (proxyUrl.startsWith('http://') || proxyUrl.startsWith('https://')) {
             agent = new HttpsProxyAgent(proxyUrl, agentOptions);
         } else {
-            logger.warn(`Relay API: 不支持的代理协议 "${proxyUrl}"，将直连`);
+            logger.warn(`[${upstream.name}]: 不支持的代理协议 "${proxyUrl}"，将直连`);
             return undefined;
         }
 
         proxyAgentCache.set(cacheKey, agent);
         return agent;
     } catch (err) {
-        logger.error(`Relay API: 创建代理 Agent 失败 (${proxyUrl}): ${err.message}`);
+        logger.error(`[${upstream.name}]: 创建代理 Agent 失败 (${proxyUrl}): ${err.message}`);
         return undefined;
     }
 }
 
-// ==================== 协议感知 ====================
+// ==================== Chat Completions ====================
 
-/**
- * 判断上游是否指向本地 Copilot 端点
- */
-function isLocalCopilotUpstream(base_url) {
-    try {
-        const url = new URL(base_url);
-        return (url.hostname === '127.0.0.1' || url.hostname === 'localhost') && url.pathname.includes('/copilot');
-    } catch {
-        return false;
+function buildProtocolAwareUrl(upstream, endpoint) {
+    if (!isAnthropicUpstream(upstream)) {
+        return buildUrl(upstream.base_url, endpoint);
     }
-}
 
-export function buildProtocolAwareUrl(upstream, endpoint) {
-    return buildUrl(upstream.base_url, endpoint);
+    try {
+        const url = new URL(upstream.base_url);
+        const pathname = url.pathname.replace(/\/+$/, '');
+        const needsV1 = pathname.endsWith('/anthropic') || pathname.endsWith('/messages');
+        const normalizedBaseUrl = needsV1 ? `${upstream.base_url.replace(/\/+$/, '')}/v1` : upstream.base_url;
+        return buildUrl(normalizedBaseUrl, endpoint);
+    } catch {
+        const trimmed = upstream.base_url.replace(/\/+$/, '');
+        const normalizedBaseUrl = /\/anthropic$/.test(trimmed) ? `${trimmed}/v1` : trimmed;
+        return buildUrl(normalizedBaseUrl, endpoint);
+    }
 }
 
 export function normalizeUpstreamProtocol(protocol) {
@@ -112,7 +130,9 @@ export function isResponsesUpstream(upstream) {
     return normalizeUpstreamProtocol(upstream?.protocol) === 'responses';
 }
 
-// ==================== 请求辅助 ====================
+export function isResponsesWebSocketUpstream(upstream) {
+    return normalizeUpstreamProtocol(upstream?.protocol) === 'responses_ws';
+}
 
 function buildBaseHeaders(upstream, extraHeaders = {}) {
     const headers = {
@@ -121,8 +141,9 @@ function buildBaseHeaders(upstream, extraHeaders = {}) {
     };
 
     if (isAnthropicUpstream(upstream)) {
-        headers.Authorization = `Bearer ${upstream.api_key}`;
+        headers['x-api-key'] = upstream.api_key;
         headers['anthropic-version'] = extraHeaders['anthropic-version'] || DEFAULT_ANTHROPIC_VERSION;
+        delete headers.Authorization;
         return headers;
     }
 
@@ -130,19 +151,26 @@ function buildBaseHeaders(upstream, extraHeaders = {}) {
     return headers;
 }
 
-function applyProxyAndCopilot(upstream, headers, options) {
-    if (isLocalCopilotUpstream(upstream.base_url) && upstream.proxy && !isAnthropicUpstream(upstream)) {
-        headers['X-Copilot-Proxy'] = upstream.proxy;
-    }
-
-    const rejectUnauthorized = upstream.skip_tls_verify !== true;
-
-    const proxyAgent = getProxyAgent(upstream.proxy, rejectUnauthorized);
+function applyProxy(upstream, options) {
+    const proxyAgent = getProxyAgent(upstream);
     if (proxyAgent) {
         options.agent = proxyAgent;
     }
+}
 
-    options.rejectUnauthorized = rejectUnauthorized;
+export function buildResponsesWebSocketUrl(upstream, endpoint = 'responses') {
+    const httpUrl = buildProtocolAwareUrl(upstream, endpoint);
+    if (httpUrl.startsWith('https://')) return `wss://${httpUrl.slice('https://'.length)}`;
+    if (httpUrl.startsWith('http://')) return `ws://${httpUrl.slice('http://'.length)}`;
+    throw new Error(`[${upstream.name}]: Responses WebSocket URL must start with http:// or https://`);
+}
+
+export function buildResponsesWebSocketHeaders(upstream, extraHeaders = {}) {
+    return buildBaseHeaders(upstream, {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...extraHeaders
+    });
 }
 
 async function requestJson(url, upstream, {method = 'POST', headers = {}, body, timeout = 300000} = {}) {
@@ -157,11 +185,9 @@ async function requestJson(url, upstream, {method = 'POST', headers = {}, body, 
         options.body = body;
     }
 
-    applyProxyAndCopilot(upstream, finalHeaders, options);
+    applyProxy(upstream, options);
     return request(url, options);
 }
-
-// ==================== Chat Completions ====================
 
 /**
  * 向上游发送 OpenAI 格式的聊天请求
@@ -177,20 +203,45 @@ async function requestJson(url, upstream, {method = 'POST', headers = {}, body, 
  * @throws {Error} 上游返回非 2xx 时抛出包含响应体的错误
  */
 export async function createChatCompletions(payload, upstream, meta = {}) {
-    const url = buildProtocolAwareUrl(upstream, 'v1/chat/completions');
+    const url = buildProtocolAwareUrl(upstream, 'chat/completions');
 
     const proxyMode = upstream.proxy ? upstream.proxy : '直连';
     const reasoningEffort = payload.reasoning_effort || 'high';
+    const userInfo = meta.tenantName && meta.tenantUsername ? `${meta.tenantName}(${meta.tenantUsername})` : '';
     logger.info(
-        `[${upstream.name}]: ${upstream.base_url}, model: ${payload.model || 'unknown'}, effort: ${reasoningEffort}, proxy: ${proxyMode}`
+        `[${upstream.name}]: ${upstream.base_url}, model: ${payload.model || 'unknown'}, effort: ${reasoningEffort}, proxy: ${proxyMode}, ${userInfo}`
     );
+
+    // 腾讯云文档要求：prompt_cache_key 标识相同上下文的请求，提升缓存复用
+    if (meta.conversationKey && !payload.prompt_cache_key) {
+        payload.prompt_cache_key = meta.conversationKey;
+    }
+
+    // 缓存策略辅助头部：X-Session-ID 将同一用户的请求路由到同一推理实例
+    const extraHeaders = {
+        'Content-Type': 'application/json'
+    };
+    if (meta.sessionId) {
+        extraHeaders['X-Session-ID'] = meta.sessionId;
+    }
+
+    const debugHeaders = buildBaseHeaders(upstream, extraHeaders);
+    const normalizedPayload = normalizePayload(payload, {source: 'relay', upstream: upstream.name});
 
     const response = await requestJson(url, upstream, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(normalizePayload(payload, {source: 'relay', upstream: upstream.name})),
+        headers: extraHeaders,
+        body: interceptAndSerialize(normalizedPayload, {
+            channel: 'relay',
+            model: payload.model,
+            upstream: upstream.name,
+            endpoint: 'chat/completions',
+            stream: payload.stream,
+            headers: debugHeaders,
+            conversationKey: meta.conversationKey,
+            promptCacheKey: normalizedPayload.prompt_cache_key,
+            ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
+        }),
         timeout: 300000
     });
 
@@ -198,75 +249,145 @@ export async function createChatCompletions(payload, upstream, meta = {}) {
     if (response.status < 200 || response.status >= 300) {
         const errorBody = await readBody(response.body);
         const errorMsg = errorBody.length > 500 ? errorBody.substring(0, 500) + '...' : errorBody;
-        logger.error(`[${upstream.name}] 上游返回 HTTP ${response.status}: ${errorMsg.slice(0, 300)}`);
-        throw new RelayUpstreamError(response.status, `[${upstream.name}]: 上游返回 HTTP ${response.status}: ${errorMsg}`);
+        logger.error(`[${upstream.name}] 上游返回 HTTP ${response.status}${userInfo ? `, ${userInfo}` : ''}: ${errorMsg.slice(0, 300)}`);
+        throw new RelayUpstreamError(`[${upstream.name}]: 上游返回 HTTP ${response.status}: ${errorMsg}`, response.status);
     }
 
     return response;
 }
 
-// ==================== Responses API ====================
-
-export async function createResponses(payload, upstream, meta = {}, endpoint = 'v1/responses') {
+export async function createResponses(payload, upstream, meta = {}, endpoint = 'responses') {
     const url = buildProtocolAwareUrl(upstream, endpoint);
     const proxyMode = upstream.proxy ? upstream.proxy : '直连';
+    const userInfo = meta.tenantName && meta.tenantUsername ? `${meta.tenantName}(${meta.tenantUsername})` : '';
 
     logger.info(
-        `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: responses, proxy: ${proxyMode}`
+        `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: responses, proxy: ${proxyMode}, ${userInfo}`
     );
+
+    // 腾讯云文档要求：prompt_cache_key 标识相同上下文的请求，提升缓存复用
+    if (meta.conversationKey && !payload.prompt_cache_key) {
+        payload.prompt_cache_key = meta.conversationKey;
+    }
+
+    // 缓存策略辅助头部
+    const extraHeaders = {
+        'Content-Type': 'application/json'
+    };
+    if (meta.sessionId) {
+        extraHeaders['X-Session-ID'] = meta.sessionId;
+    }
+
+    const debugHeaders = buildBaseHeaders(upstream, extraHeaders);
+    const normalizedPayload = normalizeResponsesPayload(payload, {source: 'relay', upstream: upstream.name});
 
     const response = await requestJson(url, upstream, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload),
+        headers: extraHeaders,
+        body: interceptAndSerialize(normalizedPayload, {
+            channel: 'relay',
+            model: payload.model,
+            upstream: upstream.name,
+            endpoint: 'responses',
+            stream: payload.stream,
+            headers: debugHeaders,
+            conversationKey: meta.conversationKey,
+            promptCacheKey: normalizedPayload.prompt_cache_key,
+            ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
+        }),
         timeout: 300000
     });
 
     if (response.status < 200 || response.status >= 300) {
         const errorBody = await readBody(response.body);
         const errorMsg = errorBody.length > 500 ? errorBody.substring(0, 500) + '...' : errorBody;
-        logger.error(`[${upstream.name}] Responses 上游返回 HTTP ${response.status}: ${errorMsg.slice(0, 300)}`);
-        throw new RelayUpstreamError(response.status, `[${upstream.name}]: Responses 上游返回 HTTP ${response.status}: ${errorMsg}`);
+        logger.error(`[${upstream.name}] Responses 上游返回 HTTP ${response.status}${userInfo ? `, ${userInfo}` : ''}: ${errorMsg.slice(0, 300)}`);
+        throw new RelayUpstreamError(`[${upstream.name}]: Responses 上游返回 HTTP ${response.status}: ${errorMsg}`, response.status);
     }
 
     return response;
 }
 
-// ==================== Anthropic Protocol ====================
-
-export async function createAnthropicMessages(payload, upstream, meta = {}, requestHeaders = {}) {
-    const url = buildProtocolAwareUrl(upstream, 'v1/messages');
-    const proxyMode = upstream.proxy ? upstream.proxy : '直连';
+export async function createResponsesWebSocket(payload, upstream, meta = {}, endpoint = 'responses') {
+    const url = buildResponsesWebSocketUrl(upstream, endpoint);
+    const rejectUnauthorized = meta.rejectUnauthorized !== false;
+    const agent = getProxyAgent(upstream);
+    const headers = buildResponsesWebSocketHeaders(upstream, meta.headers || {});
+    const proxyMode = upstream.proxy ? upstream.proxy : 'direct';
+    const networkKey = `${url}:${proxyMode}:${rejectUnauthorized ? 'tls-verify' : 'tls-skip'}`;
+    const userInfo = meta.tenantName && meta.tenantUsername ? `${meta.tenantName}(${meta.tenantUsername})` : '';
 
     logger.info(
-        `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: anthropic, proxy: ${proxyMode}`
+        `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: responses_ws, proxy: ${proxyMode}, ${userInfo}`
     );
+
+    const conn = await acquireResponsesWS({
+        url,
+        headers,
+        authKey: upstream.api_key || upstream.name || url,
+        agent,
+        rejectUnauthorized,
+        contextKey: meta.contextKey,
+        preferredPreviousResponseId: payload.previous_response_id,
+        networkKey
+    });
+
+    return {eventStream: sendResponsesWSRequest(conn, payload), conn};
+}
+
+export function releaseResponsesWebSocketConnection(conn) {
+    releaseResponsesWS(conn);
+}
+
+export function discardResponsesWebSocketConnection(conn) {
+    discardResponsesWS(conn);
+}
+
+export async function createAnthropicMessages(payload, upstream, meta = {}, requestHeaders = {}) {
+    const url = buildProtocolAwareUrl(upstream, 'messages');
+    const proxyMode = upstream.proxy ? upstream.proxy : '直连';
+    const userInfo = meta.tenantName && meta.tenantUsername ? `${meta.tenantName}(${meta.tenantUsername})` : '';
+
+    logger.info(
+        `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: anthropic, proxy: ${proxyMode}, ${userInfo}`
+    );
+
+    const extraHeaders = {
+        'Content-Type': 'application/json',
+        'anthropic-version': requestHeaders['anthropic-version'] || DEFAULT_ANTHROPIC_VERSION,
+        ...(requestHeaders['anthropic-beta'] ? {'anthropic-beta': requestHeaders['anthropic-beta']} : {})
+    };
+    const debugHeaders = buildBaseHeaders(upstream, extraHeaders);
 
     const response = await requestJson(url, upstream, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'anthropic-version': requestHeaders['anthropic-version'] || DEFAULT_ANTHROPIC_VERSION,
-            ...(requestHeaders['anthropic-beta'] ? {'anthropic-beta': requestHeaders['anthropic-beta']} : {})
-        },
-        body: JSON.stringify(payload),
+        headers: extraHeaders,
+        body: interceptAndSerialize(payload, {
+            channel: 'relay',
+            model: payload.model,
+            upstream: upstream.name,
+            endpoint: 'messages',
+            stream: payload.stream,
+            headers: debugHeaders,
+            conversationKey: meta.conversationKey,
+            promptCacheKey: payload.prompt_cache_key,
+            ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
+        }),
         timeout: 300000
     });
 
     if (response.status < 200 || response.status >= 300) {
         const errorBody = await readBody(response.body);
         const errorMsg = errorBody.length > 500 ? errorBody.substring(0, 500) + '...' : errorBody;
-        logger.error(`[${upstream.name}] Anthropic 上游返回 HTTP ${response.status}: ${errorMsg.slice(0, 300)}`);
-        throw new RelayUpstreamError(response.status, `[${upstream.name}]: Anthropic 上游返回 HTTP ${response.status}: ${errorMsg}`);
+        logger.error(`[${upstream.name}] Anthropic 上游返回 HTTP ${response.status}${userInfo ? `, ${userInfo}` : ''}: ${errorMsg.slice(0, 300)}`);
+        throw new RelayUpstreamError(`[${upstream.name}]: Anthropic 上游返回 HTTP ${response.status}: ${errorMsg}`, response.status);
     }
 
     return response;
 }
 
 export async function createAnthropicCountTokens(payload, upstream, requestHeaders = {}) {
-    const url = buildProtocolAwareUrl(upstream, 'v1/messages/count_tokens');
+    const url = buildProtocolAwareUrl(upstream, 'messages/count_tokens');
     const response = await requestJson(url, upstream, {
         method: 'POST',
         headers: {
@@ -281,7 +402,7 @@ export async function createAnthropicCountTokens(payload, upstream, requestHeade
     if (response.status < 200 || response.status >= 300) {
         const errorBody = await readBody(response.body);
         const errorMsg = errorBody.length > 500 ? errorBody.substring(0, 500) + '...' : errorBody;
-        throw new RelayUpstreamError(response.status, `[${upstream.name}]: count_tokens 失败 HTTP ${response.status}: ${errorMsg}`);
+        throw new RelayUpstreamError(`[${upstream.name}]: count_tokens 失败 HTTP ${response.status}: ${errorMsg}`, response.status);
     }
 
     return response;
@@ -300,7 +421,7 @@ export async function createAnthropicCountTokens(payload, upstream, requestHeade
  * @throws {Error} 请求失败或响应无法解析时抛出
  */
 export async function getUpstreamModels(upstream, requestHeaders = {}) {
-    const url = buildProtocolAwareUrl(upstream, 'v1/models');
+    const url = buildProtocolAwareUrl(upstream, 'models');
 
     const proxyMode = upstream.proxy ? upstream.proxy : '直连';
     logger.info(`[${upstream.name}]:GET ${url} proxy=${proxyMode}`);
@@ -323,7 +444,7 @@ export async function getUpstreamModels(upstream, requestHeaders = {}) {
     if (response.status < 200 || response.status >= 300) {
         const errorBody = await readBody(response.body);
         const errorMsg = errorBody.length > 500 ? errorBody.substring(0, 500) + '...' : errorBody;
-        throw new RelayUpstreamError(response.status, `[${upstream.name}]:获取模型列表失败 HTTP ${response.status}: ${errorMsg}`);
+        throw new RelayUpstreamError(`[${upstream.name}]:获取模型列表失败 HTTP ${response.status}: ${errorMsg}`, response.status);
     }
 
     const body = await readBody(response.body);
@@ -333,88 +454,3 @@ export async function getUpstreamModels(upstream, requestHeaders = {}) {
         throw new Error(`[${upstream.name}]:模型列表响应 JSON 解析失败: ${e.message}`);
     }
 }
-
-// ==================== WebSocket 上游支持 ====================
-
-const relayWSPool = new ResponsesWSPool({maxPerKey: 5, idleTimeout: 60000});
-
-/**
- * 判断上游是否启用 WS 模式
- */
-export function isWSUpstream(upstream) {
-    return upstream.ws === true && isResponsesUpstream(upstream);
-}
-
-/**
- * 从上游 base_url 推导 WS URL
- */
-export function buildWSUrl(upstream) {
-    const httpUrl = buildUrl(upstream.base_url, 'v1/responses');
-    return httpUrl.replace('https://', 'wss://').replace('http://', 'ws://');
-}
-
-/**
- * 构建 WS 连接头
- */
-export function buildWSHeaders(upstream) {
-    return {
-        'Authorization': `Bearer ${upstream.api_key}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Relay/1.0'
-    };
-}
-
-/**
- * 计算上游 WS 连接池键
- */
-function _connectionPoolKey(upstream) {
-    let hash = 0;
-    const key = upstream.api_key || '';
-    for (let i = 0; i < key.length; i++) {
-        hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
-    }
-    return `${upstream.base_url}:${hash.toString(36)}`;
-}
-
-/**
- * 通过 WS 连接上游发送 Responses 请求
- * @param {object} payload - Responses API 请求体
- * @param {object} upstream - 上游配置
- * @param {object} [options] - 选项
- * @param {string} [options.contextKey] - 会话上下文键
- * @returns {Promise<{eventStream: AsyncIterable, conn: object}>}
- */
-export async function createResponsesWS(payload, upstream, options = {}) {
-    const poolKey = _connectionPoolKey(upstream);
-
-    const connectFn = async () => {
-        const wsUrl = buildWSUrl(upstream);
-        const headers = buildWSHeaders(upstream);
-        const rejectUnauthorized = upstream.skip_tls_verify !== true;
-        const proxyAgent = getProxyAgent(upstream.proxy, rejectUnauthorized);
-        logger.info(`Relay WS: creating new connection to ${wsUrl}`);
-        return connectWebSocket(wsUrl, headers, proxyAgent, undefined, rejectUnauthorized);
-    };
-
-    const conn = await relayWSPool.acquire(poolKey, connectFn, {
-        contextKey: options.contextKey,
-        preferredPreviousResponseId: payload.previous_response_id
-    });
-
-    const eventStream = sendRequest(conn, payload);
-    return {eventStream, conn};
-}
-
-export function releaseWSConnection(conn) {
-    relayWSPool.release(conn);
-}
-
-export function discardWSConnection(conn) {
-    relayWSPool.discard(conn);
-}
-
-export function shutdownWSPool() {
-    relayWSPool.shutdown();
-}
-
-export {ResponsesWSError};

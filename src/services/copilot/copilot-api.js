@@ -10,10 +10,20 @@ import { getCopilotBaseUrl, copilotHeaders } from './config.js';
 import { normalizePayload } from '../../transformer/shared-translator.js';
 import logger from '../../utils/logger.js';
 import {acquire, release, discard, sendRequest} from './copilot-ws-pool.js';
+import {currentCopilotContext} from './runtime.js';
 
 // ==================== 代理 Agent 缓存 ====================
 
 const proxyAgentCache = new Map();
+
+export function buildCopilotNetworkKey(proxyUrl, rejectUnauthorized, identity) {
+    return [
+        `tenant:${identity.tenantId}`,
+        `credential:${identity.credentialId}`,
+        proxyUrl || 'direct',
+        rejectUnauthorized ? 'tls-verify' : 'tls-skip'
+    ].join(':');
+}
 
 function requestNetworkOptions(proxyUrl, networkOptions = {}) {
     const options = {};
@@ -151,7 +161,11 @@ export async function createEmbeddings(copilotToken, vsCodeVersion, payload, acc
 export async function createResponsesWS(copilotToken, vsCodeVersion, payload, accountType = 'individual', proxyUrl, options = {}) {
     const rejectUnauthorized = options.rejectUnauthorized !== false;
     const agent = createProxyAgent(proxyUrl, rejectUnauthorized);
-    const networkKey = `${proxyUrl || 'direct'}:${rejectUnauthorized ? 'tls-verify' : 'tls-skip'}`;
+    const context = currentCopilotContext();
+    const networkKey = buildCopilotNetworkKey(proxyUrl, rejectUnauthorized, {
+        tenantId: context.tenantId,
+        credentialId: context.credential.id
+    });
     const conn = await acquire(
         copilotToken,
         vsCodeVersion,

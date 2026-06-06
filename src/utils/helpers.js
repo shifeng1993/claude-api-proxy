@@ -25,21 +25,32 @@ export function buildUrl(baseUrl, endpoint) {
     let finalUrl = baseUrl;
     let finalEndpoint = endpoint;
 
+    // 确保 endpoint 不以 / 开头
     if (finalEndpoint.startsWith('/')) {
         finalEndpoint = finalEndpoint.slice(1);
     }
 
+    // 确保 baseUrl 以 / 结尾
     if (!finalUrl.endsWith('/')) {
         finalUrl += '/';
     }
 
-    // 去重：base_url 已含 /vN，endpoint 又带了 /vM，保留 base_url 的版本号
-    // e.g. /api/v3/v1/chat → /api/v3/chat, /v1/v1/chat → /v1/chat
-    return (finalUrl + finalEndpoint).replace(/\/(v\d+)\/v\d+\//g, '/$1/');
+    // 防止 /vN/vM 重复（如 baseUrl 已含 /v1，endpoint 又以 v1/ 开头）
+    let url = finalUrl + finalEndpoint;
+    let prev;
+    do {
+        prev = url;
+        url = url.replace(/\/(v\d+)\/v\d+\//g, '/$1/');
+    } while (url !== prev);
+    return url;
 }
 
 /**
  * 清理 JSON Schema，移除不兼容的属性
+ * 只删除 $schema（JSON Schema 版本声明，LLM API 不需要）
+ * 保留 additionalProperties（约束参数结构，帮助模型区分工具）
+ * 保留 format（提供参数语义，如路径 vs 命令）
+ * 保留 title 和 examples（静态内容，不影响缓存，帮助模型理解参数）
  * @param {object} schema - JSON Schema 对象
  * @returns {object} 清理后的 Schema
  */
@@ -48,17 +59,13 @@ export function cleanJsonSchema(schema) {
         return schema;
     }
 
-    // 检查是否需要创建新对象（是否有需要删除的属性）
-    const needsCleanup = Object.keys(schema).some(key => 
-        key === '$schema' || key === 'additionalProperties' || key === 'title' || key === 'examples' ||
-        (key === 'format' && schema.type === 'string')
-    );
+    const needsCleanup = Object.keys(schema).some(key => key === '$schema');
 
     // 如果没有需要清理的属性，直接递归处理子对象
     if (!needsCleanup) {
         let hasChanges = false;
         const result = {...schema};
-        
+
         for (const key in result) {
             if (key === 'properties' && typeof result[key] === 'object') {
                 const cleaned = cleanJsonSchema(result[key]);
@@ -80,26 +87,19 @@ export function cleanJsonSchema(schema) {
                 }
             }
         }
-        
+
         return hasChanges ? result : schema;
     }
 
     // 需要删除属性，创建新对象
     const cleaned = {};
-    
+
     for (const key in schema) {
-        if (key === '$schema' || key === 'additionalProperties' || key === 'title' || key === 'examples') {
-            // 跳过这些属性
+        if (key === '$schema') {
             continue;
         }
-        
-        if (key === 'format' && schema.type === 'string') {
-            // 跳过字符串类型的 format 属性
-            continue;
-        }
-        
+
         if (key === 'enum' && Array.isArray(schema[key])) {
-            // 保留 enum 数组
             cleaned[key] = schema[key];
         } else if (key === 'properties' && typeof schema[key] === 'object') {
             cleaned[key] = cleanJsonSchema(schema[key]);
@@ -111,6 +111,6 @@ export function cleanJsonSchema(schema) {
             cleaned[key] = schema[key];
         }
     }
-    
+
     return cleaned;
 }

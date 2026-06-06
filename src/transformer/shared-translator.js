@@ -1,10 +1,10 @@
 /**
  * 公共 Translator 逻辑
- * 抽取自 Copilot/CodeBuddy translator 的重复代码
+ * 抽取自 CodeBuddy/Relay translator 的重复代码
  * @module transformer/shared-translator
  */
 
-import {randomBytes} from 'crypto';
+import {randomBytes, createHash} from 'crypto';
 import logger from '../utils/logger.js';
 import {getBehaviorRules} from '../config/system-prompts.js';
 
@@ -66,6 +66,77 @@ export function translateToolChoice(anthropicToolChoice) {
 
 export function normalizeClaudeModelAlias(model) {
     return model;
+}
+
+function sanitizeAnthropicContentBlock(block) {
+    if (!block || typeof block !== 'object') return block;
+
+    if (block.type === 'thinking') {
+        const clean = {type: 'thinking'};
+        if (typeof block.thinking === 'string') clean.thinking = block.thinking;
+        if (typeof block.signature === 'string') clean.signature = block.signature;
+        return clean;
+    }
+
+    if (block.type === 'redacted_thinking') {
+        const clean = {type: 'redacted_thinking'};
+        if (typeof block.data === 'string') clean.data = block.data;
+        return clean;
+    }
+
+    return block;
+}
+
+export function sanitizeAnthropicMessages(messages) {
+    if (!Array.isArray(messages)) return messages;
+    return messages.map((message) => {
+        if (!message || typeof message !== 'object' || !Array.isArray(message.content)) {
+            return message;
+        }
+        return {
+            ...message,
+            content: message.content.map(sanitizeAnthropicContentBlock)
+        };
+    });
+}
+
+export function sanitizeAnthropicPayload(payload) {
+    if (!payload || typeof payload !== 'object') return payload;
+    return {
+        ...payload,
+        messages: sanitizeAnthropicMessages(payload.messages)
+    };
+}
+
+export function extractReasoningFromDelta(delta) {
+    if (!delta || typeof delta !== 'object') return null;
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+        return {text: delta.reasoning_content};
+    }
+    if (typeof delta.thinking === 'string' && delta.thinking) {
+        return {text: delta.thinking};
+    }
+    if (delta.thinking && typeof delta.thinking === 'object') {
+        const text = delta.thinking.content || '';
+        if (text) return {text, signature: delta.thinking.signature || undefined};
+    }
+    if (typeof delta.thought === 'string' && delta.thought) return {text: delta.thought};
+    if (typeof delta.reasoning === 'string' && delta.reasoning) return {text: delta.reasoning};
+
+    if (typeof delta.content === 'string' && delta.content.includes('<think>')) {
+        const start = delta.content.indexOf('<think>');
+        const before = delta.content.slice(0, start);
+        const afterOpen = delta.content.slice(start + '<think>'.length);
+        const closeIndex = afterOpen.indexOf('</think>');
+        if (closeIndex >= 0) {
+            return {
+                text: afterOpen.slice(0, closeIndex),
+                remainingContent: before + afterOpen.slice(closeIndex + '</think>'.length)
+            };
+        }
+        return {text: afterOpen, remainingContent: before, thinkOpen: true};
+    }
+    return null;
 }
 
 /**
@@ -247,7 +318,7 @@ export function prependToolThinkingHint(content) {
  * 不在消息中间插入内容，以保持缓存前缀连续性
  *
  * 缓存优化：
- * 1. 剥离客户端 system 中的动态内容（x-tencent-billing-header 等），追加到
+ * 1. 剥离客户端 system 中的动态内容（x-anthropic-billing-header 等），追加到
  *    messages 最后一条 user 消息尾部，避免动态内容破坏 system 前缀一致性
  * 2. 检测客户端 system 是否已包含代理行为规则，避免重复注入
  * @param {Array} messages - OpenAI 格式的 messages 数组
@@ -265,7 +336,7 @@ export function injectBehaviorRules(messages) {
             typeof originalSystem === 'string' ? originalSystem : originalSystem.map((p) => p.text ?? '').join('\n');
         // 客户端 system 已包含代理行为规则时跳过注入，避免重复
         const alreadyHasRules = systemStr.includes('<proxy:thinking>');
-        // 剥离动态行（如 x-tencent-billing-header），保持 system 前缀稳定
+        // 剥离动态行（如 x-anthropic-billing-header），保持 system 前缀稳定
         // 动态行直接丢弃：它们的值每次请求都变（如 cch=xxx 哈希），
         // 即使追加到 user 消息尾部也会污染 messages 前缀导致缓存 miss
         const stableContent = extractStableContent(systemStr);
@@ -285,19 +356,22 @@ export function injectBehaviorRules(messages) {
 }
 
 /**
- * 从 system 内容中提取稳定部分，丢弃动态行
- * 动态行 = <proxy:xxx> 标签外的非空行，且匹配 header/key-value 格式
- * 这些行由客户端注入（billing header、session 信息等），每次请求值不同
- * 直接丢弃而非追加到 user 消息，避免动态内容污染 messages 前缀导致缓存 miss
+ * 从 system 内容中提取稳定部分，剥离纯记账行
+ *
+ * 关键发现：所有动态行在序列化 JSON 中都位于 3000 字符前缀之后，
+ * 保留原值不影响缓存命中率。因此策略调整为：
+ * - 纯记账行：剥离（sessionId、fingerprint、cc_version 等）
+ * - 其余动态行（env/git/memory 等）：保留原值
  */
-function extractStableContent(systemContent) {
+export function extractStableContent(systemContent) {
     // 统一换行符：CRLF → LF，避免不同抓包工具产生不一致的过滤结果
     const normalized = systemContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = normalized.split('\n');
     const stableLines = [];
     let insideProxyTag = false;
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         const trimmed = line.trim();
         if (trimmed.startsWith('<proxy:') && trimmed.endsWith('>')) {
             insideProxyTag = true;
@@ -317,14 +391,14 @@ function extractStableContent(systemContent) {
             stableLines.push(line);
             continue;
         }
-        if (isDynamicLine(trimmed)) continue;
+
+        // 剥离纯记账行，其余（env/git/memory 等）保留原值
+        const result = normalizeDynamicLine(trimmed);
+        if (result.action === 'drop') continue;
         stableLines.push(line);
     }
 
-    let result = stableLines
-        .join('\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trimEnd();
+    let result = stableLines.join('\n');
 
     // 段落去重：harness 可能重复注入相同的提示段落
     // 段落 = 被空行分隔的非空文本块
@@ -351,15 +425,42 @@ function extractStableContent(systemContent) {
     return result.trimEnd();
 }
 
+/**
+ * 归一化动态行：保留结构信号，替换动态值为固定占位符
+ *
+ * 关键发现：所有动态行（env 块、gitStatus 等）在序列化 JSON 中
+ * 都位于 3000 字符前缀之后，保留原值不影响缓存命中率。
+ * 因此策略调整为：只剥离纯记账/对模型无意义的行，其余保留原值。
+ *
+ * @param {string} line - 待处理的行（已 trim）
+ * @returns {{action: 'keep'|'drop', normalizedLine?: string}}
+ */
+function normalizeDynamicLine(line) {
+    // ── 仍然剥离的行（纯记账/模型不需要）──
+    if (/^x-[a-z]/i.test(line)) return {action: 'drop'};
+    if (/^sessionId:/i.test(line)) return {action: 'drop'};
+    if (/fingerprint[-:][a-f0-9]{6,}/i.test(line)) return {action: 'drop'};
+    if (/^cc_version:/i.test(line)) return {action: 'drop'};
+    // commit hash 行由 extractStableContent 的 isGitStatusLine 在 git 块上下文中处理，
+    // 不在此全局匹配，避免误杀非 git 的十六进制内容（如配置值、ID 等）
+
+    // ── 以下行全在前缀范围外，保留原值不影响缓存 ──
+    return {action: 'keep'};
+}
+
+/**
+ * 判断一行是否应被剥离（纯记账/模型不需要）
+ * 所有动态行都在序列化 JSON 的 3000 字符前缀之后，保留原值不影响缓存
+ * 因此只剥离纯记账行，env/git/memory 等信息行保留原值
+ * @deprecated 新逻辑在 extractStableContent 中直接使用 normalizeDynamicLine
+ */
 function isDynamicLine(line) {
-    // HTTP header 格式的动态行（如 x-anthropic-billing-header）
+    // 与 normalizeDynamicLine 的 drop 列表保持一致
     if (/^x-[a-z]/i.test(line)) return true;
-    // 已知的动态字段
-    if (/^(currentDate|currentDateIso|sessionId|memory):/i.test(line)) return true;
-    // harness 动态注入的行（可能因无空行分隔而与上一个段落合并）
-    if (/^The task tools haven't been used/i.test(line)) return true;
-    if (/^Here are the existing tasks:/i.test(line)) return true;
-    if (/^#\d+\.\s*\[/i.test(line)) return true;
+    if (/^sessionId:/i.test(line)) return true;
+    if (/fingerprint[-:][a-f0-9]{6,}/i.test(line)) return true;
+    if (/^cc_version:/i.test(line)) return true;
+    // commit hash 不再全局匹配，避免误杀非 git 的十六进制内容
     return false;
 }
 
@@ -367,7 +468,7 @@ function isDynamicLine(line) {
  * 递归排序对象 key，确保相同内容产生相同的 JSON 序列化
  * 上游 prompt caching 要求请求前缀逐字节一致，嵌套对象 key 顺序不同会导致 miss
  */
-function sortObjectKeys(obj) {
+export function sortObjectKeys(obj) {
     if (Array.isArray(obj)) return obj.map(sortObjectKeys);
     if (obj !== null && typeof obj === 'object') {
         const sorted = {};
@@ -379,81 +480,48 @@ function sortObjectKeys(obj) {
     return obj;
 }
 
-/**
- * 将 JSON 字符串重新序列化为 key 排序的版本
- * 确保 DeepSeek/Kimi 前缀匹配缓存不因嵌入 JSON 的 key 顺序不同而 miss
- * 非法 JSON 或非对象/数组开头的字符串原样返回
- */
-function sortJsonString(str) {
-    if (!str || typeof str !== 'string') return str;
-    const first = str[0];
-    if (first !== '{' && first !== '[') return str;
+function stableAnchorText(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string') return value;
     try {
-        const parsed = JSON.parse(str);
-        return JSON.stringify(sortObjectKeys(parsed));
+        return JSON.stringify(sortObjectKeys(value)) || '';
     } catch {
-        return str;
+        return String(value);
     }
 }
 
-/**
- * 消息对象字段顺序
- * 确保 JSON.stringify 时消息对象输出稳定，DeepSeek/Kimi 前缀匹配缓存不因 key 顺序不同而 miss
- */
-const MESSAGE_FIELD_ORDER = ['role', 'content', 'reasoning_content', 'tool_calls', 'tool_call_id', 'name'];
+function hashAnchor(value, limit) {
+    return createHash('sha256').update(stableAnchorText(value).slice(0, limit)).digest('hex').slice(0, 16);
+}
 
 /**
- * 标准化消息数组，确保相同语义内容产生相同字节序列
- * DeepSeek 和 Kimi 使用前缀匹配缓存，messages 前缀必须逐字节一致
- *
- * 优化点：
- * 1. 消息对象字段排序：确保 JSON.stringify 输出稳定
- * 2. system 消息：行尾空白去除、换行统一、多余空行合并
- * 3. assistant.tool_calls.arguments：JSON key 排序
- * 4. tool 消息 content：如果是 JSON，key 排序
+ * 基于第一条用户消息 + tenantId 生成稳定 cache key。
+ * 同一对话多轮只在 messages 尾部追加时，首条 user 和 tenantId 保持不变，
+ * 不依赖 system/tools —— 这些在对话过程中可能变化，不应影响 key。
  */
-function normalizeMessages(messages) {
-    if (!Array.isArray(messages)) return messages;
+export function buildConversationAnchorKey(payload, meta = {}) {
+    if (!payload || typeof payload !== 'object') return undefined;
 
-    return messages.map(msg => {
-        // 1. 字段排序：确保 JSON.stringify 输出稳定
-        const ordered = {};
-        for (const key of MESSAGE_FIELD_ORDER) {
-            if (msg[key] !== undefined) ordered[key] = msg[key];
-        }
-        for (const key of Object.keys(msg)) {
-            if (!(key in ordered)) ordered[key] = msg[key];
-        }
+    const messages = Array.isArray(payload.messages)
+        ? payload.messages
+        : Array.isArray(payload.input)
+            ? payload.input
+            : [];
+    const anchors = [];
 
-        // 2. system 消息空白统一
-        if (ordered.role === 'system' && typeof ordered.content === 'string') {
-            ordered.content = ordered.content
-                .replace(/\r\n/g, '\n')
-                .replace(/\r/g, '\n')
-                .replace(/[ \t]+$/gm, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trimEnd();
-        }
+    const firstUserMsg = messages.find((message) => (message.role || message.type) === 'user');
+    if (firstUserMsg) {
+        anchors.push('u:' + hashAnchor(firstUserMsg.content, 300));
+    }
 
-        // 3. assistant.tool_calls.arguments key 排序
-        if (ordered.role === 'assistant' && Array.isArray(ordered.tool_calls)) {
-            ordered.tool_calls = ordered.tool_calls.map(tc => ({
-                id: tc.id,
-                type: tc.type || 'function',
-                function: {
-                    name: tc.function?.name,
-                    arguments: sortJsonString(tc.function?.arguments)
-                }
-            }));
-        }
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+    const tenantId = meta.tenantId || payload.tenantId || payload.tenant_id || metadata.tenantId || metadata.tenant_id;
+    if (tenantId) {
+        anchors.push('tid:' + tenantId);
+    }
 
-        // 4. tool 消息 content key 排序
-        if (ordered.role === 'tool' && typeof ordered.content === 'string') {
-            ordered.content = sortJsonString(ordered.content);
-        }
-
-        return ordered;
-    });
+    if (anchors.length === 0) return undefined;
+    return 'conv_' + createHash('sha256').update(anchors.join('|')).digest('hex').slice(0, 24);
 }
 
 /**
@@ -463,16 +531,17 @@ function normalizeMessages(messages) {
 const FIELD_ORDER = [
     'model',
     'messages',
-    'tools',
-    'tool_choice',
+    'stream',
     'max_tokens',
     'temperature',
+    'stop',
     'top_p',
-    'reasoning_effort',
     'thinking',
-    'stream',
-    'stream_options',
-    'stop'
+    'metadata',
+    'previous_response_id',
+    'tools',
+    'tool_choice',
+    'reasoning_effort'
 ];
 
 export function normalizePayload(payload, meta = {}) {
@@ -499,18 +568,393 @@ export function normalizePayload(payload, meta = {}) {
     }
 
     // tools 排序：递归排序 key + 按 function.name 排序，保证 JSON.stringify 输出稳定
+    // messages 不排序：开销大且改变结构会破坏已有缓存兼容性
     if (ordered.tools) {
         ordered.tools = ordered.tools
             .map((t) => sortObjectKeys(t))
             .sort((a, b) => (a.function?.name || '').localeCompare(b.function?.name || ''));
     }
 
-    // 消息标准化：确保 DeepSeek/Kimi 前缀匹配缓存能命中
-    // - 消息对象字段排序，确保 JSON.stringify 输出稳定
-    // - tool_calls.arguments / tool content 的 JSON key 排序
-    // - system 消息空白统一
-    if (ordered.messages) {
-        ordered.messages = normalizeMessages(ordered.messages);
+    return ordered;
+}
+
+/**
+ * 从 messages 中剥离纯记账性质的 <system-reminder> 块，
+ * 并归一化会话身份相关的动态内容，保持缓存前缀稳定
+ *
+ * 参考 claude-code-cache-fix 的 content-strip + identity-normalization + fresh-session-sort 策略
+ *
+ * 处理以下动态内容（按执行顺序）：
+ * 1. 剥离 <session_knowledge> 标签（每次会话不同）
+ * 2. 归一化 SessionStart 输出（resume→startup，移除 session-id 和 Last active 行）
+ * 3. 移除 "Continue from where you left off." 尾部块
+ * 4. 将散落的 skills/deferred tools/MCP/hooks 块归位到第一条 user 消息
+ * 5. 剥离纯记账性质的 system-reminder 块（token usage、budget 等）
+ * 6. 归一化 microcompact 哨兵文本（移除时间戳抖动）
+ * 7. 扩展处理 tool 消息中的 smooshed reminder
+ */
+export function stripDynamicReminders(messages) {
+    if (!Array.isArray(messages)) return messages;
+
+    // ── 阶段1: 文本级归一化（对每条消息的文本内容做静态替换）──
+
+    let modified = false;
+    const normalized = messages.map((msg) => {
+        // 处理 user 和 tool 消息
+        if (msg.role !== 'user' && msg.role !== 'tool') return msg;
+
+        // 字符串形式的 content
+        if (typeof msg.content === 'string') {
+            let content = msg.content;
+            const original = content;
+
+            // 1a. 保留 <session_knowledge> 标签——包含跨轮次上下文锚点，
+            //     剥离会导致模型丢失已建立的偏好和项目理解，幻觉增加
+
+            //    移除 <session-id>...</session-id> 标签
+            content = content.replace(/<session-id>[^<]*<\/session-id>\s*\n?/g, '');
+            //    移除 "Last active: ..." 行
+            content = content.replace(/^Last active:.*$\n?/gm, '');
+
+            // 1d. 归一化 microcompact 哨兵（移除时间戳）
+            //    "[Old tool result content cleared at 2026-04-30T13:42:11Z]" → "[Old tool result content cleared]"
+            content = content.replace(
+                /\[Old tool result content cleared at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z\]/g,
+                '[Old tool result content cleared]'
+            );
+
+            if (content !== original) {
+                modified = true;
+                if (!content.trim()) return null;
+                return {...msg, content};
+            }
+            return msg;
+        }
+
+        // 数组形式的 content
+        if (Array.isArray(msg.content)) {
+            let changed = false;
+            const processed = msg.content.map((block) => {
+                if (!block || block.type !== 'text' || typeof block.text !== 'string') return block;
+                let text = block.text;
+                const original = text;
+
+                // session_knowledge 保留——跨轮次上下文锚点，剥离会导致幻觉增加
+                // text = text.replace(/<session_knowledge[^>]*>[\\s\\S]*?<\\/session_knowledge>\\s*/g, '');
+                text = text.replace(/<session-id>[^<]*<\/session-id>\s*\n?/g, '');
+                text = text.replace(/^Last active:.*$\n?/gm, '');
+                // 保留 Continue from where you left off——强信号告诉模型"这是延续对话"
+                // text = text.replace(/\n*Continue from where you left off\.\s*$/m, '');
+                text = text.replace(
+                    /\[Old tool result content cleared at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z\]/g,
+                    '[Old tool result content cleared]'
+                );
+
+                if (text !== original) {
+                    changed = true;
+                    if (!text.trim()) return null;
+                    return {...block, text};
+                }
+                return block;
+            }).filter(Boolean);
+
+            if (changed) {
+                modified = true;
+                if (processed.length === 0) return null;
+                return {...msg, content: processed};
+            }
+            return msg;
+        }
+
+        return msg;
+    }).filter(Boolean);
+
+    // ── 阶段2: 剥离纯记账性质的 system-reminder 块 ──
+
+    const REMINDER_WRAP_REGEX = /^<system-reminder>\n([\s\S]*?)\n<\/system-reminder>\s*$/;
+    const BOOKKEEPING_PATTERNS = [
+        /Token usage:/i,
+        /Output tokens/i,
+        /USD budget:/i,
+        /cache_creation/i,
+        /cache_read/i,
+        /budget:\s*\$/i
+    ];
+
+    function isBookkeepingReminder(text) {
+        if (typeof text !== 'string') return false;
+        const m = text.match(REMINDER_WRAP_REGEX);
+        if (!m) return false;
+        return BOOKKEEPING_PATTERNS.some((rx) => rx.test(m[1]));
+    }
+
+    const SMOOSHED_REMINDER_REGEX = /\n\n<system-reminder>\n(?:[\s\S]*?)\n<\/system-reminder>\s*$/;
+
+    // 也匹配整条内容就是 reminder 的情况（没有前置正文）
+    const STANDALONE_REMINDER_REGEX = /^<system-reminder>\n(?:[\s\S]*?)\n<\/system-reminder>\s*$/;
+
+    let bookkeepingModified = false;
+    const result = normalized.map((msg) => {
+        // 处理 user 和 tool 消息中的记账 reminder
+        if (msg.role !== 'user' && msg.role !== 'tool') return msg;
+
+        if (typeof msg.content === 'string') {
+            let content = msg.content;
+            let changed = false;
+
+            // 先处理整条内容就是 bookkeeping reminder 的情况
+            if (isBookkeepingReminder(content)) {
+                bookkeepingModified = true;
+                return null;
+            }
+
+            // 再处理尾部 smooshed reminder
+            while (true) {
+                const m = content.match(SMOOSHED_REMINDER_REGEX);
+                if (!m) break;
+                const stripped = m[0].trim();
+                if (isBookkeepingReminder(stripped)) {
+                    content = content.slice(0, m.index);
+                    changed = true;
+                } else {
+                    break;
+                }
+            }
+            if (changed) {
+                bookkeepingModified = true;
+                if (!content.trim()) return null;
+                return {...msg, content};
+            }
+            return msg;
+        }
+
+        if (Array.isArray(msg.content)) {
+            const kept = msg.content.filter((block) => {
+                if (block && block.type === 'text' && isBookkeepingReminder(block.text)) {
+                    return false;
+                }
+                return true;
+            });
+            if (kept.length === msg.content.length) return msg;
+            bookkeepingModified = true;
+            if (kept.length === 0) return null;
+            return {...msg, content: kept};
+        }
+
+        return msg;
+    });
+
+    // 清除阶段2 产生的 null（被完全剥离的消息）
+    const cleaned = bookkeepingModified ? result.filter(Boolean) : result;
+
+    // ── 阶段3: 将散落的可重定位块归位到第一条 user 消息 ──
+
+    // 检测四类可重定位的 <system-reminder> 块
+    function classifyRelocatableBlock(text) {
+        if (typeof text !== 'string') return null;
+        const m = text.match(REMINDER_WRAP_REGEX);
+        if (!m) return null;
+        const inner = m[1];
+        if (/\bhook success\b/i.test(inner)) return 'hooks';
+        if (/\bavailable-skills\b/i.test(inner) || /<available-skills>/i.test(inner)) return 'skills';
+        if (/<deferred-tools>/i.test(inner)) return 'deferred';
+        if (/<mcp-resources>/i.test(inner) || /Available MCP servers:/i.test(inner)) return 'mcp';
+        return null;
+    }
+
+    // 对可重定位块的内部内容做确定性排序，确保不同轮次中相同内容产生相同字节
+    function stabilizeBlockContent(text, blockType) {
+        if (blockType === 'skills') {
+            // 对 skills 列表条目按字母序排序
+            return text.replace(/(<available-skills>)([\s\S]*?)(<\/available-skills>)/,
+                (match, open, inner, close) => {
+                    const entries = inner.split(/\n/).filter(l => l.trim());
+                    entries.sort();
+                    return open + '\n' + entries.join('\n') + '\n' + close;
+                });
+        }
+        if (blockType === 'deferred') {
+            // 对 deferred tools 条目按字母序排序
+            return text.replace(/(<deferred-tools>)([\s\S]*?)(<\/deferred-tools>)/,
+                (match, open, inner, close) => {
+                    const entries = inner.split('\n').map(t => t.trim()).filter(Boolean);
+                    entries.sort();
+                    return open + '\n' + entries.join('\n') + '\n' + close;
+                });
+        }
+        return text;
+    }
+
+    // 从字符串 content 中识别和提取可重定位块
+    // 返回 { cleaned, extracted: [{type, text}] }
+    function extractRelocatableFromString(content) {
+        const extracted = [];
+        let cleaned = content;
+        // 匹配独立的 <system-reminder> 块（前后可能有换行）
+        const BLOCK_REGEX = /\n*(<system-reminder>\n[\s\S]*?\n<\/system-reminder>)\s*/g;
+        let match;
+        while ((match = BLOCK_REGEX.exec(content)) !== null) {
+            const blockText = match[1];
+            const blockType = classifyRelocatableBlock(blockText);
+            if (blockType) {
+                const stabilizedText = stabilizeBlockContent(blockText, blockType);
+                // originalText 用于从原文中移除，stabilizedText 用于归位
+                extracted.push({type: blockType, text: stabilizedText, originalText: blockText});
+            }
+        }
+        // 从原文中移除所有可重定位块
+        for (const ext of extracted) {
+            // 使用原始文本匹配移除（stabilized 文本可能与原文不匹配）
+            cleaned = cleaned.replace(new RegExp(escapeRegExp('\n' + ext.originalText) + '\\s*'), '');
+            cleaned = cleaned.replace(new RegExp(escapeRegExp(ext.originalText) + '\\s*'), '');
+        }
+        return {cleaned, extracted};
+    }
+
+    // 按 cache-fix 的固定顺序排列
+    const RELOCATE_ORDER = ['deferred', 'mcp', 'skills', 'hooks'];
+
+    // 查找第一条 user 消息的索引
+    const firstUserIdx = cleaned.findIndex((msg) => msg.role === 'user');
+
+    if (firstUserIdx >= 0) {
+        // 只对前几条 user 消息做归位：这些消息位于缓存前缀范围内，归位能提高命中率
+        // 后续 user 消息中的块保持原位不动，避免拉远模型与工具/MCP 信息的上下文距离
+        const RELOCATE_USER_LIMIT = 2;
+        const allExtracted = [];
+
+        // 统计 user 消息的序号
+        let userSeq = 0;
+        const relocated = cleaned.map((msg, idx) => {
+            if (msg.role !== 'user') return msg;
+            userSeq++;
+            const shouldRelocate = userSeq <= RELOCATE_USER_LIMIT;
+
+            if (typeof msg.content === 'string') {
+                if (!shouldRelocate) return msg;
+                const {cleaned, extracted} = extractRelocatableFromString(msg.content);
+                if (extracted.length > 0) {
+                    allExtracted.push(...extracted);
+                    bookkeepingModified = true;
+                    if (!cleaned.trim()) return null;
+                    return {...msg, content: cleaned};
+                }
+                return msg;
+            }
+
+            if (Array.isArray(msg.content)) {
+                if (!shouldRelocate) return msg;
+                const extracted = [];
+                const kept = msg.content.filter((block) => {
+                    if (block && block.type === 'text') {
+                        const blockType = classifyRelocatableBlock(block.text);
+                        if (blockType) {
+                            const stabilizedText = stabilizeBlockContent(block.text, blockType);
+                            extracted.push({type: blockType, text: stabilizedText});
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+                if (extracted.length > 0) {
+                    allExtracted.push(...extracted);
+                    bookkeepingModified = true;
+                    if (kept.length === 0) return null;
+                    return {...msg, content: kept};
+                }
+                return msg;
+            }
+
+            return msg;
+        });
+
+        // 如果提取到了可重定位块，按固定顺序排列后 prepend 到第一条 user 消息
+        if (allExtracted.length > 0) {
+            // 按 RELOCATE_ORDER 排序，同类型保持原顺序
+            const sorted = allExtracted.sort((a, b) => {
+                const orderA = RELOCATE_ORDER.indexOf(a.type);
+                const orderB = RELOCATE_ORDER.indexOf(b.type);
+                return orderA - orderB;
+            });
+
+            // pinBlockContent 去重：同一类型中内容 hash 相同的块只保留首次版本
+            // 避免不同轮次中同一块因微小空白差异导致前缀不匹配
+            const seenByType = new Map();
+            const deduped = [];
+            for (const ext of sorted) {
+                if (!seenByType.has(ext.type)) seenByType.set(ext.type, new Map());
+                const typeMap = seenByType.get(ext.type);
+                const normalizedText = ext.text.replace(/\s+(<\/system-reminder>)\s*$/, '\n$1');
+                const hash = createHash('sha256').update(normalizedText).digest('hex').slice(0, 16);
+                if (!typeMap.has(hash)) {
+                    typeMap.set(hash, ext.text);
+                    deduped.push(ext);
+                }
+            }
+
+            // 合并为文本
+            const relocateText = deduped.map((e) => e.text).join('\n\n');
+
+            // Prepend 到第一条 user 消息
+            const firstMsg = relocated[firstUserIdx];
+            if (firstMsg) {
+                if (typeof firstMsg.content === 'string') {
+                    relocated[firstUserIdx] = {...firstMsg, content: relocateText + '\n\n' + firstMsg.content};
+                } else if (Array.isArray(firstMsg.content)) {
+                    relocated[firstUserIdx] = {
+                        ...firstMsg,
+                        content: [{type: 'text', text: relocateText}, ...firstMsg.content]
+                    };
+                }
+            }
+
+            return relocated.filter(Boolean);
+        }
+    }
+
+    if (modified || bookkeepingModified) {
+        return cleaned.filter(Boolean);
+    }
+    return messages;
+}
+
+/**
+ * 转义正则特殊字符
+ */
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 规范化 Responses API 请求体，确保字段顺序和结构稳定
+ * Responses API 格式与 Chat Completions 不同，需要独立的规范化逻辑
+ * 字段顺序固定、tools 排序、key 递归排序，保证隐式缓存前缀匹配
+ */
+const RESPONSES_FIELD_ORDER = [
+    'model', 'instructions', 'input', 'tools', 'tool_choice',
+    'parallel_tool_calls', 'temperature', 'top_p',
+    'max_output_tokens', 'reasoning', 'stream', 'store',
+    'previous_response_id', 'text', 'caching', 'metadata'
+];
+
+export function normalizeResponsesPayload(payload, meta = {}) {
+    const ordered = {};
+    for (const key of RESPONSES_FIELD_ORDER) {
+        if (payload[key] !== undefined) ordered[key] = payload[key];
+    }
+    for (const key of Object.keys(payload)) {
+        if (!(key in ordered)) ordered[key] = payload[key];
+    }
+
+    // tools 排序：按 name/type 排序，内部 key 递归排序
+    if (ordered.tools) {
+        ordered.tools = ordered.tools
+            .map((t) => sortObjectKeys(t))
+            .sort((a, b) => {
+                const nameA = a.name || a.function?.name || a.type || '';
+                const nameB = b.name || b.function?.name || b.type || '';
+                return nameA.localeCompare(nameB);
+            });
     }
 
     return ordered;

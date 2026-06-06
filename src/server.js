@@ -1,386 +1,256 @@
 /**
  * HTTP 服务器核心逻辑
- * 支持 WebSocket 升级，将 WS 连接路由到对应的 Responses API WS 处理器
  * @module server
  */
 
 import http from 'http';
-import {URL} from 'url';
+import {readFileSync, existsSync, mkdirSync, createWriteStream} from 'fs';
+import {join, dirname, extname} from 'path';
+import {fileURLToPath} from 'url';
 import {WebSocketServer} from 'ws';
 import logger from './utils/logger.js';
-import {routeCopilotRequest, handleCopilotResponsesWS} from './routes/copilot.js';
-import {routeCopilotFrontend} from './routes/copilot-frontend.js';
 import {routeCodebuddyRequest, handleCodebuddyResponsesWS} from './routes/codebuddy.js';
-import {routeCodebuddyFrontend} from './routes/codebuddy-frontend.js';
 import {routeRelayRequest, handleRelayResponsesWS} from './routes/relay.js';
-import {routeRelayFrontend} from './routes/relay-frontend.js';
-import {
-    serveLoginPage,
-    getPublicKeyEndpoint,
-    handleLoginRequest,
-    handleLogoutRequest,
-    requireAdminAuth,
-    requireGatewayAuth
-} from './services/gateway/admin-auth.js';
-import {isGatewayAuthEnabled, verifyGatewayToken, reloadGatewayToken} from './services/gateway/auth.js';
-import {copilotState} from './services/copilot/state.js';
-import {copilotStore} from './services/copilot/copilot-store.js';
-import {credentialStore} from './services/codebuddy/credential-store.js';
-import {relayStore} from './services/relay/relay-store.js';
+import {routeCopilotRequest, handleCopilotResponsesWS} from './routes/copilot.js';
+import {routeAdminFrontend} from './routes/admin-frontend.js';
+import {routeAuthRequest} from './routes/auth.js';
+import {routeStatsRequest} from './routes/stats.js';
+import {handleFeedback} from './routes/feedback.js';
+import {routeFeedbackAdmin} from './routes/feedback-admin.js';
+import {sendNotFoundPage, wantsHtml} from './routes/not-found.js';
+import Busboy from 'busboy';
+import {verifyInternalRequest, handleSyncNotification} from './services/shared/cluster-broadcaster.js';
+import {authenticateApiKey} from './services/gateway/gateway-auth.js';
+import {requireApiAuth} from './services/gateway/admin-auth.js';
+import {getSessionUser} from './services/gateway/session.js';
+import {unifiedTenantManager} from './services/gateway/tenant-manager.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const publicDir = join(__dirname, '..', 'public');
+
+const MIME_TYPES = {
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.html': 'text/html; charset=utf-8',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon'
+};
+
+function requirePageSession(req, res, adminOnly = false) {
+    const session = getSessionUser(req);
+    if (!session.authenticated) {
+        if (wantsHtml(req)) {
+            res.writeHead(302, {Location: '/login'});
+            res.end();
+        } else {
+            sendError(res, 401, 'Authentication required');
+        }
+        return false;
+    }
+    if (adminOnly && session.role !== 'admin' && !unifiedTenantManager.isAdmin(session.username)) {
+        sendError(res, 403, 'Administrator access required');
+        return false;
+    }
+    req.sessionUser = session;
+    return true;
+}
+
+/**
+ * 解析请求体为 JSON
+ * @param {import('http').IncomingMessage} req - HTTP 请求对象
+ * @returns {Promise<any>}
+ */
+function parseBody(req) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        req.on('data', (chunk) => chunks.push(chunk));
+        req.on('end', () => {
+            try {
+                const body = Buffer.concat(chunks).toString('utf8');
+                resolve(JSON.parse(body));
+            } catch (e) {
+                reject(new Error('Invalid JSON'));
+            }
+        });
+        req.on('error', reject);
+    });
+}
+
+/**
+ * 发送 JSON 响应
+ * @param {import('http').ServerResponse} res - HTTP 响应对象
+ * @param {number} status - HTTP 状态码
+ * @param {any} data - 响应数据
+ */
 function sendJson(res, status, data) {
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
 }
 
+/**
+ * 发送错误响应
+ * @param {import('http').ServerResponse} res - HTTP 响应对象
+ * @param {number} status - HTTP 状态码
+ * @param {string} message - 错误消息
+ */
 function sendError(res, status, message) {
     res.writeHead(status, {'Content-Type': 'text/plain'});
     res.end(message);
 }
 
 /**
- * 渲染 404 页面（HTML 给浏览器，JSON 给 API 客户端）
+ * 健康检查处理
+ * @param {import('http').ServerResponse} res - HTTP 响应对象
  */
-function send404(req, res) {
-    const accept = String(req.headers['accept'] || '');
-    const wantsHtml = accept.includes('text/html');
-    if (!wantsHtml) {
-        res.writeHead(404, {'Content-Type': 'application/json'});
-        res.end(JSON.stringify({error: 'Not found', path: req.url}));
-        return;
-    }
-    const safePath = String(req.url || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>404 - Claude API Proxy</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    .container { max-width: 520px; width: 100%; padding: 48px 24px; text-align: center; }
-    .code { font-size: 6rem; font-weight: 800; color: #58a6ff; line-height: 1; letter-spacing: -2px; }
-    h1 { font-size: 1.5rem; font-weight: 700; margin: 16px 0 8px; color: #f0f6fc; }
-    .desc { color: #8b949e; margin-bottom: 8px; font-size: 0.95rem; }
-    .path { display: inline-block; margin: 16px 0 32px; padding: 6px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; color: #79c0ff; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.85rem; word-break: break-all; max-width: 100%; }
-    .home-btn { display: inline-block; padding: 10px 20px; background: #238636; border: 1px solid #2ea043; border-radius: 8px; color: #ffffff; text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: background 0.2s; }
-    .home-btn:hover { background: #2ea043; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="code">404</div>
-    <h1>页面不存在</h1>
-    <p class="desc">您访问的路径不在已注册的路由中</p>
-    <div class="path">${safePath}</div>
-    <div>
-      <a class="home-btn" href="/">返回首页</a>
-    </div>
-  </div>
-</body>
-</html>`;
-    res.writeHead(404, {'Content-Type': 'text/html; charset=utf-8'});
-    res.end(html);
+function handleHealthCheck(res) {
+    sendJson(res, 200, {
+        status: 'ok',
+        timestamp: new Date().toISOString()
+    });
 }
 
 /**
- * WS 鉴权：检查网关令牌
- * WS 握手时支持以下方式传递令牌：
- * 1. Authorization: Bearer <token> header（随 upgrade 请求发送）
- * 2. api_key URL 参数：?api_key=<token>
+ * 创建 HTTP 服务器
+ * @returns {import('http').Server}
  */
-function requireGatewayAuthWS(req) {
-    if (!isGatewayAuthEnabled()) {
-        req._gatewayAuthenticated = true;
-        return true;
-    }
-
-    // 从 URL 参数获取
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const apiKeyParam = url.searchParams.get('api_key');
-    if (apiKeyParam && verifyGatewayToken(apiKeyParam)) {
-        req._gatewayAuthenticated = true;
-        return true;
-    }
-
-    // 从 Authorization header 获取
-    const auth = req.headers['authorization'];
-    if (auth) {
-        const token = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
-        if (verifyGatewayToken(token)) {
-            req._gatewayAuthenticated = true;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
- * 处理从其他 worker 接收的广播事件
- * @param {object} data - {type: string, sourcePort: number, ...}
- */
-function handleBroadcastEvent(data) {
-    const {type} = data;
-    logger.debug(`Broadcast received: ${type} from worker port ${data.sourcePort}`);
-
-    switch (type) {
-        // Gateway
-        case 'gateway-token-regenerated':
-            reloadGatewayToken();
-            break;
-
-        // Copilot
-        case 'copilot-auth-cleared':
-            copilotState.reload();
-            break;
-        case 'copilot-proxy-updated':
-            copilotStore.reload();
-            break;
-
-        // CodeBuddy
-        case 'codebuddy-credentials-changed':
-            credentialStore.reload();
-            break;
-        case 'codebuddy-state-changed':
-            credentialStore.getTokenManager().loadState();
-            break;
-
-        // Relay
-        case 'relay-upstreams-changed':
-            relayStore.getUpstreamManager()._loadUpstreams();
-            break;
-        case 'relay-settings-changed':
-            relayStore.getUpstreamManager()._loadSettings();
-            break;
-
-        // Stats
-        case 'stats-flush':
-            copilotStore.flushApiCallCounts();
-            credentialStore.flushApiCallCounts();
-            relayStore.flushApiCallCounts();
-            break;
-        case 'stats-reset':
-            if (data.service === 'copilot') copilotStore.resetCustomStats();
-            else if (data.service === 'codebuddy') credentialStore.resetCustomStats();
-            else if (data.service === 'relay') relayStore.resetCustomStats();
-            else {
-                copilotStore.resetCustomStats();
-                credentialStore.resetCustomStats();
-                relayStore.resetCustomStats();
-            }
-            break;
-
-        default:
-            logger.warn(`Unknown broadcast event type: ${type}`);
-    }
-}
-
 export function createServer() {
     const server = http.createServer(async (req, res) => {
-        // 只打印已知路由的请求日志，忽略遥测等无关请求
-        const isKnown =
-            req.url.startsWith('/login') ||
-            req.url.startsWith('/logout') ||
-            req.url.startsWith('/copilotFE') ||
-            req.url.startsWith('/copilot/') ||
-            req.url.startsWith('/copilot/anthropic/v1/') ||
-            req.url.startsWith('/codebuddyFE') ||
-            req.url.startsWith('/codebuddy/v1/') ||
-            req.url.startsWith('/codebuddy/anthropic/v1/') ||
-            req.url.startsWith('/relayFE') ||
-            req.url.startsWith('/relay/v1/') ||
-            req.url.startsWith('/relay/anthropic/v1/');
-        if (isKnown) {
-            logger.info(`${req.method} ${req.url}`);
-        }
-
-        // ============ 鉴权路由 ============
-
-        // POST /login — 处理登录请求
-        if (req.method === 'POST' && req.url === '/login') {
+        // 静态文件服务
+        if (req.method === 'GET' && req.url.startsWith('/public/')) {
             try {
-                await handleLoginRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Login error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // GET /login — 登录页面
-        if (req.method === 'GET' && req.url.startsWith('/login')) {
-            try {
-                if (req.url === '/login/public-key') {
-                    getPublicKeyEndpoint(req, res);
-                } else {
-                    serveLoginPage(req, res);
-                }
-                return;
-            } catch (err) {
-                logger.error('Login page error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // GET/POST /logout — 登出
-        if (req.url === '/logout') {
-            try {
-                handleLogoutRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Logout error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // ============ 管理后台路由（需要管理员认证） ============
-
-        // Copilot 前端管理界面（必须在 /copilot 通用路由之前）
-        if (req.url.startsWith('/copilotFE')) {
-            if (!requireAdminAuth(req, res)) return;
-            try {
-                await routeCopilotFrontend(req, res);
-                return;
-            } catch (err) {
-                logger.error('Copilot frontend error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // CodeBuddy 前端管理界面
-        if (req.url.startsWith('/codebuddyFE')) {
-            if (!requireAdminAuth(req, res)) return;
-            try {
-                await routeCodebuddyFrontend(req, res);
-                return;
-            } catch (err) {
-                logger.error('CodeBuddy frontend error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // Relay 前端管理界面
-        if (req.url.startsWith('/relayFE')) {
-            if (!requireAdminAuth(req, res)) return;
-            try {
-                await routeRelayFrontend(req, res);
-                return;
-            } catch (err) {
-                logger.error('Relay frontend error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // ============ 内部通信端点（集群广播 + 统计聚合） ============
-
-        if (req.url.startsWith('/internal/')) {
-            // 仅允许本地访问
-            const remoteAddr = req.socket.remoteAddress || '';
-            if (!remoteAddr.includes('127.0.0.1') && !remoteAddr.includes('::1') && remoteAddr !== '::ffff:127.0.0.1') {
-                res.writeHead(403, {'Content-Type': 'application/json'});
-                res.end(JSON.stringify({error: 'Forbidden'}));
-                return;
-            }
-
-            // POST /internal/broadcast — 接收广播事件
-            if (req.method === 'POST' && req.url === '/internal/broadcast') {
-                try {
-                    const chunks = [];
-                    req.on('data', chunk => chunks.push(chunk));
-                    req.on('end', () => {
-                        try {
-                            const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-                            handleBroadcastEvent(data);
-                            res.writeHead(200, {'Content-Type': 'application/json'});
-                            res.end(JSON.stringify({ok: true}));
-                        } catch (err) {
-                            res.writeHead(400, {'Content-Type': 'application/json'});
-                            res.end(JSON.stringify({error: err.message}));
-                        }
+                const filePath = join(publicDir, req.url.slice('/public/'.length));
+                if (existsSync(filePath)) {
+                    const ext = extname(filePath);
+                    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+                    res.writeHead(200, {
+                        'Content-Type': contentType,
+                        'Cache-Control': 'public, max-age=86400'
                     });
-                    return;
-                } catch (err) {
-                    res.writeHead(500, {'Content-Type': 'application/json'});
-                    res.end(JSON.stringify({error: err.message}));
+                    res.end(readFileSync(filePath));
                     return;
                 }
+            } catch (err) {
+                logger.error('Static file serve error:', err);
             }
-
-            // GET /internal/stats/{service} — 返回当前 worker 的统计数据
-            const statsMatch = req.url.match(/^\/internal\/stats\/([a-z]+)$/);
-            if (req.method === 'GET' && statsMatch) {
-                const service = statsMatch[1];
-                let stats = null;
-                switch (service) {
-                    case 'copilot':
-                        stats = copilotStore.getUsageStats();
-                        break;
-                    case 'codebuddy':
-                        stats = credentialStore.getUsageStats();
-                        break;
-                    case 'relay':
-                        stats = relayStore.getUsageStats();
-                        break;
-                    default:
-                        res.writeHead(404, {'Content-Type': 'application/json'});
-                        res.end(JSON.stringify({error: 'Unknown service'}));
-                        return;
-                }
-                res.writeHead(200, {'Content-Type': 'application/json'});
-                res.end(JSON.stringify(stats));
-                return;
-            }
-
-            // GET /internal/stats/daily/{service}?month=YYYY-MM — 返回当前 worker 的每日统计
-            const dailyMatch = req.url.match(/^\/internal\/stats\/daily\/([a-z]+)$/);
-            if (req.method === 'GET' && dailyMatch) {
-                const service = dailyMatch[1];
-                const urlObj = new URL(req.url, `http://${req.headers.host}`);
-                const month = urlObj.searchParams.get('month') || '';
-                let dailyData = null;
-                switch (service) {
-                    case 'copilot':
-                        dailyData = copilotStore.getDailyUsageBuffer();
-                        break;
-                    case 'codebuddy':
-                        dailyData = credentialStore.getDailyUsageBuffer();
-                        break;
-                    case 'relay':
-                        dailyData = relayStore.getDailyUsageBuffer();
-                        break;
-                    default:
-                        res.writeHead(404, {'Content-Type': 'application/json'});
-                        res.end(JSON.stringify({error: 'Unknown service'}));
-                        return;
-                }
-                res.writeHead(200, {'Content-Type': 'application/json'});
-                res.end(JSON.stringify(dailyData));
-                return;
-            }
-
-            res.writeHead(404, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({error: 'Not found'}));
+            if (wantsHtml(req)) sendNotFoundPage(req, res);
+            else sendError(res, 404, 'Not found');
             return;
         }
 
-        // ============ API 路由（需要网关令牌认证） ============
+        // 健康检查
+        if (req.method === 'GET' && req.url === '/health') {
+            handleHealthCheck(res);
+            return;
+        }
+
+        // 内部集群同步（多进程广播通知）
+        if (req.method === 'POST' && req.url === '/internal/sync') {
+            if (!verifyInternalRequest(req)) {
+                sendError(res, 403, 'Forbidden');
+                return;
+            }
+            try {
+                const payload = await parseBody(req);
+                await handleSyncNotification(payload);
+                sendJson(res, 200, {ok: true});
+            } catch (err) {
+                logger.error('Internal sync error:', err);
+                sendError(res, 500, 'Internal sync error');
+            }
+            return;
+        }
+
+        // ========== 统一认证路由（登录/登出）==========
+        if (req.url.startsWith('/login') || (req.url.startsWith('/logout'))) {
+            try {
+                await routeAuthRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Auth route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // ========== 统一管理面板 ==========
+        if (req.url.startsWith('/admin')) {
+            try {
+                await routeAdminFrontend(req, res);
+                return;
+            } catch (err) {
+                logger.error('Admin frontend error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // 旧管理面板路径重定向
+        if (req.url.startsWith('/relayFE') || req.url.startsWith('/codebuddyFE') || req.url.startsWith('/copilotFE')) {
+            res.writeHead(301, {'Location': '/admin'});
+            res.end();
+            return;
+        }
+
+        // Relay 路由
+        if (req.url.startsWith('/relay')) {
+            try {
+                if (!requireApiAuth(req, res, unifiedTenantManager, 'relay')) return;
+                await routeRelayRequest(req, res);
+                return;
+            } catch (err) {
+                logger.error('Relay route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // 反馈问题管理页面及管理 API
+        if (req.url.startsWith('/feedback') || req.url.startsWith('/api/feedback/')) {
+            try {
+                if (!requirePageSession(req, res, false)) return;
+                const handled = await routeFeedbackAdmin(req, res);
+                if (handled) return;
+            } catch (err) {
+                logger.error('Feedback admin route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // 问题反馈提交 API（精确匹配 /api/feedback，不含子路径）
+        if (req.url === '/api/feedback') {
+            try {
+                if (!requirePageSession(req, res, false)) return;
+                const handled = await handleFeedback(req, res);
+                if (handled) return;
+            } catch (err) {
+                logger.error('Feedback route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
+
+        // Stats 统计页面
+        if (req.url.startsWith('/stats')) {
+            try {
+                if (!requirePageSession(req, res, false)) return;
+                const handled = await routeStatsRequest(req, res);
+                if (handled) return;
+            } catch (err) {
+                logger.error('Stats route error:', err);
+                sendError(res, 500, 'Internal server error');
+                return;
+            }
+        }
 
         // Copilot 路由
         if (req.url.startsWith('/copilot')) {
-            if (!requireGatewayAuth(req, res)) return;
             try {
+                if (!requireApiAuth(req, res, unifiedTenantManager, 'copilot')) return;
                 await routeCopilotRequest(req, res);
                 return;
             } catch (err) {
@@ -392,8 +262,8 @@ export function createServer() {
 
         // CodeBuddy 路由
         if (req.url.startsWith('/codebuddy')) {
-            if (!requireGatewayAuth(req, res)) return;
             try {
+                if (!requireApiAuth(req, res, unifiedTenantManager, 'codebuddy')) return;
                 await routeCodebuddyRequest(req, res);
                 return;
             } catch (err) {
@@ -403,79 +273,84 @@ export function createServer() {
             }
         }
 
-        // Relay 路由
-        if (req.url.startsWith('/relay')) {
-            if (!requireGatewayAuth(req, res)) return;
-            try {
-                await routeRelayRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Relay route error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
-        // ============ 根路径（需要管理员认证） ============
-
-        if (req.method === 'GET' && req.url === '/') {
-            if (!requireAdminAuth(req, res)) return;
+        // 文件上传页面
+        if (req.method === 'GET' && req.url === '/uploadFE') {
             const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude API Proxy</title>
+  <title>文件上传</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    .container { max-width: 640px; width: 100%; padding: 48px 24px; }
-    h1 { font-size: 2rem; font-weight: 700; margin-bottom: 8px; color: #f0f6fc; }
-    .subtitle { color: #8b949e; margin-bottom: 40px; font-size: 0.95rem; }
-    .cards { display: flex; flex-direction: column; gap: 16px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px 24px; text-decoration: none; color: inherit; display: flex; align-items: center; justify-content: space-between; transition: border-color 0.2s, background 0.2s; }
-    .card:hover { border-color: #58a6ff; background: #1c2230; }
-    .card-info { display: flex; flex-direction: column; gap: 4px; }
-    .card-title { font-size: 1rem; font-weight: 600; color: #f0f6fc; }
-    .card-desc { font-size: 0.85rem; color: #8b949e; }
-    .card-arrow { color: #58a6ff; font-size: 1.2rem; }
-    .badge { display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 20px; margin-top: 4px; background: #21262d; color: #79c0ff; border: 1px solid #388bfd44; }
-    .logout-btn { display: inline-block; margin-top: 24px; padding: 8px 16px; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #8b949e; text-decoration: none; font-size: 0.85rem; transition: border-color 0.2s; }
-    .logout-btn:hover { border-color: #f85149; color: #f85149; }
+    .container { max-width: 480px; width: 100%; padding: 48px 24px; }
+    h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; color: #f0f6fc; }
+    .subtitle { color: #8b949e; margin-bottom: 32px; font-size: 0.95rem; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; }
+    .file-input { display: none; }
+    .file-label { display: block; width: 100%; padding: 12px 16px; border: 2px dashed #30363d; border-radius: 8px; text-align: center; color: #8b949e; cursor: pointer; transition: border-color 0.2s, color 0.2s; margin-bottom: 16px; }
+    .file-label:hover { border-color: #58a6ff; color: #58a6ff; }
+    .file-label.has-file { border-color: #3fb950; color: #3fb950; }
+    button { width: 100%; padding: 12px 16px; border: none; border-radius: 8px; background: #238636; color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #2ea043; }
+    button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+    .message { margin-top: 16px; padding: 12px 16px; border-radius: 8px; font-size: 0.9rem; display: none; }
+    .message.success { display: block; background: #0f2d1f; color: #3fb950; border: 1px solid #3fb95044; }
+    .message.error { display: block; background: #2d0f0f; color: #f85149; border: 1px solid #f8514944; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Claude API Proxy</h1>
-    <p class="subtitle">统一管理 Copilot、CodeBuddy、Relay 三个代理服务</p>
-    <div class="cards">
-      <a class="card" href="/copilotFE">
-        <div class="card-info">
-          <span class="card-title">GitHub Copilot</span>
-          <span class="card-desc">Copilot 账号管理与 API 代理</span>
-          <span class="badge">/copilotFE &nbsp;·&nbsp; /copilot</span>
-        </div>
-        <span class="card-arrow">→</span>
-      </a>
-      <a class="card" href="/codebuddyFE">
-        <div class="card-info">
-          <span class="card-title">CodeBuddy</span>
-          <span class="card-desc">CodeBuddy 账号管理与 API 代理</span>
-          <span class="badge">/codebuddyFE &nbsp;·&nbsp; /codebuddy</span>
-        </div>
-        <span class="card-arrow">→</span>
-      </a>
-      <a class="card" href="/relayFE">
-        <div class="card-info">
-          <span class="card-title">Relay</span>
-          <span class="card-desc">上游 LLM 中继代理</span>
-          <span class="badge">/relayFE &nbsp;·&nbsp; /relay</span>
-        </div>
-        <span class="card-arrow">→</span>
-      </a>
+    <h1>文件上传</h1>
+    <p class="subtitle">选择文件并上传到服务器</p>
+    <div class="card">
+      <input type="file" id="fileInput" class="file-input">
+      <label for="fileInput" class="file-label" id="fileLabel">点击选择文件</label>
+      <button id="uploadBtn" disabled>上传</button>
+      <div class="message" id="message"></div>
     </div>
-    <a class="logout-btn" href="/logout">登出</a>
   </div>
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const fileLabel = document.getElementById('fileLabel');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const message = document.getElementById('message');
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) {
+        fileLabel.textContent = fileInput.files[0].name;
+        fileLabel.classList.add('has-file');
+        uploadBtn.disabled = false;
+      } else {
+        fileLabel.textContent = '点击选择文件';
+        fileLabel.classList.remove('has-file');
+        uploadBtn.disabled = true;
+      }
+      message.className = 'message';
+    });
+    uploadBtn.addEventListener('click', async () => {
+      if (fileInput.files.length === 0) return;
+      uploadBtn.disabled = true;
+      message.className = 'message';
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.success) {
+          message.className = 'message success';
+          message.textContent = '上传成功：' + data.filename;
+        } else {
+          message.className = 'message error';
+          message.textContent = data.message || '上传失败';
+        }
+      } catch (err) {
+        message.className = 'message error';
+        message.textContent = '上传失败：' + err.message;
+      }
+      uploadBtn.disabled = false;
+    });
+  </script>
 </body>
 </html>`;
             res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
@@ -483,45 +358,134 @@ export function createServer() {
             return;
         }
 
-        send404(req, res);
+        // 文件上传 API
+        if (req.method === 'POST' && req.url === '/api/upload') {
+            const contentType = req.headers['content-type'] || '';
+            if (!contentType.includes('multipart/form-data')) {
+                sendJson(res, 400, {success: false, message: '未找到文件'});
+                return;
+            }
+            try {
+                const busboy = Busboy({headers: req.headers});
+                let uploadedFile = null;
+                let fileWritePromise = null;
+
+                busboy.on('file', (fieldname, file, info) => {
+                    // busboy 默认按 latin1 解析文件名，需要转回 UTF-8
+                    const filename = Buffer.from(info.filename, 'latin1').toString('utf8');
+                    const uploadsDir = join(process.cwd(), 'uploads');
+                    if (!existsSync(uploadsDir)) {
+                        mkdirSync(uploadsDir);
+                    }
+                    const savePath = join(uploadsDir, filename);
+                    const writeStream = createWriteStream(savePath);
+                    file.pipe(writeStream);
+                    fileWritePromise = new Promise((resolve, reject) => {
+                        writeStream.on('finish', () => resolve(filename));
+                        writeStream.on('error', reject);
+                        file.on('error', reject);
+                    });
+                    uploadedFile = filename;
+                });
+
+                await new Promise((resolve, reject) => {
+                    busboy.on('finish', resolve);
+                    busboy.on('error', reject);
+                    req.pipe(busboy);
+                });
+
+                if (fileWritePromise) {
+                    const filename = await fileWritePromise;
+                    sendJson(res, 200, {success: true, filename});
+                } else {
+                    sendJson(res, 400, {success: false, message: '未找到文件'});
+                }
+            } catch (err) {
+                logger.error('Upload error:', err);
+                sendJson(res, 500, {success: false, message: '上传处理失败'});
+            }
+            return;
+        }
+
+        // 根路径统一进入管理控制台；未登录时先进入登录页
+        if (req.method === 'GET' && new URL(req.url, `http://${req.headers.host}`).pathname === '/') {
+            const location = getSessionUser(req).authenticated ? '/admin' : '/login';
+            res.writeHead(302, {Location: location});
+            res.end();
+            return;
+        }
+
+        // 未匹配的浏览器页面统一显示 404；非页面请求保持原有错误格式
+        if (wantsHtml(req)) {
+            sendNotFoundPage(req, res);
+            return;
+        }
+
+        sendError(res, 404, 'Not found');
     });
 
-    // ============ WebSocket 升级处理 ============
-
+    // ========== WebSocket 升级路由 ==========
     const wss = new WebSocketServer({noServer: true});
 
     server.on('upgrade', (req, socket, head) => {
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const pathname = url.pathname;
-
-        logger.info(`WS upgrade: ${pathname}`);
-
-        // WS 鉴权
-        if (!requireGatewayAuthWS(req)) {
-            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        let pathname;
+        try {
+            pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
+        } catch {
+            socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
             socket.destroy();
             return;
         }
 
-        // WS 和 HTTP 使用同一个 URL，通过 upgrade 事件区分
-        // POST /xxx/v1/responses → HTTP handler（上面已处理）
-        // WS Upgrade /xxx/v1/responses → WS handler（下面处理）
-        if (pathname === '/copilot/v1/responses') {
-            wss.handleUpgrade(req, socket, head, (ws) => {
-                handleCopilotResponsesWS(ws, req);
-            });
-        } else if (pathname === '/relay/v1/responses') {
-            wss.handleUpgrade(req, socket, head, (ws) => {
-                handleRelayResponsesWS(ws, req);
-            });
-        } else if (pathname === '/codebuddy/v1/responses') {
-            wss.handleUpgrade(req, socket, head, (ws) => {
-                handleCodebuddyResponsesWS(ws, req);
-            });
-        } else {
+        const wsRoutes = {
+            '/relay/v1/responses': handleRelayResponsesWS,
+            '/codebuddy/v1/responses': handleCodebuddyResponsesWS,
+            '/copilot/v1/responses': handleCopilotResponsesWS
+        };
+
+        const handler = wsRoutes[pathname];
+        if (!handler) {
             socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
             socket.destroy();
+            return;
         }
+
+        const authResult = authenticateApiKey(req.headers, unifiedTenantManager);
+
+        if (authResult.error) {
+            const status = authResult.error.status === 401 ? '401 Unauthorized' : `${authResult.error.status} Error`;
+            socket.write(`HTTP/1.1 ${status}\r\n\r\n`);
+            socket.destroy();
+            return;
+        }
+
+        if (authResult.skipAuth) {
+            socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+
+        req.tenantId = authResult.tenantId;
+        const serviceType = pathname.split('/')[1];
+        const tenant = unifiedTenantManager.getTenant(req.tenantId);
+        const profile = tenant?.serviceProfiles?.find(item => item.service_type === serviceType);
+        if (!profile?.enabled) {
+            socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+
+        wss.handleUpgrade(req, socket, head, (ws) => {
+            try {
+                Promise.resolve(handler(ws, req)).catch((err) => {
+                    logger.error(`WS upgrade handler error for ${pathname}:`, err);
+                    try { ws.close(1011, 'Internal error'); } catch {}
+                });
+            } catch (err) {
+                logger.error(`WS upgrade handler error for ${pathname}:`, err);
+                try { ws.close(1011, 'Internal error'); } catch {}
+            }
+        });
     });
 
     return server;

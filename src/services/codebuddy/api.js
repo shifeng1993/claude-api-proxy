@@ -5,48 +5,18 @@
 
 import {request, readBody} from '../../utils/http-client.js';
 import {normalizePayload} from '../../transformer/shared-translator.js';
+import {interceptAndSerialize} from '../../utils/payload-interceptor.js';
 import logger from '../../utils/logger.js';
-import {getCodebuddyApiUrl, codebuddyHeaders, getCodebuddyBaseUrl, getCodebuddyModels, isPersonalHost} from './config.js';
+import {getCodebuddyApiUrl, codebuddyHeaders, getCodebuddyBaseUrl, getModelsForHost, isPersonalHost} from './config.js';
 import {randomBytes} from 'crypto';
-
-/**
- * CodeBuddy API 错误
- * 保留上游 HTTP 状态码，便于路由层区分 429 等特殊状态
- */
-export class CodeBuddyApiError extends Error {
-    /**
-     * @param {number} status - 上游 HTTP 状态码
-     * @param {string} message - 错误信息
-     */
-    constructor(status, message) {
-        super(message);
-        this.name = 'CodeBuddyApiError';
-        this.status = status;
-    }
-}
 
 // CodeBuddy 服务端会检测竞争对手关键词并触发 content_filter
 // 必须在所有消息和工具定义中替换，不能只替换 system 消息
 const KEYWORD_REPLACEMENTS = [
     // 先替换长串，再替换短串，避免短串先命中导致长串匹配失败
-    ["Main branch (you will usually use this for PRs)", "Default branch (you will usually use this for MRs)"],
+    ['Main branch (you will usually use this for PRs)', 'Default branch (you will usually use this for MRs)'],
     ["Claude Code, Anthropic's official CLI for Claude", "CodeBuddy Code, Tencent's official CLI for CodeBuddy"],
-    ["https://github.com/anthropics/claude-code/issues", "https://cnb.cool/codebuddy/codebuddy-code/-/issues"],
-    ["https://claude.com/claude-code", "https://codebuddy.ai/codebuddy-code"],
-    ["noreply@anthropic.com", "noreply@tencent.com"],
-    ["Claude Code", "CodeBuddy Code"],
-    ["Anthropic's official CLI for Claude", "Tencent's official CLI for CodeBuddy"],
-    ["claude-code-guide", "codebuddy-code-guide"],
-    ["claude-code", "codebuddy-code"],
-    ["claude-vscode", "codebuddy-vscode"],
-    ["@anthropic-ai/sdk", "@tencent-ai/sdk"],
-    ["anthropic SDK", "Tencent SDK"],
-    ["Anthropic SDK", "Tencent SDK"],
-    ["Anthropic API", "Tencent API"],
-    ["Anthropic", "Tencent"],
-    ["anthropic", "tencent"],
-    ["Claude", "CodeBuddy"],
-    ["claude", "codebuddy"],
+    ['anthropic', 'tencent']
 ];
 
 /**
@@ -124,7 +94,7 @@ export async function getModels(credential = null) {
     }
 
     return {
-        data: getCodebuddyModels(credential),
+        data: getModelsForHost(credential.base_url),
         object: 'list'
     };
 }
@@ -173,28 +143,45 @@ export async function createChatCompletions(payload, options = {}) {
         stream: true
     };
 
+    // 腾讯云文档要求：同一对话的所有请求使用相同的 prompt_cache_key，
+    // 值为 conversation_id，用于标识可复用 KV Cache 的请求前缀
+    if (conversationId) {
+        requestPayload.prompt_cache_key = conversationId;
+    }
+
     // 个人站服务端会检测竞争对手关键词并触发 content_filter，需要替换
-    // 企业站无此限制，跳过替换
+    // 自定义/组织上游无此限制，跳过替换
     const host = new URL(getCodebuddyBaseUrl(baseUrl)).host;
     if (isPersonalHost(host)) {
+        // DEBUG: 记录个人站请求的 payload 关键内容，用于排查 content_filter 触发原因
+        const sysMsg = requestPayload.messages?.find(m => m.role === 'system');
+        const userMsgs = requestPayload.messages?.filter(m => m.role === 'user');
         sanitizePayload(requestPayload);
     }
     const url = getCodebuddyApiUrl(baseUrl);
+    const userInfo = options.tenantName && options.tenantUsername ? `${options.tenantName}(${options.tenantUsername})` : '';
     logger.info(
-        `[CodeBuddy]: ${baseUrl}, model: ${payload.model}, effort: ${requestPayload.reasoning_effort || 'high'}, credential: ${userId}`
+        `[CodeBuddy]: ${baseUrl}, model: ${payload.model}, effort: ${requestPayload.reasoning_effort || 'high'}, credential: ${userId}, ${userInfo}`
     );
 
     const response = await request(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(normalizePayload(requestPayload, {source: 'codebuddy', upstream: baseUrl}))
+        body: interceptAndSerialize(normalizePayload(requestPayload, {source: 'codebuddy', upstream: baseUrl}), {
+            channel: 'codebuddy',
+            model: payload.model,
+            upstream: baseUrl,
+            endpoint: 'chat/completions',
+            stream: requestPayload.stream,
+            ...(options.tenantName ? {tenantName: options.tenantName, tenantUsername: options.tenantUsername} : {})
+        })
     });
 
     if (response.status >= 400) {
         const errorBody = await readBody(response.body);
 
-        logger.error(`CodeBuddy API error: ${response.status} - ${errorBody.slice(0, 300)}`);
-        throw new CodeBuddyApiError(response.status, `CodeBuddy API error: ${response.status} - ${errorBody}`);
+        logger.error(`CodeBuddy API error${userInfo ? `, ${userInfo}` : ''}: ${response.status} - ${errorBody.slice(0, 300)}`);
+        throw new Error(`CodeBuddy API error: ${response.status} - ${errorBody}`);
     }
 
     return response;

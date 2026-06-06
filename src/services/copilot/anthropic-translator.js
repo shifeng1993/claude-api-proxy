@@ -5,7 +5,7 @@
  */
 
 import logger from '../../utils/logger.js';
-import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, extractCacheHitTokens, openAIToAnthropic as sharedOpenAIToAnthropic, normalizeClaudeModelAlias} from '../../transformer/shared-translator.js';
+import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, extractCacheHitTokens, extractReasoningFromDelta, openAIToAnthropic as sharedOpenAIToAnthropic, normalizeClaudeModelAlias} from '../../transformer/shared-translator.js';
 import {responsesEventToChatChunks} from '../../transformer/responses-translator.js';
 
 /**
@@ -203,10 +203,10 @@ function handleAssistantMessage(message) {
     const thinkingBlocks = message.content.filter(block => block.type === 'thinking');
 
     // 合并文本和思考内容
-    const allText = [
-        ...textBlocks.map(b => b.text),
-        ...thinkingBlocks.map(b => b.thinking)
-    ].filter(Boolean).join('\n\n');
+    const allText = textBlocks
+        .map(b => b.text)
+        .filter(Boolean)
+        .join('\n\n');
 
     const result = {
         role: 'assistant',
@@ -214,6 +214,14 @@ function handleAssistantMessage(message) {
     };
 
     // 添加 tool_calls
+    const reasoningText = thinkingBlocks
+        .map(b => b.thinking)
+        .filter(Boolean)
+        .join('\n\n');
+    if (reasoningText) {
+        result.reasoning_content = reasoningText;
+    }
+
     if (toolUseBlocks.length > 0) {
         result.tool_calls = toolUseBlocks.map(block => ({
             id: block.id,
@@ -237,7 +245,10 @@ export function createStreamState() {
         contentBlockOpen: false,
         contentBlockIndex: 0,
         toolCalls: {},
-        currentBlockType: null
+        currentBlockType: null,
+        // <think> 跨 chunk 标志：true 时把后续 content 继续视为 reasoning，
+        // 直到遇到 </think>
+        pendingThinkOpen: false
     };
 }
 
@@ -275,14 +286,79 @@ export function translateStreamChunk(openAIChunk, state) {
         state.messageStartSent = true;
     }
 
-    // 处理文本内容
-    if (delta.content) {
-        // 如果有工具块打开，先关闭它
+    // ── reasoning 提取与 thinking 块归位 ──
+    // 上游 reasoning 形态多样（reasoning_content/thinking/thought/<think>...），
+    // 必须先把它从 delta.content 中拆出来，否则会被当成普通文本拼进 text 块
+    let reasoningText = null;
+    let reasoningSignature = null;
+    let effectiveContent = delta.content;
+
+    if (state.pendingThinkOpen && typeof delta.content === 'string' && delta.content) {
+        // 上一个 chunk 留下了未闭合的 <think>，本 chunk content 仍属 reasoning，
+        // 直到出现 </think>
+        const closeIdx = delta.content.indexOf('</think>');
+        if (closeIdx >= 0) {
+            reasoningText = delta.content.slice(0, closeIdx);
+            effectiveContent = delta.content.slice(closeIdx + '</think>'.length);
+            state.pendingThinkOpen = false;
+        } else {
+            reasoningText = delta.content;
+            effectiveContent = '';
+        }
+    } else {
+        const r = extractReasoningFromDelta(delta);
+        if (r) {
+            reasoningText = r.text;
+            reasoningSignature = r.signature || null;
+            if (r.thinkOpen) state.pendingThinkOpen = true;
+            if (r.remainingContent !== undefined) effectiveContent = r.remainingContent;
+        }
+    }
+
+    if (reasoningText) {
+        // 关闭可能开着的 tool_use 块；text 块还没开就不必关，开着说明已混入了普通正文，
+        // 这种顺序异常先按"thinking 出现晚于 text"处理：直接挂在 text 块之后
         if (state.contentBlockOpen && state.currentBlockType === 'tool_use') {
+            events.push({type: 'content_block_stop', index: state.contentBlockIndex});
+            state.contentBlockIndex++;
+            state.contentBlockOpen = false;
+        }
+
+        if (!state.contentBlockOpen || state.currentBlockType !== 'thinking') {
+            if (state.contentBlockOpen) {
+                events.push({type: 'content_block_stop', index: state.contentBlockIndex});
+                state.contentBlockIndex++;
+                state.contentBlockOpen = false;
+            }
             events.push({
-                type: 'content_block_stop',
-                index: state.contentBlockIndex
+                type: 'content_block_start',
+                index: state.contentBlockIndex,
+                content_block: {type: 'thinking', thinking: ''}
             });
+            state.contentBlockOpen = true;
+            state.currentBlockType = 'thinking';
+        }
+
+        events.push({
+            type: 'content_block_delta',
+            index: state.contentBlockIndex,
+            delta: {type: 'thinking_delta', thinking: reasoningText}
+        });
+
+        if (reasoningSignature) {
+            events.push({
+                type: 'content_block_delta',
+                index: state.contentBlockIndex,
+                delta: {type: 'signature_delta', signature: reasoningSignature}
+            });
+        }
+    }
+
+    // 处理文本内容
+    if (effectiveContent) {
+        // 切换块前先关闭 thinking 或 tool_use
+        if (state.contentBlockOpen && state.currentBlockType !== 'text') {
+            events.push({type: 'content_block_stop', index: state.contentBlockIndex});
             state.contentBlockIndex++;
             state.contentBlockOpen = false;
         }
@@ -307,7 +383,7 @@ export function translateStreamChunk(openAIChunk, state) {
             index: state.contentBlockIndex,
             delta: {
                 type: 'text_delta',
-                text: delta.content
+                text: effectiveContent
             }
         });
     }

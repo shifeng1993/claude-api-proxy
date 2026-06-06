@@ -1234,7 +1234,7 @@ export function chatResponseToCompact(chatRes) {
  * 净化 Responses API 请求的 input，去除上游 WS 无法解析的 id 引用
  *
  * 客户端（如 CherryStudio）续接对话时，会将上一轮响应的 output items（含 id）
- * 放入新请求的 input。上游 Copilot WS 是无状态的，无法查找这些 id，
+ * 放入新请求的 input。部分上游无法查找这些历史 id，
  * 导致 "text part xxx not found" 错误。
  *
  * 处理策略：

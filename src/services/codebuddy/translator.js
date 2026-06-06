@@ -15,7 +15,8 @@ import {
     prependThinkingHint,
     prependToolThinkingHint,
     openAIToAnthropic as sharedOpenAIToAnthropic,
-    normalizeClaudeModelAlias
+    normalizeClaudeModelAlias,
+    sortObjectKeys
 } from '../../transformer/shared-translator.js';
 
 /* ================= SSE Writer ================= */
@@ -81,7 +82,7 @@ class ClaudeStreamState {
         });
     }
 
-    endMessage(stopReason = 'end_turn', usageTokens = {}) {
+    endMessage(stopReason = 'end_turn') {
         if (this.messageEnded || !this.messageStarted) return;
         this.messageEnded = true;
 
@@ -89,15 +90,10 @@ class ClaudeStreamState {
         this.closeAllTools();
         if (this.textOpen) this.closeText();
 
-        const usage = {
-            input_tokens: usageTokens.inputTokens || 0,
-            output_tokens: usageTokens.outputTokens || 0
-        };
-        if ((usageTokens.cacheHitTokens || 0) > 0) usage.cache_read_input_tokens = usageTokens.cacheHitTokens;
         this.writer.write('message_delta', {
             type: 'message_delta',
             delta: {stop_reason: stopReason, stop_sequence: null},
-            usage
+            usage: {input_tokens: 0, output_tokens: 0}
         });
 
         this.writer.write('message_stop', {type: 'message_stop'});
@@ -518,7 +514,7 @@ function handleAssistantMessage(message) {
             let args = '{}';
             if (block.input !== undefined && block.input !== null) {
                 try {
-                    args = JSON.stringify(block.input);
+                    args = JSON.stringify(sortObjectKeys(block.input));
                 } catch (e) {
                     logger.warn(`Failed to stringify tool input for ${block.name}:`, e.message);
                     args = '{}';

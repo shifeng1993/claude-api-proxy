@@ -1,28 +1,26 @@
 /**
- * Relay 路由处理器 - 支持 OpenAI、Anthropic、Responses 三种协议
- * 对活跃上游发起请求，根据上游协议自动选择最优路径（透传 > 转换）
- * 支持 Responses API WebSocket 模式（上游 WS 连接 + 对外 WS 端点）
+ * Relay 路由处理器 - 支持 OpenAI 和 Anthropic 双格式的聊天补全和模型列表 API
  * @module routes/relay
  */
 
-import {relayStore} from '../services/relay/relay-store.js';
+import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
 import {
     createChatCompletions,
     createResponses,
+    createResponsesWebSocket,
+    releaseResponsesWebSocketConnection,
+    discardResponsesWebSocketConnection,
     createAnthropicMessages,
     createAnthropicCountTokens,
     getUpstreamModels,
     isAnthropicUpstream,
     isResponsesUpstream,
+    isResponsesWebSocketUpstream,
     normalizeUpstreamProtocol,
-    createResponsesWS,
-    releaseWSConnection,
-    discardWSConnection,
-    isWSUpstream,
-    ResponsesWSError,
     RelayUpstreamError
 } from '../services/relay/api.js';
 import {readBody, isNetworkError} from '../utils/http-client.js';
+import {sampleRequest} from '../services/coach/sampler.js';
 import {
     anthropicToOpenAI,
     openAIToAnthropic,
@@ -31,7 +29,12 @@ import {
     injectBehaviorRules,
     mapStopReason
 } from '../services/relay/translator.js';
-import {rewriteOpenAIStream} from '../transformer/shared-translator.js';
+import {
+    rewriteOpenAIStream,
+    stripDynamicReminders,
+    buildConversationAnchorKey,
+    sanitizeAnthropicPayload
+} from '../transformer/shared-translator.js';
 import {
     responsesRequestToChat,
     chatRequestToResponses,
@@ -41,19 +44,36 @@ import {
     createChatCompletionsStreamState,
     chatChunkToResponsesEvents,
     responsesEventToChatChunks,
+    responsesEventToResponsesEvents,
     compactRequestToChat,
     chatResponseToCompact
 } from '../transformer/responses-translator.js';
+import {isResponsesWebSocketProtocolError} from '../services/shared/responses-ws-client.js';
+import {handleWSConnection} from '../services/shared/responses-ws-server.js';
+import {
+    createStreamState as createAnthropicEventState,
+    translateStreamChunk as chatChunkToAnthropicEvents
+} from '../services/copilot/anthropic-translator.js';
+import {
+    anthropicResponseToChat,
+    anthropicStreamToChatChunks,
+    chatRequestToAnthropic
+} from './relay-protocol-converters.js';
 import {aggregateStreamResponse} from '../services/codebuddy/api.js';
 import {estimateMessageTokens} from '../utils/token-estimation.js';
-import {handleWSConnection} from '../services/ws/ws-server.js';
-import {
-    anthropicToResponses,
-    responsesEventToAnthropicEvents,
-    responsesOutputToAnthropic,
-    createStreamState as createAnthropicStreamState
-} from '../services/copilot/anthropic-translator.js';
 import logger from '../utils/logger.js';
+
+/**
+ * 从上游 usage 中提取缓存命中 token 数
+ * DeepSeek: prompt_cache_hit_tokens
+ * OpenAI: prompt_tokens_details.cached_tokens
+ */
+function extractCacheHitTokens(usage) {
+    if (!usage) return 0;
+    if (usage.prompt_cache_hit_tokens) return usage.prompt_cache_hit_tokens;
+    if (usage.prompt_tokens_details?.cached_tokens) return usage.prompt_tokens_details.cached_tokens;
+    return 0;
+}
 
 /* ==================== 工具函数 ==================== */
 
@@ -71,28 +91,111 @@ function sendAnthropicError(res, status, message) {
     sendJson(res, status, {type: 'error', error: {type: errorType, message}});
 }
 
-function upstreamErrorStatus(err) {
-    if (err instanceof RelayUpstreamError) {
-        // 429 保持原样返回，其余 >= 400 的上游错误映射为 502
-        if (err.status === 429) return 429;
-        return 502;
-    }
-    return isNetworkError(err) ? 502 : 500;
+function normalizeConversationKey(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-/**
- * 检测并处理上游 429 限速错误
- * 当检测到 429 时，标记当前上游为限速状态
- * @param {Error} error - 捕获的错误
- */
-function handleUpstreamRateLimit(error) {
-    if (error instanceof RelayUpstreamError && error.status === 429) {
-        const um = relayStore.getUpstreamManager();
-        if (um) {
-            logger.warn('Relay: Upstream 429 rate limit detected, marking current upstream as rate-limited');
-            um.markLastReturnedRateLimited();
-        }
+function extractConversationKeyFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return undefined;
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : undefined;
+    const candidates = [
+        payload.conversation_id,
+        payload.conversationId,
+        payload.session_id,
+        payload.sessionId,
+        payload.thread_id,
+        payload.threadId,
+        metadata?.conversation_id,
+        metadata?.conversationId,
+        metadata?.session_id,
+        metadata?.sessionId,
+        metadata?.thread_id,
+        metadata?.threadId
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizeConversationKey(candidate);
+        if (normalized) return normalized;
     }
+    return undefined;
+}
+
+function extractConversationKey(req, payload, meta = {}) {
+    const headerCandidates = [
+        req.headers['x-conversation-id'],
+        req.headers['x-session-id'],
+        req.headers['x-chat-id'],
+        req.headers['x-thread-id']
+    ];
+
+    for (const candidate of headerCandidates) {
+        const value = Array.isArray(candidate) ? candidate[0] : candidate;
+        const normalized = normalizeConversationKey(value);
+        if (normalized) return normalized;
+    }
+
+    const payloadResult = extractConversationKeyFromPayload(payload);
+    if (payloadResult) return payloadResult;
+
+    // Fallback: 用共享的 buildConversationAnchorKey，只基于第一条 user + tenantId
+    const anchorPayload = payload && typeof payload === 'object'
+        ? {...payload, messages: payload?.messages || payload?.input}
+        : {messages: payload?.messages || payload?.input};
+    return buildConversationAnchorKey(anchorPayload, meta);
+}
+
+function sendResponsesWebSocketProtocolError(res, error) {
+    const event = error?.event || {
+        type: 'error',
+        status: error?.status || 400,
+        error: {message: error?.message || 'Responses WebSocket request failed'}
+    };
+
+    if (res.headersSent) {
+        if (!res.destroyed && !res.writableEnded) {
+            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+            res.end();
+        }
+        return;
+    }
+
+    sendJson(res, event.status || error?.status || 400, event);
+}
+
+async function collectResponsesWebSocketResponse(wsResult) {
+    let completedData = null;
+    try {
+        for await (const event of wsResult.eventStream) {
+            if (event.type === 'response.completed') {
+                completedData = event.data;
+            }
+        }
+        releaseResponsesWebSocketConnection(wsResult.conn);
+    } catch (error) {
+        discardResponsesWebSocketConnection(wsResult.conn);
+        throw error;
+    }
+
+    if (!completedData?.response) {
+        throw new Error('No response.completed event received from upstream');
+    }
+    return completedData.response;
+}
+
+function recordResponsesUsage(tenantId, usage, model) {
+    recordUsage(
+        tenantId,
+        usage?.input_tokens || 0,
+        usage?.output_tokens || 0,
+        usage?.input_tokens_details?.cached_tokens || 0,
+        model
+    );
+}
+
+function upstreamErrorStatus(err) {
+    if (err instanceof RelayUpstreamError && err.status) return err.status;
+    if (isNetworkError(err)) return 502;
+    return 500;
 }
 
 async function parseBody(req) {
@@ -111,16 +214,9 @@ async function readResponseBody(stream) {
     return Buffer.concat(chunks).toString('utf8');
 }
 
-function extractCacheHitTokens(usage) {
-    if (!usage) return 0;
-    if (usage.prompt_cache_hit_tokens) return usage.prompt_cache_hit_tokens;
-    if (usage.prompt_tokens_details?.cached_tokens) return usage.prompt_tokens_details.cached_tokens;
-    return 0;
-}
-
 function extractAnthropicCacheHitTokens(usage) {
     if (!usage) return 0;
-    return usage.cache_read_input_tokens || extractCacheHitTokens(usage);
+    return usage.cache_read_input_tokens || 0;
 }
 
 function parseSSEBlock(block) {
@@ -137,6 +233,50 @@ function parseSSEBlock(block) {
     }
 
     return {event, data: dataLines.join('\n')};
+}
+
+async function* parseResponsesSSEEvents(stream, signal) {
+    let buffer = '';
+    for await (const chunk of stream) {
+        if (signal?.aborted) break;
+        buffer += chunk.toString('utf8');
+        const parts = buffer.split(/\r?\n\r?\n/);
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+            const {event, data} = parseSSEBlock(part);
+            if (!data || data === '[DONE]') continue;
+            let parsed;
+            try { parsed = JSON.parse(data); } catch { continue; }
+            yield {type: event || parsed.type, data: parsed};
+        }
+    }
+}
+
+function writeAnthropicEvent(res, event) {
+    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+async function streamResponsesEventsAsAnthropic(eventStream, res, signal) {
+    const chatState = createChatCompletionsStreamState();
+    const anthropicState = createAnthropicEventState();
+    let usage = null;
+
+    for await (const event of eventStream) {
+        if (signal?.aborted) break;
+        if (event.type === 'response.completed') {
+            usage = event.data?.response?.usage || usage;
+        }
+        const chatChunks = responsesEventToChatChunks(event.type, event.data, chatState);
+        for (const chatChunk of chatChunks) {
+            const anthropicEvents = chatChunkToAnthropicEvents(chatChunk, anthropicState);
+            for (const anthropicEvent of anthropicEvents) {
+                writeAnthropicEvent(res, anthropicEvent);
+            }
+        }
+    }
+
+    return usage;
 }
 
 function handleAnthropicUsageEvent(eventName, payload, usageState) {
@@ -209,22 +349,24 @@ function getProtocolErrorMessage(upstream, expectedProtocol, endpoint) {
 
 /* ==================== 鉴权 ==================== */
 
-/**
- * 获取上游配置，若无可用上游则返回错误
- * 网关层已统一完成客户端 API Key 鉴权
- */
-function getUpstreamOrFail() {
-    const upstreamManager = relayStore.getUpstreamManager();
+async function authenticateAndGetUpstream(req) {
+    // req.tenantId is already set by requireApiAuth in server.js
+    const tenantId = req.tenantId;
+    if (!tenantId) {
+        return {error: {status: 503, message: 'Relay tenant system is not enabled'}};
+    }
+
+    const upstreamManager = await unifiedTenantManager.getUpstreamManager(tenantId);
     if (!upstreamManager) {
-        return {error: {status: 503, message: 'Relay upstream manager not found'}};
+        return {error: {status: 503, message: 'Tenant upstream manager not found'}};
     }
 
     const upstream = upstreamManager.getActiveUpstream();
     if (!upstream) {
-        return {error: {status: 503, message: '未配置可用上游，请在管理面板 /relayFE 配置'}};
+        return {error: {status: 503, message: '未配置可用上游，请在管理面板 /admin 配置'}};
     }
 
-    return {upstream, upstreamManager};
+    return {upstream, tenantId, upstreamManager};
 }
 
 /**
@@ -236,27 +378,32 @@ async function callUpstream(upstream, fn) {
         return {response, upstream};
     }
     const errorBody = await readBody(response.body);
-    throw new RelayUpstreamError(response.status, `上游「${upstream.name}」返回 HTTP ${response.status}: ${errorBody.slice(0, 200)}`);
+    throw new Error(`上游「${upstream.name}」返回 HTTP ${response.status}: ${errorBody.slice(0, 200)}`);
 }
 
-function recordUsage(inputTokens, outputTokens, cacheHitTokens = 0, model = 'unknown') {
-    relayStore.incrementApiCallCount();
-    relayStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
-    relayStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, model);
+function recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens = 0, model = 'unknown', samplePayload = null, sampleResponse = null) {
+    if (!tenantId) return;
+    unifiedTenantManager.incrementApiCallCount(tenantId, 'relay');
+    unifiedTenantManager.incrementTokenUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens);
+    unifiedTenantManager.recordDailyUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens, 0, model);
+    if (samplePayload) {
+        sampleRequest(tenantId, 'relay', samplePayload, sampleResponse, model).catch(() => {});
+    }
 }
 
 /* ==================== 处理函数 ==================== */
 
 /**
  * 处理 OpenAI 格式的 /relay/v1/chat/completions 请求
- * 根据上游协议自动选择最优路径：
- * - Anthropic 上游 → 报错引导
- * - Responses 上游 → Chat→Responses 转换
- * - OpenAI 上游 → 直接透传
  */
 async function handleOpenAIChatCompletions(req, res) {
+    let tenantInfo = '';
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
+        if (!authResult.error) {
+            const tenant = await unifiedTenantManager.getTenant(authResult.tenantId);
+            if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
+        }
         if (authResult.error) {
             sendOpenAIError(
                 res,
@@ -267,16 +414,125 @@ async function handleOpenAIChatCompletions(req, res) {
             return;
         }
 
-        const {upstream, upstreamManager} = authResult;
+        const {upstream, tenantId, upstreamManager} = authResult;
         const body = await parseBody(req);
         const openAIPayload = JSON.parse(body);
 
+        const tenant = await unifiedTenantManager.getTenant(tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+
+        openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
+
         if (isAnthropicUpstream(upstream)) {
-            sendOpenAIError(res, 400, getProtocolErrorMessage(upstream, 'openai', '/relay/anthropic/v1/messages'));
+            const anthropicPayload = chatRequestToAnthropic({
+                ...openAIPayload,
+                model: upstreamManager.resolveModel(openAIPayload.model, upstream.index)
+            });
+            const {response} = await callUpstream(upstream, (up) =>
+                createAnthropicMessages(
+                    anthropicPayload,
+                    up,
+                    {
+                        requestType: 'ChatCompletionsViaAnthropic',
+                        stream: openAIPayload.stream,
+                        originalModel: openAIPayload.model,
+                        ...tenantMeta
+                    },
+                    getAnthropicRequestHeaders(req)
+                )
+            );
+
+            if (openAIPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+                let finalUsage = null;
+                for await (const chatChunk of anthropicStreamToChatChunks(response.body, parseSSEBlock)) {
+                    if (chatChunk.usage) finalUsage = chatChunk.usage;
+                    res.write(`data: ${JSON.stringify(chatChunk)}\n\n`);
+                }
+                recordUsage(
+                    tenantId,
+                    finalUsage?.prompt_tokens || 0,
+                    finalUsage?.completion_tokens || 0,
+                    finalUsage?.prompt_tokens_details?.cached_tokens || 0,
+                    openAIPayload.model
+                );
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
+            }
+
+            const responseBody = await readResponseBody(response.body);
+            const parsed = JSON.parse(responseBody);
+            const chatResponse = anthropicResponseToChat(parsed, openAIPayload.model);
+            const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
+            recordUsage(
+                tenantId,
+                chatResponse.usage?.prompt_tokens || 0,
+                chatResponse.usage?.completion_tokens || 0,
+                cacheHitTokens,
+                openAIPayload.model
+            );
+            sampleRequest(tenantId, 'relay', openAIPayload, parsed, openAIPayload.model).catch(() => {});
+            sendJson(res, 200, chatResponse);
             return;
         }
 
-        openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+        if (isResponsesWebSocketUpstream(upstream)) {
+            const responsesPayload = chatRequestToResponses({
+                ...openAIPayload,
+                model: upstreamManager.resolveModel(openAIPayload.model, upstream.index)
+            });
+            const wsResult = await createResponsesWebSocket(responsesPayload, upstream, {
+                requestType: 'ChatCompletionsViaResponsesWS',
+                stream: openAIPayload.stream,
+                originalModel: openAIPayload.model,
+                contextKey: extractConversationKey(req, responsesPayload, {tenantId}),
+                rejectUnauthorized: !upstream.skip_tls_verify,
+                ...tenantMeta
+            });
+
+            if (openAIPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const streamState = createChatCompletionsStreamState();
+                let usage = null;
+                try {
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed') {
+                            usage = event.data?.response?.usage || usage;
+                        }
+                        const chunks = responsesEventToChatChunks(event.type, event.data, streamState);
+                        for (const chatChunk of chunks) {
+                            res.write(`data: ${JSON.stringify(chatChunk)}\n\n`);
+                        }
+                    }
+                    releaseResponsesWebSocketConnection(wsResult.conn);
+                } catch (error) {
+                    discardResponsesWebSocketConnection(wsResult.conn);
+                    throw error;
+                }
+
+                recordResponsesUsage(tenantId, usage, openAIPayload.model);
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
+            }
+
+            const completedResponse = await collectResponsesWebSocketResponse(wsResult);
+            recordResponsesUsage(tenantId, completedResponse.usage, openAIPayload.model);
+            sendJson(res, 200, responsesResponseToChat(completedResponse));
+            return;
+        }
 
         if (isResponsesUpstream(upstream)) {
             const responsesPayload = chatRequestToResponses({
@@ -284,11 +540,18 @@ async function handleOpenAIChatCompletions(req, res) {
                 model: upstreamManager.resolveModel(openAIPayload.model, upstream.index)
             });
 
+            const conversationKey = extractConversationKey(req, responsesPayload, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
             const {response} = await callUpstream(upstream, (up) =>
                 createResponses(responsesPayload, up, {
                     requestType: 'ChatCompletionsViaResponses',
                     stream: openAIPayload.stream,
-                    originalModel: openAIPayload.model
+                    originalModel: openAIPayload.model,
+                    ...relayMeta
                 })
             );
 
@@ -333,6 +596,7 @@ async function handleOpenAIChatCompletions(req, res) {
 
                         if (event === 'response.completed') {
                             recordUsage(
+                                tenantId,
                                 usage?.input_tokens || 0,
                                 usage?.output_tokens || 0,
                                 usage?.input_tokens_details?.cached_tokens || 0,
@@ -358,7 +622,7 @@ async function handleOpenAIChatCompletions(req, res) {
                 });
 
                 response.body.on('error', (err) => {
-                    logger.error('Relay Responses->Chat stream error:', err);
+                    logger.error(`Relay Responses->Chat stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
                     res.end();
                 });
                 return;
@@ -375,22 +639,26 @@ async function handleOpenAIChatCompletions(req, res) {
             }
 
             recordUsage(
+                tenantId,
                 parsed.usage?.input_tokens || 0,
                 parsed.usage?.output_tokens || 0,
                 parsed.usage?.input_tokens_details?.cached_tokens || 0,
                 openAIPayload.model
             );
+            sampleRequest(tenantId, 'relay', openAIPayload, parsed, openAIPayload.model).catch(() => {});
             sendJson(res, 200, responsesResponseToChat(parsed));
             return;
         }
 
-        // 标准 OpenAI Chat Completions 透传
-        if (openAIPayload.stream) {
-            openAIPayload.stream_options = {include_usage: true};
-        }
+        const conversationKey = extractConversationKey(req, openAIPayload, {tenantId});
+        const relayMeta = {
+            ...tenantMeta,
+            conversationKey,
+            sessionId: tenantId ? `session-${tenantId}` : conversationKey
+        };
         const {response} = await callUpstream(upstream, (up) => {
             const payload = {...openAIPayload, model: upstreamManager.resolveModel(openAIPayload.model, up.index)};
-            return createChatCompletions(payload, up);
+            return createChatCompletions(payload, up, relayMeta);
         });
 
         if (openAIPayload.stream) {
@@ -399,7 +667,7 @@ async function handleOpenAIChatCompletions(req, res) {
                 'Cache-Control': 'no-cache',
                 Connection: 'keep-alive'
             });
-            _streamOpenAIPassthrough(response, res, openAIPayload.model);
+            _streamOpenAIPassthrough(response, res, tenantId, tenantInfo, openAIPayload.model);
         } else {
             const responseBody = await readResponseBody(response.body);
             let parsed;
@@ -412,226 +680,52 @@ async function handleOpenAIChatCompletions(req, res) {
             }
             const cacheHitTokens = extractCacheHitTokens(parsed.usage);
             recordUsage(
+                tenantId,
                 parsed.usage?.prompt_tokens || 0,
                 parsed.usage?.completion_tokens || 0,
                 cacheHitTokens,
                 openAIPayload.model
             );
+            sampleRequest(tenantId, 'relay', openAIPayload, parsed, openAIPayload.model).catch(() => {});
             sendJson(res, 200, parsed);
         }
     } catch (error) {
-        logger.error('Relay: Failed to handle OpenAI chat completions:', error);
-        handleUpstreamRateLimit(error);
+        if (isResponsesWebSocketProtocolError(error)) {
+            sendResponsesWebSocketProtocolError(res, error);
+            return;
+        }
+        if (res.headersSent) {
+            logger.warn(`Relay Responses WS stream failed after response started: ${error.message}`);
+            if (!res.destroyed && !res.writableEnded) res.end();
+            return;
+        }
+        logger.error(`Relay: Failed to handle OpenAI chat completions${tenantInfo ? `, ${tenantInfo}` : ''}:`, error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
 
 /**
  * 处理 Anthropic 格式的 /relay/anthropic/v1/messages 请求
- * 根据上游协议自动选择最优路径：
- * - Responses 上游 → Anthropic↔Responses 转换（支持 WS 模式）
- * - Anthropic 上游 → 直接透传（零损耗）
- * - OpenAI 上游 → Anthropic→OpenAI 转换
  */
 async function handleAnthropicMessages(req, res) {
+    let tenantInfo = '';
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
+        if (!authResult.error) {
+            const tenant = await unifiedTenantManager.getTenant(authResult.tenantId);
+            if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
+        }
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
-        const {upstream, upstreamManager} = authResult;
+        const {upstream, tenantId, upstreamManager} = authResult;
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
+        const tenant = await unifiedTenantManager.getTenant(tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
-        if (isResponsesUpstream(upstream)) {
-            const responsesReq = anthropicToResponses(anthropicPayload);
-            responsesReq.model = upstreamManager.resolveModel(anthropicPayload.model, upstream.index);
-
-            // WS 模式：通过 WebSocket 连接上游
-            if (isWSUpstream(upstream)) {
-                try {
-                    const wsResult = await createResponsesWS(
-                        responsesReq,
-                        upstream,
-                        {contextKey: responsesReq.conversation_id || responsesReq.metadata?.conversation_id}
-                    );
-
-                    if (anthropicPayload.stream) {
-                        res.writeHead(200, {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            Connection: 'keep-alive'
-                        });
-
-                        const chatState = createChatCompletionsStreamState();
-                        const anthropicState = createAnthropicStreamState();
-                        let inputTokens = 0;
-                        let outputTokens = 0;
-                        let cacheHitTokens = 0;
-
-                        try {
-                            for await (const event of wsResult.eventStream) {
-                                if (event.type === 'response.completed' && event.data?.response?.usage) {
-                                    const usage = event.data.response.usage;
-                                    inputTokens = usage.input_tokens || 0;
-                                    outputTokens = usage.output_tokens || 0;
-                                    cacheHitTokens = usage.input_tokens_details?.cached_tokens || 0;
-                                }
-                                const anthropicEvents = responsesEventToAnthropicEvents(
-                                    event.type, event.data, chatState, anthropicState
-                                );
-                                for (const evt of anthropicEvents) {
-                                    res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
-                                }
-                            }
-                            releaseWSConnection(wsResult.conn);
-                        } catch (err) {
-                            discardWSConnection(wsResult.conn);
-                            throw err;
-                        }
-
-                        recordUsage(
-                            inputTokens || estimateAnthropicInputTokens(anthropicPayload),
-                            outputTokens,
-                            cacheHitTokens,
-                            anthropicPayload.model
-                        );
-                        res.end();
-                    } else {
-                        let completedData = null;
-                        try {
-                            for await (const event of wsResult.eventStream) {
-                                if (event.type === 'response.completed') completedData = event.data;
-                            }
-                            releaseWSConnection(wsResult.conn);
-                        } catch (err) {
-                            discardWSConnection(wsResult.conn);
-                            throw err;
-                        }
-                        if (completedData?.response) {
-                            const usage = completedData.response.usage || {};
-                            recordUsage(
-                                usage.input_tokens || estimateAnthropicInputTokens(anthropicPayload),
-                                usage.output_tokens || 0,
-                                usage.input_tokens_details?.cached_tokens || 0,
-                                anthropicPayload.model
-                            );
-                            sendJson(res, 200, responsesOutputToAnthropic(completedData.response));
-                        } else {
-                            sendAnthropicError(res, 502, 'No response.completed event received from upstream');
-                        }
-                    }
-                    return;
-                } catch (wsError) {
-                    if (wsError instanceof ResponsesWSError) {
-                        if (res.headersSent) {
-                            if (!res.destroyed && !res.writableEnded) res.end();
-                            return;
-                        }
-                        sendAnthropicError(res, wsError.status || 400, wsError.message || 'WS upstream error');
-                        return;
-                    }
-                    if (res.headersSent) {
-                        logger.warn(`Relay Anthropic: WS stream failed after response started: ${wsError.message}`);
-                        if (!res.destroyed && !res.writableEnded) res.end();
-                        return;
-                    }
-                    logger.warn(`Relay Anthropic: WS failed, falling back to HTTP: ${wsError.message}`);
-                    // Fall through to HTTP logic below
-                }
-            }
-
-            // HTTP 模式：请求上游 Responses API，转换响应
-            const {response} = await callUpstream(upstream, (up) =>
-                createResponses(responsesReq, up, {
-                    requestType: 'AnthropicViaResponses',
-                    stream: anthropicPayload.stream,
-                    originalModel: anthropicPayload.model
-                })
-            );
-
-            if (anthropicPayload.stream) {
-                res.writeHead(200, {
-                    'Content-Type': 'text/event-stream',
-                    'Cache-Control': 'no-cache',
-                    Connection: 'keep-alive'
-                });
-
-                const chatState = createChatCompletionsStreamState();
-                const anthropicState = createAnthropicStreamState();
-                let inputTokens = 0;
-                let outputTokens = 0;
-                let cacheHitTokens = 0;
-                let buffer = '';
-
-                response.body.on('data', (chunk) => {
-                    buffer += chunk.toString('utf8');
-                    const parts = buffer.split(/\r?\n\r?\n/);
-                    buffer = parts.pop() || '';
-
-                    for (const part of parts) {
-                        const {event, data} = parseSSEBlock(part);
-                        if (!data || data === '[DONE]') continue;
-                        let parsed;
-                        try {
-                            parsed = JSON.parse(data);
-                        } catch {
-                            continue;
-                        }
-
-                        if (event === 'response.completed' && parsed.response?.usage) {
-                            const usage = parsed.response.usage;
-                            inputTokens = usage.input_tokens || 0;
-                            outputTokens = usage.output_tokens || 0;
-                            cacheHitTokens = usage.input_tokens_details?.cached_tokens || 0;
-                        }
-
-                        const anthropicEvents = responsesEventToAnthropicEvents(event, parsed, chatState, anthropicState);
-                        for (const evt of anthropicEvents) {
-                            res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
-                        }
-                    }
-                });
-
-                response.body.on('end', () => {
-                    recordUsage(
-                        inputTokens || estimateAnthropicInputTokens(anthropicPayload),
-                        outputTokens,
-                        cacheHitTokens,
-                        anthropicPayload.model
-                    );
-                    res.end();
-                });
-
-                response.body.on('error', (err) => {
-                    logger.error('Relay Anthropic via Responses stream error:', err);
-                    res.end();
-                });
-                return;
-            }
-
-            // 非流式 HTTP
-            const responseBody = await readResponseBody(response.body);
-            let parsed;
-            try {
-                parsed = JSON.parse(responseBody);
-            } catch {
-                sendAnthropicError(res, 502, 'Upstream returned invalid JSON');
-                return;
-            }
-            recordUsage(
-                parsed.usage?.input_tokens || estimateAnthropicInputTokens(anthropicPayload),
-                parsed.usage?.output_tokens || 0,
-                parsed.usage?.input_tokens_details?.cached_tokens || 0,
-                anthropicPayload.model
-            );
-            sendJson(res, 200, responsesOutputToAnthropic(parsed));
-            return;
-        }
-
-        // Anthropic 上游透传（零损耗）
         if (isAnthropicUpstream(upstream)) {
             const {response} = await callUpstream(upstream, (up) =>
                 createAnthropicMessages(
@@ -640,7 +734,8 @@ async function handleAnthropicMessages(req, res) {
                     {
                         requestType: 'AnthropicPassthrough',
                         stream: anthropicPayload.stream,
-                        originalModel: anthropicPayload.model
+                        originalModel: anthropicPayload.model,
+                        ...tenantMeta
                     },
                     getAnthropicRequestHeaders(req)
                 )
@@ -680,18 +775,9 @@ async function handleAnthropicMessages(req, res) {
                 });
 
                 response.body.on('end', () => {
-                    if (buffer.trim()) {
-                        const {event, data} = parseSSEBlock(buffer);
-                        if (data && data !== '[DONE]') {
-                            try {
-                                handleAnthropicUsageEvent(event, JSON.parse(data), usageState);
-                            } catch {
-                            }
-                        }
-                    }
-                    const inputTokens = usageState.inputTokens || estimateAnthropicInputTokens(anthropicPayload);
                     recordUsage(
-                        inputTokens,
+                        tenantId,
+                        usageState.inputTokens || estimateAnthropicInputTokens(anthropicPayload),
                         usageState.outputTokens,
                         usageState.cacheHitTokens,
                         usageState.model || anthropicPayload.model
@@ -700,7 +786,7 @@ async function handleAnthropicMessages(req, res) {
                 });
 
                 response.body.on('error', (err) => {
-                    logger.error('Relay Anthropic passthrough stream error:', err);
+                    logger.error(`Relay Anthropic passthrough stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
                     res.end();
                 });
                 return;
@@ -716,21 +802,117 @@ async function handleAnthropicMessages(req, res) {
             }
 
             recordUsage(
+                tenantId,
                 parsed.usage?.input_tokens || estimateAnthropicInputTokens(anthropicPayload),
                 parsed.usage?.output_tokens || 0,
                 extractAnthropicCacheHitTokens(parsed.usage),
                 parsed.model || anthropicPayload.model
             );
+            sampleRequest(tenantId, 'relay', anthropicPayload, parsed, parsed.model || anthropicPayload.model).catch(() => {});
             sendJson(res, 200, parsed);
             return;
         }
 
-        // OpenAI 上游：Anthropic → OpenAI 转换
+        // 转换为 OpenAI 格式
         const openAIPayload = anthropicToOpenAI(anthropicPayload);
+        openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+        openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
+
+        if (isResponsesWebSocketUpstream(upstream)) {
+            const responsesPayload = chatRequestToResponses({
+                ...openAIPayload,
+                model: upstreamManager.resolveModel(openAIPayload.model, upstream.index),
+                stream: anthropicPayload.stream
+            });
+            const wsResult = await createResponsesWebSocket(responsesPayload, upstream, {
+                requestType: 'AnthropicViaResponsesWebSocket',
+                stream: anthropicPayload.stream,
+                originalModel: anthropicPayload.model,
+                contextKey: extractConversationKey(req, responsesPayload, {tenantId}),
+                rejectUnauthorized: !upstream.skip_tls_verify,
+                ...tenantMeta
+            });
+
+            if (anthropicPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                let usage = null;
+                try {
+                    usage = await streamResponsesEventsAsAnthropic(wsResult.eventStream, res, req.signal);
+                    releaseResponsesWebSocketConnection(wsResult.conn);
+                } catch (error) {
+                    discardResponsesWebSocketConnection(wsResult.conn);
+                    throw error;
+                }
+
+                recordResponsesUsage(tenantId, usage, anthropicPayload.model);
+                res.end();
+                return;
+            }
+
+            const completedResponse = await collectResponsesWebSocketResponse(wsResult);
+            recordResponsesUsage(tenantId, completedResponse.usage, anthropicPayload.model);
+            const chatResponse = responsesResponseToChat(completedResponse);
+            sampleRequest(tenantId, 'relay', anthropicPayload, completedResponse, anthropicPayload.model).catch(() => {});
+            sendJson(res, 200, openAIToAnthropic(chatResponse));
+            return;
+        }
+
+        if (isResponsesUpstream(upstream)) {
+            const responsesPayload = chatRequestToResponses({
+                ...openAIPayload,
+                model: upstreamManager.resolveModel(openAIPayload.model, upstream.index),
+                stream: anthropicPayload.stream
+            });
+            const conversationKey = extractConversationKey(req, responsesPayload, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
+            const {response} = await callUpstream(upstream, (up) =>
+                createResponses(responsesPayload, up, {
+                    requestType: 'AnthropicViaResponses',
+                    stream: anthropicPayload.stream,
+                    originalModel: anthropicPayload.model,
+                    ...relayMeta
+                })
+            );
+
+            if (anthropicPayload.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const usage = await streamResponsesEventsAsAnthropic(parseResponsesSSEEvents(response.body, req.signal), res, req.signal);
+                recordResponsesUsage(tenantId, usage, anthropicPayload.model);
+                res.end();
+                return;
+            }
+
+            const responseBody = await readResponseBody(response.body);
+            const parsed = JSON.parse(responseBody);
+            recordResponsesUsage(tenantId, parsed.usage, anthropicPayload.model);
+            const chatResponse = responsesResponseToChat(parsed);
+            sampleRequest(tenantId, 'relay', anthropicPayload, parsed, anthropicPayload.model).catch(() => {});
+            sendJson(res, 200, openAIToAnthropic(chatResponse));
+            return;
+        }
 
         if (anthropicPayload.stream) {
-            openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
-            openAIPayload.stream_options = {include_usage: true};
+            // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+            const conversationKey = extractConversationKey(req, openAIPayload, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
             const {response} = await callUpstream(upstream, (up) => {
                 const payload = {
                     ...openAIPayload,
@@ -739,7 +921,8 @@ async function handleAnthropicMessages(req, res) {
                 return createChatCompletions(payload, up, {
                     requestType: 'Anthropic',
                     stream: anthropicPayload.stream,
-                    originalModel: anthropicPayload.model
+                    originalModel: anthropicPayload.model,
+                    ...relayMeta
                 });
             });
 
@@ -832,13 +1015,13 @@ async function handleAnthropicMessages(req, res) {
                     state.appendText(partialTextBuffer);
                     partialTextBuffer = '';
                 }
-                state.endMessage(state.finalStopReason, streamCacheHitTokens);
-                recordUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, anthropicPayload.model);
+                state.endMessage(state.finalStopReason);
+                recordUsage(tenantId, streamInputTokens, streamOutputTokens, streamCacheHitTokens, anthropicPayload.model);
                 res.end();
             });
 
             response.body.on('error', (err) => {
-                logger.error('Relay Anthropic stream error:', err);
+                logger.error(`Relay Anthropic stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
                 state.emitErrorText('模型请求异常，请稍后重试。\n' + (err?.message || ''));
                 state.finalStopReason = 'error';
                 state.endMessage('error');
@@ -847,8 +1030,13 @@ async function handleAnthropicMessages(req, res) {
         } else {
             // 非流式：强制 stream=true 请求上游，用 aggregateStreamResponse 聚合
             openAIPayload.stream = true;
-            openAIPayload.stream_options = {include_usage: true};
-            openAIPayload.messages = injectBehaviorRules(openAIPayload.messages);
+            // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+            const conversationKey = extractConversationKey(req, openAIPayload, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
             const {response} = await callUpstream(upstream, (up) => {
                 const payload = {
                     ...openAIPayload,
@@ -857,7 +1045,8 @@ async function handleAnthropicMessages(req, res) {
                 return createChatCompletions(payload, up, {
                     requestType: 'Anthropic',
                     stream: false,
-                    originalModel: anthropicPayload.model
+                    originalModel: anthropicPayload.model,
+                    ...relayMeta
                 });
             });
 
@@ -865,7 +1054,8 @@ async function handleAnthropicMessages(req, res) {
             const inputTokens = aggregated.usage ? aggregated.usage.prompt_tokens || 0 : 0;
             const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
             const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-            recordUsage(inputTokens, outputTokens, cacheHitTokens, anthropicPayload.model);
+            recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, anthropicPayload.model);
+            sampleRequest(tenantId, 'relay', anthropicPayload, aggregated, anthropicPayload.model).catch(() => {});
 
             const openAIResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -888,8 +1078,7 @@ async function handleAnthropicMessages(req, res) {
             sendJson(res, 200, openAIToAnthropic(openAIResponse));
         }
     } catch (error) {
-        logger.error('Relay: Failed to handle Anthropic messages:', error);
-        handleUpstreamRateLimit(error);
+        logger.error(`Relay: Failed to handle Anthropic messages${tenantInfo ? `, ${tenantInfo}` : ''}:`, error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -897,9 +1086,9 @@ async function handleAnthropicMessages(req, res) {
 /* ==================== 流式响应辅助 ==================== */
 
 /** OpenAI 上游流式透传（OpenAI 端点 → OpenAI 上游），对 reasoning_content 做缓冲合并 */
-function _streamOpenAIPassthrough(response, res, model = 'unknown') {
+function _streamOpenAIPassthrough(response, res, tenantId, tenantInfo = '', model = 'unknown') {
     rewriteOpenAIStream(res, response.body, (inputTokens, outputTokens, cacheHitTokens) => {
-        recordUsage(inputTokens, outputTokens, cacheHitTokens, model);
+        recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, model);
     });
 }
 
@@ -907,7 +1096,7 @@ function _streamOpenAIPassthrough(response, res, model = 'unknown') {
 
 async function handleOpenAIModels(req, res) {
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
@@ -916,14 +1105,13 @@ async function handleOpenAIModels(req, res) {
         sendJson(res, 200, isAnthropicUpstream(authResult.upstream) ? mapAnthropicModelsToOpenAI(modelsData) : modelsData);
     } catch (error) {
         logger.error('Relay: Failed to get OpenAI models:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
 
 async function handleAnthropicModels(req, res) {
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
@@ -932,20 +1120,19 @@ async function handleAnthropicModels(req, res) {
         sendJson(res, 200, isAnthropicUpstream(authResult.upstream) ? modelsData : mapOpenAIModelsToAnthropic(modelsData));
     } catch (error) {
         logger.error('Relay: Failed to get Anthropic models:', error);
-        handleUpstreamRateLimit(error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
 
 async function handleAnthropicCountTokens(req, res) {
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendAnthropicError(res, authResult.error.status, authResult.error.message);
             return;
         }
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
 
         if (isAnthropicUpstream(authResult.upstream)) {
             const {response} = await callUpstream(authResult.upstream, (up) =>
@@ -956,7 +1143,7 @@ async function handleAnthropicCountTokens(req, res) {
             return;
         }
 
-        if (isResponsesUpstream(authResult.upstream)) {
+        if (isResponsesUpstream(authResult.upstream) || isResponsesWebSocketUpstream(authResult.upstream)) {
             sendAnthropicError(res, 400, getProtocolErrorMessage(authResult.upstream, 'anthropic', '/relay/v1/responses'));
             return;
         }
@@ -966,7 +1153,6 @@ async function handleAnthropicCountTokens(req, res) {
         sendJson(res, 200, {input_tokens: estimatedTokens});
     } catch (error) {
         logger.error('Relay: Failed to count tokens:', error);
-        handleUpstreamRateLimit(error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -975,112 +1161,147 @@ async function handleAnthropicCountTokens(req, res) {
 
 /**
  * 处理 Responses API 请求 (/relay/v1/responses)
- * 根据上游协议自动选择最优路径：
- * - Anthropic 上游 → 报错引导
- * - Responses 上游 + WS → WS 优先，HTTP 回退
- * - Responses 上游 → 直接透传
- * - OpenAI 上游 → Responses→Chat 转换 → Chat→Responses 转回
+ * 将 Responses 格式转为 Chat Completions 发给上游，再将响应转回 Responses 格式
  */
 async function handleResponsesAPI(req, res) {
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
-        const {upstream, upstreamManager} = authResult;
+        const {upstream, tenantId, upstreamManager} = authResult;
         const body = await parseBody(req);
         const responsesReq = JSON.parse(body);
 
         if (isAnthropicUpstream(upstream)) {
-            sendOpenAIError(res, 400, getProtocolErrorMessage(upstream, 'responses', '/relay/anthropic/v1/messages'));
+            const chatReq = responsesRequestToChat(responsesReq);
+            chatReq.messages = injectBehaviorRules(chatReq.messages);
+            chatReq.messages = stripDynamicReminders(chatReq.messages);
+            chatReq.stream = responsesReq.stream;
+            const anthropicPayload = chatRequestToAnthropic({
+                ...chatReq,
+                model: upstreamManager.resolveModel(chatReq.model, upstream.index),
+                stream: responsesReq.stream
+            });
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const {response} = await callUpstream(upstream, (up) =>
+                createAnthropicMessages(
+                    anthropicPayload,
+                    up,
+                    {
+                        requestType: 'ResponsesViaAnthropic',
+                        stream: responsesReq.stream,
+                        originalModel: responsesReq.model,
+                        ...tenantMeta
+                    },
+                    getAnthropicRequestHeaders(req)
+                )
+            );
+
+            if (responsesReq.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const streamState = createResponsesStreamState();
+                let finalUsage = null;
+                for await (const chatChunk of anthropicStreamToChatChunks(response.body, parseSSEBlock, req.signal)) {
+                    if (chatChunk.usage) finalUsage = chatChunk.usage;
+                    const events = chatChunkToResponsesEvents(chatChunk, streamState);
+                    for (const ev of events) {
+                        res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+                    }
+                }
+                recordUsage(
+                    tenantId,
+                    finalUsage?.prompt_tokens || 0,
+                    finalUsage?.completion_tokens || 0,
+                    finalUsage?.prompt_tokens_details?.cached_tokens || 0,
+                    responsesReq.model
+                );
+                res.end();
+                return;
+            }
+
+            const responseBody = await readResponseBody(response.body);
+            const parsed = JSON.parse(responseBody);
+            const chatResponse = anthropicResponseToChat(parsed, responsesReq.model);
+            recordUsage(
+                tenantId,
+                chatResponse.usage?.prompt_tokens || 0,
+                chatResponse.usage?.completion_tokens || 0,
+                chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+                responsesReq.model
+            );
+            sampleRequest(tenantId, 'relay', responsesReq, parsed, responsesReq.model).catch(() => {});
+            sendJson(res, 200, chatResponseToResponses(chatResponse));
             return;
         }
 
-        // Responses 上游：WS 优先，HTTP 回退
-        if (isResponsesUpstream(upstream)) {
-            // WS 模式：通过 WebSocket 连接上游
-            if (isWSUpstream(upstream)) {
+        if (isResponsesWebSocketUpstream(upstream)) {
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const wsPayload = {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, upstream.index)};
+            const wsResult = await createResponsesWebSocket(wsPayload, upstream, {
+                requestType: 'ResponsesWebSocket',
+                stream: responsesReq.stream,
+                originalModel: responsesReq.model,
+                contextKey: extractConversationKey(req, wsPayload, {tenantId}),
+                rejectUnauthorized: !upstream.skip_tls_verify,
+                ...tenantMeta
+            });
+
+            if (responsesReq.stream) {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive'
+                });
+
+                const chatState = createChatCompletionsStreamState();
+                const responsesState = createResponsesStreamState();
+                let usage = null;
                 try {
-                    const resolvedModel = upstreamManager.resolveModel(responsesReq.model, upstream.index);
-                    const wsResult = await createResponsesWS(
-                        {...responsesReq, model: resolvedModel},
-                        upstream,
-                        {contextKey: responsesReq.conversation_id || responsesReq.metadata?.conversation_id}
-                    );
-
-                    if (responsesReq.stream) {
-                        res.writeHead(200, {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            Connection: 'keep-alive'
-                        });
-
-                        try {
-                            for await (const event of wsResult.eventStream) {
-                                if (event.type === 'response.completed' && event.data?.response?.usage) {
-                                    const usage = event.data.response.usage;
-                                    recordUsage(
-                                        usage.input_tokens || 0,
-                                        usage.output_tokens || 0,
-                                        usage.input_tokens_details?.cached_tokens || 0,
-                                        responsesReq.model
-                                    );
-                                }
-                                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
-                            }
-                            releaseWSConnection(wsResult.conn);
-                        } catch (err) {
-                            discardWSConnection(wsResult.conn);
-                            throw err;
+                    for await (const event of wsResult.eventStream) {
+                        if (event.type === 'response.completed') {
+                            usage = event.data?.response?.usage || usage;
                         }
-                        res.end();
-                    } else {
-                        let completedData = null;
-                        try {
-                            for await (const event of wsResult.eventStream) {
-                                if (event.type === 'response.completed') completedData = event.data;
-                            }
-                            releaseWSConnection(wsResult.conn);
-                        } catch (err) {
-                            discardWSConnection(wsResult.conn);
-                            throw err;
-                        }
-                        if (completedData?.response) {
-                            const usage = completedData.response.usage || {};
-                            recordUsage(
-                                usage.input_tokens || 0,
-                                usage.output_tokens || 0,
-                                usage.input_tokens_details?.cached_tokens || 0,
-                                responsesReq.model
-                            );
-                            sendJson(res, 200, completedData.response);
-                        } else {
-                            sendOpenAIError(res, 502, 'No response.completed event received from upstream');
+                        const responseEvents = responsesEventToResponsesEvents(event.type, event.data, chatState, responsesState);
+                        for (const responseEvent of responseEvents) {
+                            res.write(`event: ${responseEvent.event}\ndata: ${JSON.stringify(responseEvent.data)}\n\n`);
                         }
                     }
-                    return;
-                } catch (wsError) {
-                    if (wsError instanceof ResponsesWSError) {
-                        if (res.headersSent) {
-                            if (!res.destroyed && !res.writableEnded) res.end();
-                            return;
-                        }
-                        sendJson(res, wsError.status || 400, wsError.event || {type: 'error', error: {message: wsError.message}});
-                        return;
-                    }
-                    if (res.headersSent) {
-                        logger.warn(`Relay Responses: WS stream failed after response started: ${wsError.message}`);
-                        if (!res.destroyed && !res.writableEnded) res.end();
-                        return;
-                    }
-                    logger.warn(`Relay Responses: WS failed, falling back to HTTP: ${wsError.message}`);
-                    // Fall through to HTTP logic below
+                    releaseResponsesWebSocketConnection(wsResult.conn);
+                } catch (error) {
+                    discardResponsesWebSocketConnection(wsResult.conn);
+                    throw error;
                 }
+
+                recordResponsesUsage(tenantId, usage, responsesReq.model);
+                res.end();
+                return;
             }
 
-            // HTTP 模式：透传
+            const completedResponse = await collectResponsesWebSocketResponse(wsResult);
+            recordResponsesUsage(tenantId, completedResponse.usage, responsesReq.model);
+            sendJson(res, 200, completedResponse);
+            return;
+        }
+
+        if (isResponsesUpstream(upstream)) {
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const conversationKey = extractConversationKey(req, responsesReq, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
             const {response} = await callUpstream(upstream, (up) =>
                 createResponses(
                     {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, up.index)},
@@ -1088,7 +1309,8 @@ async function handleResponsesAPI(req, res) {
                     {
                         requestType: 'ResponsesPassthrough',
                         stream: responsesReq.stream,
-                        originalModel: responsesReq.model
+                        originalModel: responsesReq.model,
+                        ...relayMeta
                     }
                 )
             );
@@ -1122,6 +1344,7 @@ async function handleResponsesAPI(req, res) {
 
                 response.body.on('end', () => {
                     recordUsage(
+                        tenantId,
                         usage?.input_tokens || 0,
                         usage?.output_tokens || 0,
                         usage?.input_tokens_details?.cached_tokens || 0,
@@ -1140,6 +1363,7 @@ async function handleResponsesAPI(req, res) {
             const responseBody = await readResponseBody(response.body);
             const parsed = JSON.parse(responseBody);
             recordUsage(
+                tenantId,
                 parsed.usage?.input_tokens || 0,
                 parsed.usage?.output_tokens || 0,
                 parsed.usage?.input_tokens_details?.cached_tokens || 0,
@@ -1149,16 +1373,28 @@ async function handleResponsesAPI(req, res) {
             return;
         }
 
-        // OpenAI Chat 上游：Responses → Chat Completions 转换
+        // Responses → Chat Completions
         const chatReq = responsesRequestToChat(responsesReq);
         chatReq.messages = injectBehaviorRules(chatReq.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        chatReq.messages = stripDynamicReminders(chatReq.messages);
+
+        const tenant = await unifiedTenantManager.getTenant(tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+        const conversationKey = extractConversationKey(req, chatReq, {tenantId});
+        const relayMeta = {
+            ...tenantMeta,
+            conversationKey,
+            sessionId: tenantId ? `session-${tenantId}` : conversationKey
+        };
 
         const {response} = await callUpstream(upstream, (up) => {
             const payload = {...chatReq, model: upstreamManager.resolveModel(chatReq.model, up.index)};
             return createChatCompletions(payload, up, {
                 requestType: 'Responses',
                 stream: responsesReq.stream,
-                originalModel: responsesReq.model
+                originalModel: responsesReq.model,
+                ...relayMeta
             });
         });
 
@@ -1174,6 +1410,7 @@ async function handleResponsesAPI(req, res) {
             let streamInputTokens = 0;
             let streamOutputTokens = 0;
             let streamCacheHitTokens = 0;
+            let streamModel = '';
 
             response.body.on('data', (chunk) => {
                 buffer = Buffer.concat([buffer, chunk]);
@@ -1195,6 +1432,7 @@ async function handleResponsesAPI(req, res) {
                         streamOutputTokens = data.usage.completion_tokens || 0;
                         streamCacheHitTokens = extractCacheHitTokens(data.usage);
                     }
+                    if (data.model) streamModel = data.model;
 
                     const events = chatChunkToResponsesEvents(data, streamState);
                     for (const ev of events) {
@@ -1205,7 +1443,25 @@ async function handleResponsesAPI(req, res) {
             });
 
             response.body.on('end', () => {
-                recordUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, responsesReq.model);
+                if (!streamState.started || !streamState.finished) {
+                    if (streamState.reasoningOpen) {
+                        const item = {type: 'reasoning', id: streamState.reasoningItemId, status: 'completed', summary: [{type: 'summary_text', text: streamState.reasoningText}]};
+                        res.write(`event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`);
+                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
+                        streamState.output.push(item);
+                        streamState.outputIndex++;
+                    }
+                    if (streamState.messageOpen) {
+                        const item = {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]};
+                        res.write(`event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`);
+                        res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
+                        streamState.output.push(item);
+                    }
+                    if (streamState.started || streamState.output.length > 0) {
+                        res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || responsesReq.model || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
+                    }
+                }
+                recordUsage(tenantId, streamInputTokens, streamOutputTokens, streamCacheHitTokens, responsesReq.model);
                 res.end();
             });
 
@@ -1220,7 +1476,8 @@ async function handleResponsesAPI(req, res) {
                 return createChatCompletions(payload, up, {
                     requestType: 'Responses',
                     stream: false,
-                    originalModel: responsesReq.model
+                    originalModel: responsesReq.model,
+                    ...relayMeta
                 });
             });
 
@@ -1228,7 +1485,8 @@ async function handleResponsesAPI(req, res) {
             const inputTokens = aggregated.usage?.prompt_tokens || 0;
             const outputTokens = aggregated.usage?.completion_tokens || 0;
             const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-            recordUsage(inputTokens, outputTokens, cacheHitTokens, responsesReq.model);
+            recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, responsesReq.model);
+            sampleRequest(tenantId, 'relay', responsesReq, aggregated, responsesReq.model).catch(() => {});
 
             const chatResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -1250,38 +1508,111 @@ async function handleResponsesAPI(req, res) {
             sendJson(res, 200, chatResponseToResponses(chatResponse));
         }
     } catch (error) {
+        if (isResponsesWebSocketProtocolError(error)) {
+            sendResponsesWebSocketProtocolError(res, error);
+            return;
+        }
+        if (res.headersSent) {
+            logger.warn(`Relay Responses WS stream failed after response started: ${error.message}`);
+            if (!res.destroyed && !res.writableEnded) res.end();
+            return;
+        }
         logger.error('Relay: Failed to handle Responses API:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
 
 /**
  * 处理 Responses Compact 请求 (/relay/v1/responses/compact)
- * 根据上游协议自动选择最优路径：
- * - Anthropic 上游 → 报错引导
- * - Responses 上游 → 直接透传
- * - OpenAI 上游 → Compact→Chat 转换 → Chat→Compact 转回
  */
 async function handleResponsesCompact(req, res) {
     try {
-        const authResult = getUpstreamOrFail();
+        const authResult = await authenticateAndGetUpstream(req);
         if (authResult.error) {
             sendOpenAIError(res, authResult.error.status, authResult.error.message);
             return;
         }
 
-        const {upstream, upstreamManager} = authResult;
+        const {upstream, tenantId, upstreamManager} = authResult;
         const body = await parseBody(req);
         const compactReq = JSON.parse(body);
 
         if (isAnthropicUpstream(upstream)) {
-            sendOpenAIError(res, 400, getProtocolErrorMessage(upstream, 'responses', '/relay/anthropic/v1/messages'));
+            const chatReq = compactRequestToChat(compactReq);
+            chatReq.messages = injectBehaviorRules(chatReq.messages);
+            chatReq.messages = stripDynamicReminders(chatReq.messages);
+            const anthropicPayload = chatRequestToAnthropic({
+                ...chatReq,
+                model: upstreamManager.resolveModel(chatReq.model, upstream.index),
+                stream: false
+            });
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const {response} = await callUpstream(upstream, (up) =>
+                createAnthropicMessages(
+                    anthropicPayload,
+                    up,
+                    {
+                        requestType: 'ResponsesCompactViaAnthropic',
+                        stream: false,
+                        originalModel: compactReq.model,
+                        ...tenantMeta
+                    },
+                    getAnthropicRequestHeaders(req)
+                )
+            );
+
+            const responseBody = await readResponseBody(response.body);
+            const parsed = JSON.parse(responseBody);
+            const chatResponse = anthropicResponseToChat(parsed, compactReq.model);
+            recordUsage(
+                tenantId,
+                chatResponse.usage?.prompt_tokens || 0,
+                chatResponse.usage?.completion_tokens || 0,
+                chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+                compactReq.model
+            );
+            sampleRequest(tenantId, 'relay', compactReq, parsed, compactReq.model).catch(() => {});
+            sendJson(res, 200, chatResponseToCompact(chatResponse));
             return;
         }
 
-        // Responses 上游透传
+        if (isResponsesWebSocketUpstream(upstream)) {
+            const chatReq = compactRequestToChat(compactReq);
+            chatReq.messages = injectBehaviorRules(chatReq.messages);
+            // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+            chatReq.messages = stripDynamicReminders(chatReq.messages);
+            const responsesPayload = chatRequestToResponses({
+                ...chatReq,
+                model: upstreamManager.resolveModel(chatReq.model, upstream.index),
+                stream: false
+            });
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const wsResult = await createResponsesWebSocket(responsesPayload, upstream, {
+                requestType: 'ResponsesCompactWebSocket',
+                stream: false,
+                originalModel: compactReq.model,
+                contextKey: extractConversationKey(req, responsesPayload, {tenantId}),
+                rejectUnauthorized: !upstream.skip_tls_verify,
+                ...tenantMeta
+            });
+
+            const completedResponse = await collectResponsesWebSocketResponse(wsResult);
+            recordResponsesUsage(tenantId, completedResponse.usage, compactReq.model);
+            sendJson(res, 200, chatResponseToCompact(responsesResponseToChat(completedResponse)));
+            return;
+        }
+
         if (isResponsesUpstream(upstream)) {
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const conversationKey = extractConversationKey(req, compactReq, {tenantId});
+            const relayMeta = {
+                ...tenantMeta,
+                conversationKey,
+                sessionId: tenantId ? `session-${tenantId}` : conversationKey
+            };
             const {response} = await callUpstream(upstream, (up) =>
                 createResponses(
                     {...compactReq, model: upstreamManager.resolveModel(compactReq.model, up.index)},
@@ -1289,15 +1620,17 @@ async function handleResponsesCompact(req, res) {
                     {
                         requestType: 'ResponsesCompactPassthrough',
                         stream: false,
-                        originalModel: compactReq.model
+                        originalModel: compactReq.model,
+                        ...relayMeta
                     },
-                    'v1/responses/compact'
+                    'responses/compact'
                 )
             );
 
             const responseBody = await readResponseBody(response.body);
             const parsed = JSON.parse(responseBody);
             recordUsage(
+                tenantId,
                 parsed.usage?.input_tokens || 0,
                 parsed.usage?.output_tokens || 0,
                 parsed.usage?.input_tokens_details?.cached_tokens || 0,
@@ -1307,9 +1640,19 @@ async function handleResponsesCompact(req, res) {
             return;
         }
 
-        // OpenAI Chat 上游：Compact → Chat 转换
         const chatReq = compactRequestToChat(compactReq);
         chatReq.messages = injectBehaviorRules(chatReq.messages);
+        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
+        chatReq.messages = stripDynamicReminders(chatReq.messages);
+
+        const tenant = await unifiedTenantManager.getTenant(tenantId);
+        const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+        const conversationKey = extractConversationKey(req, chatReq, {tenantId});
+        const relayMeta = {
+            ...tenantMeta,
+            conversationKey,
+            sessionId: tenantId ? `session-${tenantId}` : conversationKey
+        };
 
         chatReq.stream = true;
         const {response} = await callUpstream(upstream, (up) => {
@@ -1317,7 +1660,8 @@ async function handleResponsesCompact(req, res) {
             return createChatCompletions(payload, up, {
                 requestType: 'ResponsesCompact',
                 stream: false,
-                originalModel: compactReq.model
+                originalModel: compactReq.model,
+                ...relayMeta
             });
         });
 
@@ -1325,7 +1669,8 @@ async function handleResponsesCompact(req, res) {
         const inputTokens = aggregated.usage?.prompt_tokens || 0;
         const outputTokens = aggregated.usage?.completion_tokens || 0;
         const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
-        recordUsage(inputTokens, outputTokens, cacheHitTokens, compactReq.model);
+        recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, compactReq.model);
+        sampleRequest(tenantId, 'relay', compactReq, aggregated, compactReq.model).catch(() => {});
 
         const chatResponse = {
             id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -1342,8 +1687,11 @@ async function handleResponsesCompact(req, res) {
 
         sendJson(res, 200, chatResponseToCompact(chatResponse));
     } catch (error) {
+        if (isResponsesWebSocketProtocolError(error)) {
+            sendResponsesWebSocketProtocolError(res, error);
+            return;
+        }
         logger.error('Relay: Failed to handle Responses Compact:', error);
-        handleUpstreamRateLimit(error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -1351,68 +1699,118 @@ async function handleResponsesCompact(req, res) {
 /* ==================== WebSocket 端点 ==================== */
 
 /**
- * Relay WS 处理器的核心请求逻辑（提取为独立 async generator）
+ * Relay WS 处理器的核心请求逻辑（async generator）
+ * 根据上游协议分发：
+ * - Anthropic 上游 → 报错
+ * - Responses WS 上游 → 直接 WS 转发
+ * - Responses HTTP 上游 → SSE → WS 事件
+ * - OpenAI Chat 上游 → Chat→Responses 事件
+ *
+ * @param {object} payload - Responses 请求体
+ * @param {object} upstream - 上游配置
+ * @param {object} upstreamManager - 上游管理器
+ * @param {string} tenantId - 租户 ID
+ * @param {object} tenantMeta - {tenantName, tenantUsername}
+ * @param {AbortSignal} signal - 取消信号
+ * @param {import('http').IncomingMessage} req - 原始 HTTP 请求
  */
-async function* _relayWSHandleRequest(payload, upstream, upstreamManager, signal) {
+async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenantId, tenantMeta, signal, req) {
     const resolvedModel = upstreamManager.resolveModel(payload.model, upstream.index);
+    const conversationKey = extractConversationKey(req, payload, {tenantId});
+    const relayMeta = {
+        ...tenantMeta,
+        conversationKey,
+        sessionId: tenantId ? `session-${tenantId}` : conversationKey
+    };
+
+    if (isAnthropicUpstream(upstream)) {
+        const chatReq = responsesRequestToChat({...payload, model: resolvedModel, stream: true});
+        chatReq.messages = injectBehaviorRules(chatReq.messages);
+        chatReq.messages = stripDynamicReminders(chatReq.messages);
+        chatReq.stream = true;
+        const anthropicPayload = chatRequestToAnthropic({
+            ...chatReq,
+            model: resolvedModel,
+            stream: true
+        });
+        const {response} = await callUpstream(upstream, (up) =>
+            createAnthropicMessages(
+                anthropicPayload,
+                up,
+                {
+                    requestType: 'ResponsesWSViaAnthropic',
+                    stream: true,
+                    originalModel: payload.model,
+                    ...relayMeta
+                },
+                getAnthropicRequestHeaders(req)
+            )
+        );
+
+        const streamState = createResponsesStreamState();
+        for await (const chatChunk of anthropicStreamToChatChunks(response.body, parseSSEBlock, signal)) {
+            if (signal?.aborted) break;
+            const events = chatChunkToResponsesEvents(chatChunk, streamState);
+            for (const ev of events) {
+                yield {type: ev.event, data: ev.data};
+            }
+        }
+        return;
+    }
 
     if (isAnthropicUpstream(upstream)) {
         throw Object.assign(new Error('当前上游为 Anthropic 协议，不支持 Responses API'), {
-            name: 'ResponsesWSError',
+            name: 'ResponsesWebSocketError',
             event: {type: 'error', error: {message: '当前上游为 Anthropic 协议，不支持 Responses API', code: 'protocol_mismatch'}}
         });
     }
 
-    // Responses 上游 + WS：直接 WS 连接上游，转发事件
-    if (isWSUpstream(upstream)) {
+    // Responses WS 上游：直接 WS 连接上游，转发事件
+    if (isResponsesWebSocketUpstream(upstream)) {
         const wsPayload = {...payload, model: resolvedModel};
-        try {
-            const wsResult = await createResponsesWS(wsPayload, upstream, {
-                contextKey: payload.conversation_id || payload.metadata?.conversation_id
-            });
-            const eventStream = wsResult.eventStream;
-            const conn = wsResult.conn;
+        const wsResult = await createResponsesWebSocket(wsPayload, upstream, {
+            requestType: 'RelayResponsesWebSocketRelay',
+            stream: true,
+            originalModel: payload.model,
+            contextKey: conversationKey,
+            rejectUnauthorized: !upstream.skip_tls_verify,
+            ...tenantMeta
+        });
 
-            // 注意：必须用 finally 释放连接
-            // 否则 WS server 在收到 response.completed 后 break，会触发 generator return()，
-            // try 块尾部的 releaseWSConnection 永远到不了，连接将一直 busy 烂在池里
-            let connHandled = false;
-            try {
-                for await (const event of eventStream) {
-                    if (signal?.aborted) {
-                        discardWSConnection(conn);
-                        connHandled = true;
-                        return;
-                    }
-                    yield event;
+        // 必须用 finally 释放连接：WS server 在收到 response.completed 后会 break，
+        // 触发 generator return()，try 块尾部的 release 永远到不了，连接将一直 busy 烂在池里
+        let connHandled = false;
+        try {
+            for await (const event of wsResult.eventStream) {
+                if (signal?.aborted) {
+                    discardResponsesWebSocketConnection(wsResult.conn);
+                    connHandled = true;
+                    return;
                 }
-            } catch (err) {
-                discardWSConnection(conn);
-                connHandled = true;
-                throw err;
-            } finally {
-                if (!connHandled) releaseWSConnection(conn);
+                yield event;
             }
-            return;
-        } catch (wsError) {
-            if (wsError instanceof ResponsesWSError) throw wsError;
-            logger.warn(`Relay WS: upstream WS failed, falling back to HTTP: ${wsError.message}`);
-            // Fall through to HTTP
+        } catch (err) {
+            discardResponsesWebSocketConnection(wsResult.conn);
+            connHandled = true;
+            throw err;
+        } finally {
+            if (!connHandled) releaseResponsesWebSocketConnection(wsResult.conn);
         }
+        return;
     }
 
-    // Responses 上游（HTTP）：透传 SSE → WS 事件
+    // Responses HTTP 上游：透传 SSE → WS 事件
     if (isResponsesUpstream(upstream)) {
         const responsesPayload = {...payload, model: resolvedModel};
         const {response} = await callUpstream(upstream, (up) =>
             createResponses(responsesPayload, up, {
                 requestType: 'ResponsesWS',
                 stream: true,
-                originalModel: payload.model
+                originalModel: payload.model,
+                ...relayMeta
             })
         );
 
-        // 读取 SSE 流并转换为 WS 事件
         let buffer = '';
         for await (const chunk of response.body) {
             if (signal?.aborted) break;
@@ -1434,13 +1832,15 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, signal
     // OpenAI Chat 上游：Chat → Responses 事件转换
     const chatReq = responsesRequestToChat({...payload, model: resolvedModel});
     chatReq.messages = injectBehaviorRules(chatReq.messages);
+    chatReq.messages = stripDynamicReminders(chatReq.messages);
     chatReq.stream = true;
 
     const {response} = await callUpstream(upstream, (up) =>
         createChatCompletions(chatReq, up, {
             requestType: 'ResponsesWS',
             stream: true,
-            originalModel: payload.model
+            originalModel: payload.model,
+            ...relayMeta
         })
     );
 
@@ -1474,42 +1874,42 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, signal
 /**
  * 处理 Relay Responses API WebSocket 连接
  * 客户端通过 WS 连接 /relay/v1/responses，发送标准 Responses API WS 协议
+ *
+ * 注意：鉴权已在 server.js 的 upgrade handler 中完成，
+ * 并通过 req.tenantId 注入到这里。
+ *
  * @param {import('ws').WebSocket} clientWs - 客户端 WebSocket 连接
- * @param {http.IncomingMessage} req - 原始 HTTP 请求
+ * @param {import('http').IncomingMessage} req - 原始 HTTP 请求（已注入 tenantId）
  */
 export function handleRelayResponsesWS(clientWs, req) {
     handleWSConnection(clientWs, {
         authenticate: () => true,
         req,
         handleRequest: async function* (payload, authResult, {signal}) {
-            const upstreamManager = relayStore.getUpstreamManager();
+            const tenantId = req.tenantId;
+            const upstreamManager = await unifiedTenantManager.getUpstreamManager(tenantId);
             if (!upstreamManager) {
-                throw Object.assign(new Error('Relay upstream manager not found'), {
-                    name: 'ResponsesWSError',
-                    event: {type: 'error', error: {message: 'Relay upstream manager not found', code: 'server_error'}}
+                throw Object.assign(new Error('Tenant upstream manager not found'), {
+                    name: 'ResponsesWebSocketError',
+                    event: {type: 'error', error: {message: 'Tenant upstream manager not found', code: 'server_error'}}
                 });
             }
 
             const upstream = upstreamManager.getActiveUpstream();
             if (!upstream) {
                 throw Object.assign(new Error('未配置可用上游'), {
-                    name: 'ResponsesWSError',
+                    name: 'ResponsesWebSocketError',
                     event: {type: 'error', error: {message: '未配置可用上游，请在管理面板 /relayFE 配置', code: 'no_upstream'}}
                 });
             }
 
-            // 包装 yield 以捕获 429 限速错误
-            try {
-                yield* _relayWSHandleRequest(payload, upstream, upstreamManager, signal);
-            } catch (err) {
-                if (err instanceof RelayUpstreamError && err.status === 429) {
-                    upstreamManager.markLastReturnedRateLimited();
-                }
-                throw err;
-            }
+            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+
+            yield* _relayWSHandleRequest(payload, upstream, upstreamManager, tenantId, tenantMeta, signal, req);
         },
         onUsage: (inputTokens, outputTokens, cacheHitTokens, model) => {
-            recordUsage(inputTokens, outputTokens, cacheHitTokens, model);
+            recordUsage(req.tenantId, inputTokens, outputTokens, cacheHitTokens, model);
         }
     });
 }
@@ -1526,6 +1926,7 @@ export async function routeRelayRequest(req, res) {
             name: 'Relay API Proxy',
             version: '1.0.0',
             modes: ['openai', 'anthropic'],
+            tenantEnabled: unifiedTenantManager.isEnabled(),
             endpoints: {
                 openai: {
                     chatCompletions: 'POST /relay/v1/chat/completions - OpenAI format',

@@ -1,99 +1,88 @@
 /**
  * 上游配置管理器
- * 管理多个上游配置（base_url + api_key + proxy）、活跃上游手动切换
- * 使用文件存储（upstreams.json、settings.json）
+ * 管理每个租户的多上游配置（base_url + api_key + proxy）和活跃上游
+ * 使用 Sequelize ORM 操作数据库，不再依赖文件系统读写
  * @module services/relay/upstream-manager
  */
 
-import {readFileSync, writeFileSync, existsSync, mkdirSync} from 'fs';
-import {join} from 'path';
 import {
-    isWSUpstream,
-    createChatCompletions, createResponses, createResponsesWS,
+    getUpstreamModels,
+    createChatCompletions,
+    createResponses,
     createAnthropicMessages,
-    releaseWSConnection, discardWSConnection,
-    RelayUpstreamError
+    isAnthropicUpstream,
+    isResponsesUpstream,
+    buildResponsesWebSocketUrl
 } from './api.js';
+import {discardByPoolKey, connectionPoolKey} from '../shared/responses-ws-pool.js';
 import logger from '../../utils/logger.js';
-import {broadcast} from '../../utils/cluster-broadcaster.js';
-
-const UPSTREAMS_FILE = 'upstreams.json';
-const SETTINGS_FILE = 'settings.json';
+import {models} from '../../db/models/index.js';
 
 export class UpstreamManager {
-    constructor(tenantDir) {
-        this.tenantDir = tenantDir;
-        this.upstreamsPath = join(tenantDir, UPSTREAMS_FILE);
-        this.settingsPath = join(tenantDir, SETTINGS_FILE);
+    constructor(options = {}) {
+        this.tenantId = options.tenantId;
         this.upstreams = [];
         // 活跃上游索引，-1 表示使用第一个启用的上游
         this._activeIndex = -1;
-
-        // 429 限速追踪：index → 限速过期时间戳
-        this.rateLimitedIndexes = new Map();
-
-        // 上次返回的上游索引，用于在 429 时标记限速
-        this.lastReturnedIndex = null;
-
-        this._loadUpstreams();
-        this._loadSettings();
+        // 标记是否已初始化（DB 操作是异步的，需要外部调用 init()）
+        this._initialized = false;
     }
 
-    /** 429 限速默认冷却时间（5分钟） */
-    static RATE_LIMIT_COOLDOWN = 5 * 60 * 1000;
+    /**
+     * 异步初始化：从数据库加载上游配置和设置
+     * 必须在构造后调用
+     */
+    async init() {
+        if (this._initialized) return;
+        await this.reload();
+        this._initialized = true;
+    }
 
-    _loadUpstreams() {
+    /**
+     * 重新从数据库加载上游配置和活跃索引
+     * 用于缓存失效或数据可能过时时强制刷新
+     */
+    async reload() {
+        await this._loadUpstreams();
+        await this._loadSettings();
+    }
+
+    async _loadUpstreams() {
         try {
-            if (existsSync(this.upstreamsPath)) {
-                this.upstreams = JSON.parse(readFileSync(this.upstreamsPath, 'utf8'));
-                if (!Array.isArray(this.upstreams)) this.upstreams = [];
-            }
+            const rows = await models.TenantUpstream.findAll({
+                where: {tenant_id: this.tenantId},
+                order: [['id', 'ASC']]
+            });
+            this.upstreams = rows.map(row => row.get({plain: true}));
         } catch (error) {
             logger.error(`Relay: 加载上游配置失败: ${error.message}`);
             this.upstreams = [];
         }
     }
 
-    _saveUpstreams() {
+    async _loadSettings() {
         try {
-            if (!existsSync(this.tenantDir)) mkdirSync(this.tenantDir, {recursive: true});
-            writeFileSync(this.upstreamsPath, JSON.stringify(this.upstreams, null, 2), 'utf8');
-        } catch (error) {
-            logger.error(`Relay: 保存上游配置失败: ${error.message}`);
-        }
-    }
-
-    _loadSettings() {
-        try {
-            if (existsSync(this.settingsPath)) {
-                const data = JSON.parse(readFileSync(this.settingsPath, 'utf8'));
-                if (typeof data.activeIndex === 'number') {
-                    this._activeIndex = data.activeIndex;
-                }
+            const state = await models.TenantState.findOne({
+                where: {tenant_id: this.tenantId}
+            });
+            if (state && typeof state.active_upstream_index === 'number') {
+                this._activeIndex = state.active_upstream_index;
             }
         } catch (error) {
             logger.error(`Relay: 加载设置失败: ${error.message}`);
         }
     }
 
-    _saveSettings() {
+    async _saveSettings() {
         try {
-            if (!existsSync(this.tenantDir)) mkdirSync(this.tenantDir, {recursive: true});
-            writeFileSync(this.settingsPath, JSON.stringify({
-                activeIndex: this._activeIndex
-            }, null, 2), 'utf8');
+            await models.TenantState.upsert({
+                tenant_id: this.tenantId,
+                active_upstream_index: this._activeIndex,
+                saved_at: new Date().toISOString()
+            });
         } catch (error) {
             logger.error(`Relay: 保存设置失败: ${error.message}`);
         }
-    }
-
-    /**
-     * 从磁盘重新加载上游配置和设置
-     * 解决多进程（cluster）模式下状态不同步的问题
-     */
-    reload() {
-        this._loadUpstreams();
-        this._loadSettings();
     }
 
     /**
@@ -103,159 +92,75 @@ export class UpstreamManager {
         const activeIdx = this._getActiveIndex();
         return this.upstreams.map((u, i) => ({
             index: i,
+            id: u.id,
             name: u.name,
             base_url: u.base_url,
             api_key_preview: u.api_key ? u.api_key.slice(0, 8) + '****' + u.api_key.slice(-4) : '',
             api_key_full: u.api_key || '',
             proxy: u.proxy || '',
-            skip_tls_verify: u.skip_tls_verify === true,
             models: u.models || [],
             model_map: u.model_map || {},
+            model_auto: u.model_auto !== false,
             protocol: u.protocol || '',
-            ws: u.ws || false,
             enabled: u.enabled !== false,
+            skip_tls_verify: u.skip_tls_verify === true,
             created_at: u.created_at,
             is_active: i === activeIdx
         }));
     }
 
     /**
-     * 获取实际活跃上游索引（_activeIndex 指向的上游必须启用且未被限速）
-     * 如果指定的不启用/被限速或越界，回退到第一个可用的上游
+     * 获取实际活跃上游索引（_activeIndex 指向的上游必须启用）
+     * 如果指定的不启用或越界，回退到第一个启用的上游
      */
     _getActiveIndex() {
-        // 清理过期的限速标记
-        this._cleanupRateLimited();
-
         if (
             this._activeIndex >= 0 &&
             this._activeIndex < this.upstreams.length &&
-            this.upstreams[this._activeIndex].enabled !== false &&
-            !this.isRateLimited(this._activeIndex)
+            this.upstreams[this._activeIndex].enabled !== false
         ) {
             return this._activeIndex;
         }
-
-        // 活跃上游不可用，找第一个启用且未被限速的上游
-        const idx = this.upstreams.findIndex((u) => u.enabled !== false && !this.isRateLimited(this.upstreams.indexOf(u)));
-        if (idx >= 0) return idx;
-
-        // 所有上游都被限速，清除限速标记后重试
-        if (this.rateLimitedIndexes.size > 0) {
-            logger.warn('Relay: All upstreams rate-limited, clearing rate limits');
-            this.rateLimitedIndexes.clear();
-            return this.upstreams.findIndex((u) => u.enabled !== false);
-        }
-
-        return -1;
+        return this.upstreams.findIndex((u) => u.enabled !== false);
     }
 
     /**
      * 设置活跃上游
      * @param {number} index - 上游索引
      */
-    setActiveUpstream(index) {
+    async setActiveUpstream(index) {
         if (index < 0 || index >= this.upstreams.length) return false;
         if (this.upstreams[index].enabled === false) return false;
+
+        // 用户主动切换上游时，清除旧上游的 WebSocket 连接池，避免连接复用导致请求仍走到旧上游
+        const oldUpstream = this.getActiveUpstream();
+        if (oldUpstream) {
+            try {
+                const wsUrl = buildResponsesWebSocketUrl(oldUpstream, 'responses');
+                const proxyMode = oldUpstream.proxy ? oldUpstream.proxy : 'direct';
+                const networkKey = `${wsUrl}:${proxyMode}:tls-verify`;
+                const oldPoolKey = connectionPoolKey(`${wsUrl}:${oldUpstream.api_key || ''}`, networkKey);
+                discardByPoolKey(oldPoolKey);
+                logger.info(`Relay: 切换上游时清除旧上游 WebSocket 连接: ${oldUpstream.name}, poolKey=${oldPoolKey}`);
+            } catch (err) {
+                logger.warn(`Relay: 切换上游时清除旧上游 WebSocket 连接失败: ${err.message}`);
+            }
+        }
+
         this._activeIndex = index;
-        // 切换活跃上游时清除所有限速标记，立即生效
-        this.rateLimitedIndexes.clear();
-        logger.info(`Relay: 活跃上游已切换为「${this.upstreams[index].name}」(index: ${index})`);
-        this._saveSettings();
-        broadcast('relay-settings-changed').catch(() => {});
+        await this._saveSettings();
         return true;
     }
 
     /**
      * 获取当前活跃上游
-     * 每次调用时从磁盘重新加载状态，确保多进程间状态一致
      * @returns {Object|null} {name, base_url, api_key, proxy, enabled, index}
      */
     getActiveUpstream() {
-        this.reload();
         const idx = this._getActiveIndex();
-        if (idx < 0) {
-            this.lastReturnedIndex = null;
-            return null;
-        }
-        this.lastReturnedIndex = idx;
+        if (idx < 0) return null;
         return {...this.upstreams[idx], index: idx};
     }
-
-    /**
-     * 获取所有启用的上游（活跃上游排在最前），用于故障转移
-     * @returns {Array<{name, base_url, api_key, proxy, enabled, index}>}
-     */
-    getEnabledUpstreams() {
-        const enabled = this.upstreams.map((u, i) => ({...u, index: i})).filter((u) => u.enabled !== false);
-        const activeIdx = this._getActiveIndex();
-        if (activeIdx < 0) return enabled;
-        const activeItem = enabled.find((u) => u.index === activeIdx);
-        if (!activeItem) return enabled;
-        return [activeItem, ...enabled.filter((u) => u.index !== activeIdx)];
-    }
-
-    /**
-     * 惰性清理过期的限速标记
-     */
-    _cleanupRateLimited() {
-        if (this.rateLimitedIndexes.size === 0) return;
-        const now = Date.now();
-        for (const [index, expiry] of this.rateLimitedIndexes) {
-            if (now >= expiry) {
-                this.rateLimitedIndexes.delete(index);
-                logger.debug(`Relay: Rate limit expired for upstream #${index}`);
-            }
-        }
-    }
-
-    /**
-     * 标记上游为 429 限速
-     * @param {number} index - 上游索引
-     * @param {number} [durationMs] - 限速持续时间（毫秒），默认 5 分钟
-     */
-    markRateLimited(index, durationMs) {
-        if (index < 0 || index >= this.upstreams.length) return;
-        const duration = durationMs || UpstreamManager.RATE_LIMIT_COOLDOWN;
-        const expiry = Date.now() + duration;
-        this.rateLimitedIndexes.set(index, expiry);
-        logger.warn(`Relay: Upstream #${index} (${this.upstreams[index].name}) marked as rate-limited for ${Math.round(duration / 1000)}s`);
-    }
-
-    /**
-     * 检查上游是否处于限速期
-     * @param {number} index - 上游索引
-     * @returns {boolean}
-     */
-    isRateLimited(index) {
-        const expiry = this.rateLimitedIndexes.get(index);
-        if (!expiry) return false;
-        if (Date.now() >= expiry) {
-            this.rateLimitedIndexes.delete(index);
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * 标记上次使用的上游为 429 限速
-     * @param {number} [durationMs] - 限速持续时间（毫秒），默认 5 分钟
-     */
-    markLastReturnedRateLimited(durationMs) {
-        if (this.lastReturnedIndex !== null) {
-            this.markRateLimited(this.lastReturnedIndex, durationMs);
-        }
-    }
-
-    /**
-     * 记录上游请求成功（当前为空操作，保留接口）
-     */
-    recordSuccess(_index) {}
-
-    /**
-     * 记录上游请求失败（当前为空操作，保留接口）
-     */
-    recordFailure(_index, _reason) {}
 
     /**
      * 解析请求模型名到该上游实际使用的模型名
@@ -278,49 +183,54 @@ export class UpstreamManager {
         return requestedModel;
     }
 
-    addUpstream(data) {
-        const upstream = {
+    async addUpstream(data) {
+        const upstreamData = {
+            tenant_id: this.tenantId,
             name: data.name || 'Unnamed',
             base_url: data.base_url || '',
             api_key: data.api_key || '',
             proxy: data.proxy || '',
-            skip_tls_verify: data.skip_tls_verify === true,
             models: data.models || [],
             model_map: data.model_map || {},
+            model_auto: data.model_auto !== false,
             protocol: data.protocol || '',
-            ws: data.ws === true,
             enabled: data.enabled !== false,
-            created_at: Math.floor(Date.now() / 1000)
+            skip_tls_verify: data.skip_tls_verify === true
         };
-        if (!upstream.base_url) {
+        if (!upstreamData.base_url) {
             throw new Error('base_url is required');
         }
+        const row = await models.TenantUpstream.create(upstreamData);
+        const upstream = row.get({plain: true});
         this.upstreams.push(upstream);
-        this._saveUpstreams();
-        broadcast('relay-upstreams-changed').catch(() => {});
-        return {index: this.upstreams.length - 1, ...upstream};
+        return this.listUpstreams()[this.upstreams.length - 1];
     }
 
-    updateUpstream(index, data) {
+    async updateUpstream(index, data) {
         if (index < 0 || index >= this.upstreams.length) return null;
         const upstream = this.upstreams[index];
-        if (data.name !== undefined) upstream.name = data.name;
-        if (data.base_url !== undefined) upstream.base_url = data.base_url;
-        if (data.api_key !== undefined) upstream.api_key = data.api_key;
-        if (data.proxy !== undefined) upstream.proxy = data.proxy;
-        if (data.skip_tls_verify !== undefined) upstream.skip_tls_verify = data.skip_tls_verify === true;
-        if (data.enabled !== undefined) upstream.enabled = data.enabled;
-        if (data.models !== undefined) upstream.models = data.models;
-        if (data.model_map !== undefined) upstream.model_map = data.model_map;
-        if (data.protocol !== undefined) upstream.protocol = data.protocol;
-        if (data.ws !== undefined) upstream.ws = data.ws;
-        this._saveUpstreams();
-        broadcast('relay-upstreams-changed').catch(() => {});
-        return {index, ...upstream};
+        const updateData = {};
+        if (data.name !== undefined) updateData.name = data.name;
+        if (data.base_url !== undefined) updateData.base_url = data.base_url;
+        if (data.api_key !== undefined) updateData.api_key = data.api_key;
+        if (data.proxy !== undefined) updateData.proxy = data.proxy;
+        if (data.enabled !== undefined) updateData.enabled = data.enabled;
+        if (data.models !== undefined) updateData.models = data.models;
+        if (data.model_map !== undefined) updateData.model_map = data.model_map;
+        if (data.model_auto !== undefined) updateData.model_auto = data.model_auto;
+        if (data.protocol !== undefined) updateData.protocol = data.protocol;
+        if (data.skip_tls_verify !== undefined) updateData.skip_tls_verify = data.skip_tls_verify === true;
+
+        await models.TenantUpstream.update(updateData, {where: {id: upstream.id}});
+        // 更新内存中的数据
+        Object.assign(upstream, updateData);
+        return this.listUpstreams()[index];
     }
 
-    deleteUpstream(index) {
+    async deleteUpstream(index) {
         if (index < 0 || index >= this.upstreams.length) return false;
+        const upstream = this.upstreams[index];
+        await models.TenantUpstream.destroy({where: {id: upstream.id}});
         this.upstreams.splice(index, 1);
         // 修正活跃索引
         if (this._activeIndex === index) {
@@ -328,10 +238,83 @@ export class UpstreamManager {
         } else if (this._activeIndex > index) {
             this._activeIndex--;
         }
-        this._saveUpstreams();
-        this._saveSettings();
-        broadcast('relay-upstreams-changed').catch(() => {});
+        await this._saveSettings();
         return true;
+    }
+
+    /**
+     * 上移上游（提高优先级）
+     * 移动后删除该租户所有 upstream 再重新创建，确保顺序一致
+     */
+    async moveUp(index) {
+        if (index <= 0 || index >= this.upstreams.length) return false;
+        [this.upstreams[index - 1], this.upstreams[index]] = [this.upstreams[index], this.upstreams[index - 1]];
+        // 活跃上游跟随移动
+        if (this._activeIndex === index) {
+            this._activeIndex = index - 1;
+        } else if (this._activeIndex === index - 1) {
+            this._activeIndex = index;
+        }
+        await this._rebuildUpstreamsOrder();
+        await this._saveSettings();
+        return true;
+    }
+
+    /**
+     * 下移上游（降低优先级）
+     * 移动后删除该租户所有 upstream 再重新创建，确保顺序一致
+     */
+    async moveDown(index) {
+        if (index < 0 || index >= this.upstreams.length - 1) return false;
+        [this.upstreams[index], this.upstreams[index + 1]] = [this.upstreams[index + 1], this.upstreams[index]];
+        // 活跃上游跟随移动
+        if (this._activeIndex === index) {
+            this._activeIndex = index + 1;
+        } else if (this._activeIndex === index + 1) {
+            this._activeIndex = index;
+        }
+        await this._rebuildUpstreamsOrder();
+        await this._saveSettings();
+        return true;
+    }
+
+    /**
+     * 删除该租户所有 upstream 并按当前数组顺序重新创建
+     * 用这种方式保证数据库中的 id 顺序与内存数组一致
+     */
+    async _rebuildUpstreamsOrder() {
+        try {
+            await models.TenantUpstream.destroy({where: {tenant_id: this.tenantId}});
+            const rows = [];
+            for (const u of this.upstreams) {
+                rows.push(await models.TenantUpstream.create({
+                    tenant_id: this.tenantId,
+                    name: u.name,
+                    base_url: u.base_url,
+                    api_key: u.api_key,
+                    proxy: u.proxy,
+                    models: u.models,
+                    model_map: u.model_map,
+                    model_auto: u.model_auto,
+                    protocol: u.protocol,
+                    enabled: u.enabled
+                }));
+            }
+            this.upstreams = rows.map(row => row.get({plain: true}));
+        } catch (error) {
+            logger.error(`Relay: 重建上游顺序失败: ${error.message}`);
+        }
+    }
+
+    /**
+     * 从上游获取模型列表
+     */
+    async _fetchFromModelsEndpoint(upstream) {
+        try {
+            return await getUpstreamModels(upstream, {'anthropic-version': '2023-06-01'});
+        } catch (err) {
+            return {_error: err.message};
+        }
     }
 
     async testUpstream(index) {
@@ -340,8 +323,7 @@ export class UpstreamManager {
         }
         const upstream = this.upstreams[index];
 
-        // 优先用 model_map 的第一个 value，其次 models[0]
-        // 不调用上游 /v1/models 接口（部分厂商该接口计费或不开放）
+        // 优先用 model_map 的第一个 value，其次 models[0]，否则回退到 models 接口获取
         let model = null;
         if (upstream.model_map && typeof upstream.model_map === 'object') {
             const values = Object.values(upstream.model_map);
@@ -351,135 +333,57 @@ export class UpstreamManager {
             model = upstream.models?.[0];
         }
         if (!model) {
-            return {success: false, message: '未配置模型：请在 model_map 或 models 中填写至少一个模型名'};
+            const modelsResult = await this._fetchFromModelsEndpoint(upstream);
+            if (modelsResult._error) {
+                return {success: false, message: modelsResult._error};
+            }
+            model = modelsResult.data?.[0]?.id;
+            if (!model) {
+                return {success: false, message: '未找到可用模型'};
+            }
         }
 
-        const protocol = upstream.protocol || 'openai';
-        const wsMode = protocol === 'responses' && isWSUpstream(upstream);
-
         try {
-            if (protocol === 'anthropic') {
-                await this._testAnthropic(upstream, model);
-            } else if (protocol === 'responses') {
-                await this._testResponses(upstream, model);
+            let response;
+            if (isAnthropicUpstream(upstream)) {
+                response = await createAnthropicMessages(
+                    {
+                        model,
+                        max_tokens: 1,
+                        stream: false,
+                        messages: [{role: 'user', content: 'hi'}]
+                    },
+                    upstream,
+                    {},
+                    {'anthropic-version': '2023-06-01'}
+                );
+            } else if (isResponsesUpstream(upstream)) {
+                response = await createResponses(
+                    {
+                        model,
+                        input: 'hi',
+                        max_output_tokens: 1,
+                        stream: false
+                    },
+                    upstream
+                );
             } else {
-                // 默认 openai 协议
-                await this._testOpenAI(upstream, model);
+                response = await createChatCompletions(
+                    {
+                        model,
+                        messages: [{role: 'user', content: 'hi'}],
+                        max_tokens: 1,
+                        stream: false
+                    },
+                    upstream
+                );
             }
-
-            const wsInfo = wsMode ? ', ws: true' : '';
-            return {success: true, message: `连接成功 (protocol: ${protocol}${wsInfo}, model: ${model})`};
+            if (response.status >= 200 && response.status < 300) {
+                return {success: true, message: `连接成功 (protocol: ${upstream.protocol || 'openai'}, model: ${model})`};
+            }
+            return {success: false, message: `HTTP ${response.status}`};
         } catch (err) {
-            // RelayUpstreamError 包含上游返回的 HTTP 状态码和错误信息
-            if (err instanceof RelayUpstreamError) {
-                return {success: false, message: `HTTP ${err.status}: ${err.message.slice(0, 300)}`};
-            }
             return {success: false, message: err.message};
-        }
-    }
-
-    /**
-     * OpenAI 协议测试：复用 createChatCompletions，确保 URL 构建与正常请求一致
-     */
-    async _testOpenAI(upstream, model) {
-        const payload = {
-            model,
-            messages: [{role: 'user', content: 'hi'}],
-            max_completion_tokens: 1,
-            stream: false
-        };
-        await createChatCompletions(payload, upstream);
-    }
-
-    /**
-     * Anthropic 协议测试：复用 createAnthropicMessages，确保 URL 构建与正常请求一致
-     */
-    async _testAnthropic(upstream, model) {
-        const payload = {
-            model,
-            max_tokens: 1,
-            stream: false,
-            messages: [{role: 'user', content: 'hi'}]
-        };
-        await createAnthropicMessages(payload, upstream);
-    }
-
-    /**
-     * Responses 协议测试
-     * WS 模式：先建立 WebSocket 连接再通过 WS 发送请求
-     * HTTP 模式：复用 createResponses，确保 URL 构建与正常请求一致
-     */
-    async _testResponses(upstream, model) {
-        // WS 模式：先连接 WebSocket，再发送请求
-        if (isWSUpstream(upstream)) {
-            return await this._testResponsesWS(upstream, model);
-        }
-
-        // 普通 HTTP 模式：复用 createResponses
-        const payload = {
-            model,
-            input: 'hi',
-            max_output_tokens: 16,
-            stream: false
-        };
-        await createResponses(payload, upstream);
-    }
-
-    /**
-     * Responses WS 模式测试：通过连接池获取/复用 WS 连接，发送一次最小请求
-     * 成功正常返回，失败抛 RelayUpstreamError 或 Error
-     */
-    async _testResponsesWS(upstream, model) {
-        const payload = {
-            model,
-            input: 'hi',
-            max_output_tokens: 16
-        };
-
-        let conn = null;
-        let shouldDiscard = false;
-        try {
-            // 通过连接池获取（可复用空闲连接，避免每次新建）
-            const {eventStream, conn: acquired} = await createResponsesWS(payload, upstream);
-            conn = acquired;
-
-            let completed = false;
-            let errorEvent = null;
-
-            for await (const event of eventStream) {
-                if (event.type === 'response.completed') {
-                    completed = true;
-                    break;
-                }
-                if (event.type === 'error') {
-                    errorEvent = event;
-                    break;
-                }
-            }
-
-            if (errorEvent) {
-                shouldDiscard = true;
-                const errMsg = errorEvent.data?.error?.message || 'WS request error';
-                const errStatus = errorEvent.data?.error?.status || 500;
-                throw new RelayUpstreamError(errStatus, `WS error: ${errMsg}`);
-            }
-
-            if (!completed) {
-                shouldDiscard = true;
-                throw new RelayUpstreamError(500, 'WS stream ended without completion');
-            }
-            // 成功，正常返回（连接归还池中）
-        } catch (err) {
-            if (!(err instanceof RelayUpstreamError)) {
-                shouldDiscard = true;
-            }
-            if (err instanceof RelayUpstreamError) throw err;
-            throw new Error(`WS 连接失败: ${err.message}`);
-        } finally {
-            if (conn) {
-                if (shouldDiscard) discardWSConnection(conn);
-                else releaseWSConnection(conn);
-            }
         }
     }
 

@@ -5,19 +5,23 @@
     "type": "module",
     "main": "src/index.js",
     "scripts": {
-        "start": "node src/index.js",
+        "start": "node --use-system-ca src/index.js",
         "debug": "cross-env LOG_LEVEL=DEBUG node --use-system-ca src/index.js",
-        "dev": "node --watch src/index.js",
-        "startup:enable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 enable",
-        "startup:disable": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 disable",
-        "startup:status": "powershell -ExecutionPolicy Bypass -File scripts/startup.ps1 status"
+        "dev": "node --use-system-ca --watch src/index.js",
+        "test": "node --test tests/*.test.js"
     },
     "dependencies": {
-        "@tencent-ai/codebuddy-code": "^2.93.1",
+        "@tencent-ai/codebuddy-code": "^2.98.1",
+        "busboy": "^1.6.0",
         "cross-env": "^7.0.3",
         "dotenv": "^17.2.4",
+        "html2canvas": "^1.4.1",
         "https-proxy-agent": "^7.0.6",
         "jsonwebtoken": "^9.0.3",
+        "jspdf": "^2.5.2",
+        "ldapjs": "^3.0.7",
+        "mysql2": "^3.22.3",
+        "sequelize": "^6.37.8",
         "socks-proxy-agent": "^8.0.5",
         "ws": "^8.21.0"
     },
@@ -30,15 +34,11 @@
         "claude-code-router",
         "openai",
         "api",
-        "proxy",
-        "codebuddy",
-        "relay"
+        "proxy"
     ],
-    "author": "Feng Shi",
-    "email": "shifeng199307@gmail.com",
-    "repository": {
-        "type": "git",
-        "url": "git@github.com:shifeng1993/claude-api-proxy.git"
-    },
-    "license": "MIT"
+    "author": "",
+    "license": "MIT",
+    "devDependencies": {
+        "node-ssh": "^13.2.1"
+    }
 }

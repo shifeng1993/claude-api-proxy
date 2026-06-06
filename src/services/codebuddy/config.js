@@ -7,7 +7,19 @@ import {readFileSync} from 'fs';
 import {join} from 'path';
 import logger from '../../utils/logger.js';
 
-export const DEFAULT_BASE_URL = 'https://copilot.tencent.com';
+// 默认上游 URL（支持区域切换：cn/intl 对应不同默认上游）
+export const DEFAULT_BASE_URL = ''; // 占位，实际值通过 getCodebuddyBaseUrl() 获取
+const DEFAULT_CUSTOM_SITE_LABEL = '\u81ea\u5b9a\u4e49\u7ad9';
+
+// 额外 CodeBuddy 上游 URL 列表（逗号分隔，会追加到管理面板的上游下拉列表中）
+// 延迟读取环境变量，因为 ESM import 在 .env 加载前执行
+export function getExtraBaseUrls() {
+    return process.env.CODEBUDDY_EXTRA_BASE_URLS
+        ? process.env.CODEBUDDY_EXTRA_BASE_URLS.split(',')
+              .map((u) => u.trim())
+              .filter(Boolean)
+        : [];
+}
 
 // 禁止使用的上游域名（这些域名已废弃，不可再添加新凭证）
 export const BLOCKED_DOMAINS = ['dhcode2025.copilot.qq.com'];
@@ -19,119 +31,121 @@ export const BLOCKED_DOMAINS = ['dhcode2025.copilot.qq.com'];
  */
 export function getCodebuddyBaseUrl(baseUrl) {
     if (baseUrl) return baseUrl;
-    return DEFAULT_BASE_URL;
+    return (
+        process.env.CODEBUDDY_DEFAULT_BASE_URL ||
+        (process.env.CODEBUDDY_REGION === 'intl' ? 'https://www.codebuddy.ai' : 'https://copilot.tencent.com')
+    );
 }
 
-// 凭证目录
-export const CODEBUDDY_CREDS_DIR = process.env.CODEBUDDY_CREDS_DIR || '.codebuddy';
-
-const DOMESTIC_MODELS = [
-    {id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', vendor: 'zhipu'},
-    {id: 'glm-5.1', name: 'GLM-5.1', vendor: 'zhipu'},
-    {id: 'glm-5.0-turbo', name: 'GLM-5.0-Turbo', vendor: 'zhipu'},
-    {id: 'glm-4.6', name: 'GLM-4.6', vendor: 'zhipu'},
-    {id: 'kimi-k2.6', name: 'Kimi-K2.6', vendor: 'moonshot'},
-    {id: 'kimi-k2.5', name: 'Kimi-K2.5', vendor: 'moonshot'},
-    {id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', vendor: 'deepseek'},
-    {id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', vendor: 'deepseek'},
-    {id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2', vendor: 'deepseek'}
-];
-
-const INTERNATIONAL_MODELS = [
-    {id: 'glm-5.0', name: 'GLM-5.0', vendor: 'zhipu'},
-    {id: 'kimi-k2.5', name: 'Kimi-K2.5', vendor: 'moonshot'},
-    {id: 'gpt-5.5', name: 'GPT-5.5', vendor: 'openai'},
-    {id: 'gpt-5.4', name: 'GPT-5.4', vendor: 'openai'},
-    {id: 'gpt-5.3-codex', name: 'GPT-5.3-codex', vendor: 'openai'},
-    {id: 'gemini-3.5-flash', name: 'Gemini-3.5-flash', vendor: 'google'},
-    {id: 'gemini-3.0-pro', name: 'Gemini-3.0-pro', vendor: 'google'},
-    {id: 'gemini-3.0-flash', name: 'Gemini-3.0-flash', vendor: 'google'},
-    {id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2', vendor: 'deepseek'}
-];
-
+// 自定义/组织上游可用模型
 const ENTERPRISE_MODELS = [
-    {id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', vendor: 'zhipu'},
-    {id: 'glm-5.1', name: 'GLM-5.1', vendor: 'zhipu'},
-    {id: 'glm-5.0-turbo', name: 'GLM-5.0-Turbo', vendor: 'zhipu'},
-    {id: 'glm-4.7', name: 'GLM-4.7', vendor: 'zhipu'},
-    {id: 'minimax-m2.7', name: 'MiniMax-M2.7', vendor: 'minimax'},
-    {id: 'kimi-k2.6', name: 'Kimi-K2.6', vendor: 'moonshot'},
-    {id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', vendor: 'deepseek'},
-    {id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', vendor: 'deepseek'},
-    {id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2', vendor: 'deepseek'}
+    {id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', tools: true, vision: true},
+    {id: 'glm-5.1', name: 'GLM-5.1', tools: true, vision: false},
+    {id: 'glm-5.0-turbo', name: 'GLM-5.0-Turbo', tools: true, vision: false},
+    {id: 'glm-4.7', name: 'GLM-4.7', tools: true, vision: false},
+    {id: 'minimax-m2.7', name: 'MiniMax M2.7', tools: true, vision: false},
+    {id: 'kimi-k2.6', name: 'Kimi K2.6', tools: true, vision: true},
+    {id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', tools: true, vision: false},
+    {id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', tools: true, vision: false},
+    {id: 'deepseek-v3-2-volc', name: 'DeepSeek V3.2', tools: true, vision: false}
 ];
+
+// 国内站可用模型
+const PERSONAL_MODELS = [
+    {id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', tools: true, vision: true},
+    {id: 'glm-5.1', name: 'GLM-5.1', tools: true, vision: false},
+    {id: 'glm-5.0-turbo', name: 'GLM-5.0-Turbo', tools: true, vision: false},
+    {id: 'glm-4.6', name: 'GLM-4.6', tools: true, vision: false},
+    {id: 'kimi-k2.6', name: 'Kimi K2.6', tools: true, vision: true},
+    {id: 'kimi-k2.5', name: 'Kimi K2.5', tools: true, vision: true},
+    {id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', tools: true, vision: false},
+    {id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', tools: true, vision: false},
+    {id: 'deepseek-v3-2-volc', name: 'DeepSeek V3.2', tools: true, vision: false}
+];
+
+function normalizeOverrideHost(value) {
+    const input = String(value || '').trim();
+    if (!input) return '';
+    try {
+        return new URL(input).host;
+    } catch {
+        return input;
+    }
+}
+
+function modelCapability(model, keys, fallback) {
+    for (const key of keys) {
+        if (model[key] !== undefined) return Boolean(model[key]);
+    }
+    return fallback;
+}
+
+export function getCodebuddyCustomSiteLabels() {
+    const raw = process.env.CODEBUDDY_CUSTOM_SITE_LABELS;
+    if (!raw) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        return Object.fromEntries(Object.entries(parsed || {})
+            .map(([host, label]) => [normalizeOverrideHost(host), String(label || '').trim()])
+            .filter(([host, label]) => host && label));
+    } catch (error) {
+        logger.warn(`Invalid CODEBUDDY_CUSTOM_SITE_LABELS JSON: ${error.message}`);
+        return {};
+    }
+}
+
+export function getCodebuddyCustomSiteLabel(baseUrl) {
+    const labels = getCodebuddyCustomSiteLabels();
+    const host = normalizeOverrideHost(baseUrl || getCodebuddyBaseUrl());
+    return labels[host] || DEFAULT_CUSTOM_SITE_LABEL;
+}
+
+export function getHostModelOverrides() {
+    const raw = process.env.CODEBUDDY_MODEL_OVERRIDES;
+    if (!raw) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        const entries = Object.entries(parsed || {}).map(([host, models]) => {
+            const normalizedHost = normalizeOverrideHost(host);
+            const normalizedModels = Array.isArray(models)
+                ? models
+                    .map(model => ({
+                        id: String(model.id || '').trim(),
+                        name: String(model.name || model.id || '').trim(),
+                        tools: modelCapability(model, ['tools', 'tool', 'supportsTools', 'supports_tool'], true),
+                        vision: modelCapability(model, ['vision', 'supportsVision', 'supports_vision'], false)
+                    }))
+                    .filter(model => model.id)
+                : [];
+            return [normalizedHost, normalizedModels];
+        }).filter(([host, models]) => host && models.length);
+        return Object.fromEntries(entries);
+    } catch (error) {
+        logger.warn(`Invalid CODEBUDDY_MODEL_OVERRIDES JSON: ${error.message}`);
+        return {};
+    }
+}
+
+/**
+ * 根据上游域名获取可用模型列表
+ * 优先级：特定站点覆盖 > 个人/企业分类
+ * @param {string} [baseUrl] - 上游基础 URL
+ * @returns {Array<{id: string, name: string, tools: boolean, vision: boolean}>}
+ */
+export function getModelsForHost(baseUrl) {
+    const resolved = getCodebuddyBaseUrl(baseUrl);
+    const host = new URL(resolved).host;
+
+    const hostModelOverrides = getHostModelOverrides();
+    if (hostModelOverrides[host]) {
+        return hostModelOverrides[host];
+    }
+
+    return isPersonalHost(host) ? PERSONAL_MODELS : ENTERPRISE_MODELS;
+}
 
 // 个人版官方域名 — 这些域名不需要传企业头
 const PERSONAL_HOSTS = ['copilot.tencent.com', 'www.codebuddy.ai'];
-
-export const CODEBUDDY_MODELS_BY_BASE_URL = {
-    'https://copilot.tencent.com': DOMESTIC_MODELS,
-    'https://www.codebuddy.ai': INTERNATIONAL_MODELS
-};
-
-/**
- * 从环境变量 CODEBUDDY_ENTERPRISE_HOSTS 解析企业站上游列表
- * 支持逗号分隔，可填写带协议的完整 URL（如 https://xxx.copilot.qq.com）
- * 或仅域名（自动补 https://），解析失败的项会被忽略并打 warn
- * @returns {string[]} 规范化后的 base_url 列表（已去重）
- */
-function parseEnterpriseHostsEnv() {
-    const raw = process.env.CODEBUDDY_ENTERPRISE_HOSTS;
-    if (!raw) return [];
-    const seen = new Set();
-    const result = [];
-    for (const item of raw.split(',')) {
-        const trimmed = item.trim();
-        if (!trimmed) continue;
-        const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-        try {
-            const u = new URL(candidate);
-            // 去掉 path/query，只保留 origin
-            const normalized = `${u.protocol}//${u.host}`;
-            if (!seen.has(normalized)) {
-                seen.add(normalized);
-                result.push(normalized);
-            }
-        } catch {
-            logger.warn(`CODEBUDDY_ENTERPRISE_HOSTS 中无效的上游地址，已忽略: ${trimmed}`);
-        }
-    }
-    return result;
-}
-
-const ENTERPRISE_HOSTS_FROM_ENV = parseEnterpriseHostsEnv();
-
-// 把环境变量里的企业站合并到模型表（默认走 ENTERPRISE_MODELS 兜底，
-// OAuth 成功后 hasEnterpriseIdentity 命中也仍会走 ENTERPRISE_MODELS）
-for (const url of ENTERPRISE_HOSTS_FROM_ENV) {
-    if (!CODEBUDDY_MODELS_BY_BASE_URL[url]) {
-        CODEBUDDY_MODELS_BY_BASE_URL[url] = ENTERPRISE_MODELS;
-    }
-}
-
-/**
- * 获取通过环境变量配置的企业站上游列表
- * @returns {string[]}
- */
-export function getEnterpriseBaseUrls() {
-    return [...ENTERPRISE_HOSTS_FROM_ENV];
-}
-
-export function getCodebuddyBaseUrlOptions() {
-    return Object.keys(CODEBUDDY_MODELS_BY_BASE_URL);
-}
-
-export function hasEnterpriseIdentity(credential = {}) {
-    return Boolean(credential.enterprise_id || credential.enterpriseId || credential.department_info || credential.departmentInfo);
-}
-
-export function getCodebuddyModels(credential = {}) {
-    if (typeof credential === 'string') {
-        return CODEBUDDY_MODELS_BY_BASE_URL[getCodebuddyBaseUrl(credential)] || DOMESTIC_MODELS;
-    }
-    if (hasEnterpriseIdentity(credential)) return ENTERPRISE_MODELS;
-    return CODEBUDDY_MODELS_BY_BASE_URL[getCodebuddyBaseUrl(credential.base_url)] || DOMESTIC_MODELS;
-}
 
 /**
  * 判断上游域名是否为个人版
@@ -250,7 +264,10 @@ export function codebuddyHeaders(bearerToken, options = {}) {
         'X-Domain': domain || host,
         'User-Agent': `CLI/${CODEBUDDY_CLI_VERSION} CodeBuddy/${CODEBUDDY_CLI_VERSION}`,
         'X-Product': 'SaaS',
-        'X-User-Id': userId
+        'X-User-Id': userId,
+        // 腾讯云文档要求：X-Session-ID 将同一用户的连续请求路由到同一推理实例，
+        // 提高该实例上的 KV Cache 局部命中率，与 prompt_cache_key 配合使用效果更佳
+        'X-Session-ID': userId || 'unknown'
     };
 
     // 企业版额外头部

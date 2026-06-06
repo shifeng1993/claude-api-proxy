@@ -16,7 +16,8 @@ import {
     prependThinkingHint,
     prependToolThinkingHint,
     openAIToAnthropic as sharedOpenAIToAnthropic,
-    normalizeClaudeModelAlias
+    normalizeClaudeModelAlias,
+    sortObjectKeys
 } from '../../transformer/shared-translator.js';
 
 /* ================= SSE Writer ================= */
@@ -82,7 +83,7 @@ class ClaudeStreamState {
         });
     }
 
-    endMessage(stopReason = 'end_turn', usageTokens = {}) {
+    endMessage(stopReason = 'end_turn') {
         if (this.messageEnded || !this.messageStarted) return;
         this.messageEnded = true;
 
@@ -90,15 +91,10 @@ class ClaudeStreamState {
         this.closeAllTools();
         if (this.textOpen) this.closeText();
 
-        const usage = {
-            input_tokens: usageTokens.inputTokens || 0,
-            output_tokens: usageTokens.outputTokens || 0
-        };
-        if ((usageTokens.cacheHitTokens || 0) > 0) usage.cache_read_input_tokens = usageTokens.cacheHitTokens;
         this.writer.write('message_delta', {
             type: 'message_delta',
             delta: {stop_reason: stopReason, stop_sequence: null},
-            usage
+            usage: {input_tokens: 0, output_tokens: 0}
         });
 
         this.writer.write('message_stop', {type: 'message_stop'});
@@ -307,18 +303,13 @@ export function anthropicToOpenAI(anthropicPayload) {
         openAIPayload.tool_choice = translateToolChoice(anthropicPayload.tool_choice);
     }
 
-    // 处理 thinking / reasoning_effort
-    // haiku 系列不支持 reasoning_effort，设为空字符串让 normalizePayload 删除该字段
-    const model = openAIPayload.model || '';
-    if (model.includes('haiku')) {
+    // 处理 thinking / reasoning_effort（默认值由 normalizePayload 统一注入）
+    const thinkingConfig = resolveThinkingConfig(anthropicPayload);
+    if (thinkingConfig.disabled) {
+        // 显式设空字符串，normalizePayload 识别后删除字段、不补默认值
         openAIPayload.reasoning_effort = '';
-    } else {
-        const thinkingConfig = resolveThinkingConfig(anthropicPayload);
-        if (thinkingConfig.disabled) {
-            // thinking 明确关闭，不设置 reasoning_effort，某些上游据此跳过推理
-        } else if (thinkingConfig.effort) {
-            openAIPayload.reasoning_effort = thinkingConfig.effort;
-        }
+    } else if (thinkingConfig.effort) {
+        openAIPayload.reasoning_effort = thinkingConfig.effort;
     }
 
     return openAIPayload;
@@ -342,7 +333,7 @@ function translateTools(anthropicTools) {
  * 从 Anthropic 请求中解析 thinking 配置
  * 返回 { disabled: boolean, effort: string|null }
  *
- * 优先级：output_config.effort > thinking 配置推断 > 不设置
+ * 优先级：output_config.effort > thinking 配置推断 > 默认 high
  * 与 codebuddy 不同，relay 不做模型白名单过滤，只要请求中有 thinking 配置就转换
  */
 function resolveThinkingConfig(anthropicPayload) {
@@ -350,7 +341,7 @@ function resolveThinkingConfig(anthropicPayload) {
 
     // thinking.type === 'disabled' 明确关闭思考
     if (thinking?.type === 'disabled') {
-        return {disabled: true, effort: null};
+        return {disabled: true, effort: ''};
     }
 
     let effort = null;
@@ -390,7 +381,7 @@ function translateMessages(anthropicMessages, system) {
         if (typeof system === 'string') {
             messages.push({role: 'system', content: system});
         } else if (Array.isArray(system)) {
-            const systemText = system.map((block) => block.text).join('\n\n');
+            const systemText = system.map((block) => block.text.trim()).join('\n\n');
             if (systemText) {
                 messages.push({role: 'system', content: systemText});
             }
@@ -415,7 +406,7 @@ function translateMessages(anthropicMessages, system) {
         }
     }
 
-    return injectBehaviorRules(messages);
+    return messages;
 }
 
 /**
@@ -527,7 +518,7 @@ function handleAssistantMessage(message) {
             let args = '{}';
             if (block.input !== undefined && block.input !== null) {
                 try {
-                    args = JSON.stringify(block.input);
+                    args = JSON.stringify(sortObjectKeys(block.input));
                 } catch (e) {
                     logger.warn(`Failed to stringify tool input for ${block.name}:`, e.message);
                     args = '{}';

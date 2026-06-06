@@ -13,12 +13,11 @@ import {HttpsProxyAgent} from 'https-proxy-agent';
 import {SocksProxyAgent} from 'socks-proxy-agent';
 import logger from './logger.js';
 
-// ==================== 网络错误分类 ====================
-
 const TRANSIENT_NETWORK_CODES = new Set([
     'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE',
     'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
-    'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'ERR_SSL_PROTOCOL_ERROR'
+    'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'ERR_SSL_PROTOCOL_ERROR',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET'
 ]);
 
 export class UpstreamNetworkError extends Error {
@@ -31,7 +30,7 @@ export class UpstreamNetworkError extends Error {
 
 export function isNetworkError(err) {
     if (err instanceof UpstreamNetworkError) return true;
-    return TRANSIENT_NETWORK_CODES.has(err.code) || TRANSIENT_NETWORK_CODES.has(err.errno);
+    return TRANSIENT_NETWORK_CODES.has(err?.code) || TRANSIENT_NETWORK_CODES.has(err?.errno) || TRANSIENT_NETWORK_CODES.has(err?.cause?.code);
 }
 
 // ==================== 连接池配置 ====================
@@ -254,7 +253,6 @@ export function request(url, options = {}) {
             }
             if (req.agent && req.socket) {
                 req.agent.destroy();
-                // 重建同类型 agent 以清理坏连接
                 if (agent === globalAgents.https) {
                     globalAgents.https = new https.Agent({
                         keepAlive: true,

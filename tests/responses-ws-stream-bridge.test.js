@@ -5,6 +5,7 @@ import {
     createResponsesStreamState,
     responsesEventToResponsesEvents
 } from '../src/transformer/responses-translator.js';
+import {bindAsyncIterableContext} from '../src/services/shared/responses-ws-server.js';
 
 test('responsesEventToResponsesEvents adds ordinary Responses scaffold before text deltas', () => {
     const chatState = createChatCompletionsStreamState();
@@ -114,4 +115,22 @@ test('responsesEventToChatChunks emits function calls found only in response.com
     assert.equal(events[1].data.item.name, 'list_files');
     assert.equal(events[2].data.delta, '{"path":"."}');
     assert.equal(events[3].data.arguments, '{"path":"."}');
+});
+
+test('bindAsyncIterableContext re-enters request context for every iterator step', async () => {
+    const calls = [];
+    async function* source() {
+        calls.push('generator');
+        yield {type: 'response.completed'};
+    }
+    const wrapped = bindAsyncIterableContext(source(), callback => {
+        calls.push('context');
+        return callback();
+    });
+
+    for await (const _event of wrapped) {
+        calls.push('consumer');
+    }
+
+    assert.deepEqual(calls, ['context', 'generator', 'consumer', 'context']);
 });

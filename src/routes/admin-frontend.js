@@ -1,0 +1,390 @@
+/**
+ * 统一管理面板路由
+ * @module routes/admin-frontend
+ */
+
+import {readFileSync} from 'fs';
+import {join, dirname} from 'path';
+import {fileURLToPath} from 'url';
+import logger from '../utils/logger.js';
+import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
+import {broadcast} from '../services/shared/cluster-broadcaster.js';
+import {getSessionUser} from '../services/gateway/session.js';
+import {handleAdminUsers} from './admin-users.js';
+import {getCodebuddyAdminOptions, handleCodebuddyAdminRoute} from './admin-codebuddy.js';
+import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/config.js';
+import {handleCopilotAdminRoute} from './admin-copilot.js';
+import {sendNotFoundPage, wantsHtml} from './not-found.js';
+import {Op} from 'sequelize';
+import {models} from '../db/models/index.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ADMIN_PAGE = readFileSync(join(__dirname, '..', 'templates', 'admin.html'), 'utf8');
+const SERVICES = new Set(['relay', 'codebuddy', 'copilot']);
+
+function sendJson(res, status, data) {
+    res.writeHead(status, {'Content-Type': 'application/json'});
+    res.end(JSON.stringify(data));
+}
+
+function readRequestBody(req) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+            try {
+                const body = Buffer.concat(chunks).toString('utf8');
+                resolve(body ? JSON.parse(body) : {});
+            } catch (error) {
+                reject(error);
+            }
+        });
+        req.on('error', reject);
+    });
+}
+
+function tenantView(tenant, includePlainKey = false) {
+    if (!tenant) return null;
+    return {
+        id: tenant.id,
+        name: tenant.name,
+        username: tenant.username,
+        role: tenant.role,
+        api_key_prefix: tenant.api_key_prefix,
+        ...(includePlainKey ? {api_key_plain: tenant.api_key_plain} : {}),
+        serviceProfiles: (tenant.serviceProfiles || []).map(profile => ({
+            service_type: profile.service_type,
+            enabled: profile.enabled,
+            total_api_calls: profile.total_api_calls || 0,
+            total_input_tokens: profile.total_input_tokens || 0,
+            total_output_tokens: profile.total_output_tokens || 0,
+            total_cache_hit_tokens: profile.total_cache_hit_tokens || 0,
+            total_credit: profile.total_credit || 0
+        }))
+    };
+}
+
+function requireApiSession(req, res) {
+    const session = getSessionUser(req);
+    if (!session.authenticated) {
+        sendJson(res, 401, {error: '登录已过期'});
+        return null;
+    }
+    return session;
+}
+
+function aggregateUsageRows(rows) {
+    const totals = {apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, credit: 0};
+    const monthly = new Map();
+    const daily = new Map();
+    const modelsByName = new Map();
+
+    for (const row of rows) {
+        const apiCalls = Number(row.api_calls || 0);
+        const inputTokens = Number(row.input_tokens || 0);
+        const outputTokens = Number(row.output_tokens || 0);
+        const cacheHitTokens = Number(row.input_cache_hit || 0);
+        const credit = Number(row.credit || 0);
+        totals.apiCalls += apiCalls;
+        totals.inputTokens += inputTokens;
+        totals.outputTokens += outputTokens;
+        totals.cacheHitTokens += cacheHitTokens;
+        totals.credit += credit;
+
+        const month = String(row.date || '').slice(0, 7);
+        const day = row.date;
+        const model = row.model || 'unknown';
+        for (const [key, map] of [[month, monthly], [day, daily], [model, modelsByName]]) {
+            if (!key) continue;
+            const item = map.get(key) || {key, apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, credit: 0};
+            item.apiCalls += apiCalls;
+            item.inputTokens += inputTokens;
+            item.outputTokens += outputTokens;
+            item.cacheHitTokens += cacheHitTokens;
+            item.credit += credit;
+            map.set(key, item);
+        }
+    }
+
+    const withRate = item => ({
+        ...item,
+        cacheHitRate: item.inputTokens > 0 ? Math.round((item.cacheHitTokens / item.inputTokens) * 1000) / 10 : 0
+    });
+    return {
+        totals: withRate({...totals, totalTokens: totals.inputTokens + totals.outputTokens}),
+        monthlyTrend: [...monthly.values()].sort((a, b) => a.key.localeCompare(b.key)).map(item => withRate({month: item.key, ...item})),
+        dailyTrend: [...daily.values()].sort((a, b) => a.key.localeCompare(b.key)).map(item => withRate({date: item.key, ...item})),
+        modelStats: [...modelsByName.values()].sort((a, b) => b.inputTokens - a.inputTokens).map(item => withRate({model: item.key, ...item}))
+    };
+}
+
+async function adminStatsOverview(req, res, username) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const serviceType = url.searchParams.get('service') || 'relay';
+    if (!SERVICES.has(serviceType)) return sendJson(res, 400, {error: 'Invalid service'});
+
+    let tenantId = unifiedTenantManager.findTenantByUsername(username);
+    if (!tenantId) tenantId = await unifiedTenantManager.createTenantForUser(username, username);
+    const tenant = unifiedTenantManager.getTenant(tenantId);
+    const serviceProfile = tenant?.serviceProfiles?.find(profile => profile.service_type === serviceType);
+    if (!serviceProfile?.enabled && !unifiedTenantManager.isAdmin(username)) {
+        return sendJson(res, 403, {error: 'Service is not enabled'});
+    }
+
+    await unifiedTenantManager._flushDirtyTenants();
+    const rows = await models.TenantDailyUsage.findAll({
+        where: {tenant_id: tenantId, service_type: serviceType},
+        order: [['date', 'ASC'], ['model', 'ASC']],
+        raw: true
+    });
+    const aggregated = aggregateUsageRows(rows);
+    return sendJson(res, 200, {
+        service: serviceType,
+        tenant: tenantView(tenant, false),
+        ...aggregated,
+        recentRows: rows.slice(-100).reverse()
+    });
+}
+
+async function relayOperation(req, res, tenantId, subPath) {
+    const manager = await unifiedTenantManager.getUpstreamManager(tenantId);
+    if (!manager) {
+        sendJson(res, 404, {error: '租户不存在'});
+        return true;
+    }
+
+    if (subPath === '/upstreams' && req.method === 'GET') {
+        sendJson(res, 200, {upstreams: manager.listUpstreams()});
+        return true;
+    }
+    if (subPath === '/upstreams' && req.method === 'POST') {
+        const upstream = await manager.addUpstream(await readRequestBody(req));
+        broadcast('relay:upstream:change', {tenantId});
+        sendJson(res, 200, {message: '上游配置已添加', upstream});
+        return true;
+    }
+
+    const itemMatch = subPath.match(/^\/upstreams\/(\d+)$/);
+    if (itemMatch) {
+        const index = Number(itemMatch[1]);
+        if (req.method === 'PUT') {
+            const upstream = await manager.updateUpstream(index, await readRequestBody(req));
+            if (!upstream) {
+                sendJson(res, 400, {error: '无效的上游索引'});
+                return true;
+            }
+            broadcast('relay:upstream:change', {tenantId});
+            sendJson(res, 200, {message: '上游配置已更新', upstream});
+            return true;
+        }
+        if (req.method === 'DELETE') {
+            const ok = await manager.deleteUpstream(index);
+            if (ok) broadcast('relay:upstream:change', {tenantId});
+            sendJson(res, ok ? 200 : 400, ok ? {message: '上游已删除'} : {error: '无效的上游索引'});
+            return true;
+        }
+    }
+
+    const cloneMatch = subPath.match(/^\/upstreams\/(\d+)\/clone$/);
+    if (cloneMatch && req.method === 'POST') {
+        const index = Number(cloneMatch[1]);
+        const source = manager.listUpstreams()[index];
+        if (!source) {
+            sendJson(res, 400, {error: '无效的上游索引'});
+            return true;
+        }
+        const upstream = await manager.addUpstream({
+            ...source,
+            name: `${source.name || '未命名'} (副本)`,
+            api_key: source.api_key_full,
+            model_map: {...(source.model_map || {})},
+            models: [...(source.models || [])]
+        });
+        broadcast('relay:upstream:change', {tenantId});
+        sendJson(res, 200, {message: '上游已复制', upstream});
+        return true;
+    }
+
+    if (subPath === '/upstreams/set-active' && req.method === 'POST') {
+        const {index} = await readRequestBody(req);
+        const ok = await manager.setActiveUpstream(Number(index));
+        if (ok) broadcast('relay:upstream:change', {tenantId});
+        sendJson(res, ok ? 200 : 400, ok ? {message: '活跃上游已切换'} : {error: '该上游无法启用'});
+        return true;
+    }
+    if ((subPath === '/upstreams/move-up' || subPath === '/upstreams/move-down') && req.method === 'POST') {
+        const {index} = await readRequestBody(req);
+        const ok = subPath.endsWith('move-up')
+            ? await manager.moveUp(Number(index))
+            : await manager.moveDown(Number(index));
+        if (ok) broadcast('relay:upstream:change', {tenantId});
+        sendJson(res, ok ? 200 : 400, ok ? {message: '上游顺序已更新'} : {error: '无法继续移动'});
+        return true;
+    }
+    if (subPath === '/upstreams/test' && req.method === 'POST') {
+        const {index} = await readRequestBody(req);
+        sendJson(res, 200, await manager.testUpstream(Number(index)));
+        return true;
+    }
+    return false;
+}
+
+export async function routeAdminFrontend(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = url.pathname;
+    const method = req.method;
+
+    if (pathname === '/admin' || pathname === '/admin/') {
+        const session = getSessionUser(req);
+        if (!session.authenticated) {
+            res.writeHead(302, {Location: '/login'});
+            res.end();
+            return;
+        }
+        res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+        res.end(ADMIN_PAGE);
+        return;
+    }
+
+    const session = requireApiSession(req, res);
+    if (!session) return;
+    const username = session.username;
+    const isAdmin = unifiedTenantManager.isAdmin(username);
+
+    if (pathname === '/admin/me' && method === 'GET') {
+        return sendJson(res, 200, {username, role: session.role, isAdmin, isSuperAdmin: session.role === 'superadmin'});
+    }
+
+    if (pathname === '/admin/codebuddy/options' && method === 'GET') {
+        return sendJson(res, 200, {customSiteLabels: getCodebuddyCustomSiteLabels(), options: getCodebuddyAdminOptions()});
+    }
+
+    if (pathname === '/admin/stats/overview' && method === 'GET') {
+        return adminStatsOverview(req, res, username);
+    }
+
+    if (pathname.startsWith('/admin/users')) {
+        if (!isAdmin) return sendJson(res, 403, {error: '需要管理员权限'});
+        const handled = await handleAdminUsers(req, res, pathname.replace('/admin/users', ''), username, session.role);
+        if (handled) {
+            await unifiedTenantManager.reloadRegistry();
+            return;
+        }
+    }
+
+    if (pathname === '/admin/tenants' && method === 'GET') {
+        const tenants = unifiedTenantManager.listTenants();
+        return sendJson(res, 200, {
+            tenants: session.role === 'superadmin' ? tenants : tenants.filter(tenant => tenant.username === username)
+        });
+    }
+
+    if (pathname === '/admin/my-tenant' && method === 'GET') {
+        let tenantId = unifiedTenantManager.findTenantByUsername(username);
+        if (!tenantId) tenantId = await unifiedTenantManager.createTenantForUser(username, username);
+        return sendJson(res, 200, {tenant: tenantView(unifiedTenantManager.getTenant(tenantId), true)});
+    }
+
+    const tenantMatch = pathname.match(/^\/admin\/tenants\/(\d+)(\/.*)?$/);
+    if (tenantMatch) {
+        const tenantId = Number(tenantMatch[1]);
+        const subPath = tenantMatch[2] || '';
+        if (!unifiedTenantManager.checkTenantAccess(username, tenantId)) {
+            return sendJson(res, 403, {error: '无权访问此租户'});
+        }
+
+        if (subPath === '' && method === 'GET') {
+            return sendJson(res, 200, {
+                tenant: tenantView(unifiedTenantManager.getTenant(tenantId), true)
+            });
+        }
+
+        if (subPath === '/regenerate-key' && method === 'POST') {
+            const result = await unifiedTenantManager.regenerateApiKey(tenantId);
+            if (!result) return sendJson(res, 404, {error: '租户不存在'});
+            return sendJson(res, 200, {
+                message: 'API Key 已重新生成',
+                api_key: result.apiKey,
+                api_key_prefix: result.apiKeyPrefix
+            });
+        }
+
+        const serviceMatch = subPath.match(/^\/services\/(relay|codebuddy|copilot)$/);
+        if (serviceMatch && method === 'PUT') {
+            if (!isAdmin) return sendJson(res, 403, {error: '需要管理员权限'});
+            const {enabled} = await readRequestBody(req);
+            const serviceType = serviceMatch[1];
+            if (!SERVICES.has(serviceType)) return sendJson(res, 400, {error: '未知服务'});
+            await unifiedTenantManager.setServiceEnabled(tenantId, serviceType, enabled === true);
+            return sendJson(res, 200, {message: '服务状态已更新'});
+        }
+
+        if (subPath === '/stats' && method === 'GET') {
+            const serviceType = url.searchParams.get('service') || 'relay';
+            const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7);
+            if (!SERVICES.has(serviceType) || !/^\d{4}-\d{2}$/.test(month)) {
+                return sendJson(res, 400, {error: 'Invalid service or month'});
+            }
+            await unifiedTenantManager._flushDirtyTenants();
+            const rows = await models.TenantDailyUsage.findAll({
+                where: {
+                    tenant_id: tenantId,
+                    service_type: serviceType,
+                    date: {[Op.like]: `${month}-%`}
+                },
+                order: [['date', 'ASC'], ['model', 'ASC']]
+            });
+            return sendJson(res, 200, {
+                month,
+                service: serviceType,
+                data: rows.map(row => row.toJSON())
+            });
+        }
+
+        if (subPath === '/service-profile' && method === 'GET') {
+            const serviceType = url.searchParams.get('service') || 'relay';
+            if (!SERVICES.has(serviceType)) return sendJson(res, 400, {error: 'Invalid service'});
+            await unifiedTenantManager.syncStatsFromDb(tenantId, false);
+            const tenant = unifiedTenantManager.getTenant(tenantId);
+            const profile = tenant?.serviceProfiles?.find(item => item.service_type === serviceType);
+            return sendJson(res, 200, {
+                service: serviceType,
+                profile: profile ? {
+                    service_type: profile.service_type,
+                    enabled: profile.enabled,
+                    total_api_calls: profile.total_api_calls || 0,
+                    total_input_tokens: profile.total_input_tokens || 0,
+                    total_output_tokens: profile.total_output_tokens || 0,
+                    total_cache_hit_tokens: profile.total_cache_hit_tokens || 0,
+                    total_credit: profile.total_credit || 0
+                } : null
+            });
+        }
+
+        if (subPath === '/stats/reset' && method === 'POST') {
+            const {service} = await readRequestBody(req);
+            if (!SERVICES.has(service)) return sendJson(res, 400, {error: 'Invalid service'});
+            await unifiedTenantManager.resetServiceStats(tenantId, service);
+            return sendJson(res, 200, {
+                message: 'Custom statistics reset',
+                tenant: tenantView(unifiedTenantManager.getTenant(tenantId), true)
+            });
+        }
+
+        const copilotHandled = await handleCopilotAdminRoute(req, res, tenantId, subPath);
+        if (copilotHandled) return;
+
+        const codebuddyHandled = await handleCodebuddyAdminRoute(req, res, tenantId, subPath);
+        if (codebuddyHandled) return;
+
+        const relayHandled = await relayOperation(req, res, tenantId, subPath);
+        if (relayHandled) return;
+
+    }
+
+    if (wantsHtml(req)) {
+        sendNotFoundPage(req, res);
+        return;
+    }
+    sendJson(res, 404, {error: 'Not found'});
+}

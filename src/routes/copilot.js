@@ -35,9 +35,15 @@ import {
     estimateMessageTokens,
     estimateContentBlockTokens
 } from '../utils/token-estimation.js';
+import {sanitizeAnthropicPayload} from '../transformer/shared-translator.js';
 import {aggregateStreamResponse} from '../services/codebuddy/api.js';
-import {ResponsesWSError} from '../services/ws/ws-client.js';
-import {handleWSConnection} from '../services/ws/ws-server.js';
+import {ResponsesWebSocketError} from '../services/shared/responses-ws-client.js';
+import {handleWSConnection} from '../services/shared/responses-ws-server.js';
+import {
+    currentCopilotContext,
+    runCopilotTenantContext,
+    runWithCopilotContext
+} from '../services/copilot/runtime.js';
 import logger from '../utils/logger.js';
 
 /* ==================== 工具函数 ==================== */
@@ -140,7 +146,7 @@ function sendAnthropicError(res, status, message) {
 }
 
 function isResponsesProtocolError(err) {
-    return err instanceof ResponsesWSError && err?.event?.type === 'error';
+    return err instanceof ResponsesWebSocketError && err?.event?.type === 'error';
 }
 
 function sendResponsesProtocolError(res, err) {
@@ -198,7 +204,7 @@ async function parseBody(req) {
 async function ensureCopilotAuth(networkOptions = {}) {
     // Copilot 认证检查
     if (!isAuthenticated()) {
-        return {error: {status: 401, message: 'Not authenticated. Please visit /copilotFE to authenticate with GitHub.'}};
+        return {error: {status: 401, message: 'Not authenticated. Open the Copilot tab in /admin to connect GitHub.'}};
     }
 
     try {
@@ -489,7 +495,7 @@ async function handleAnthropicMessages(req, res) {
         }
 
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
 
         logger.info(`Copilot Anthropic request - model: ${anthropicPayload.model}, stream: ${anthropicPayload.stream}`);
 
@@ -751,7 +757,7 @@ async function handleAnthropicCountTokens(req, res) {
         }
 
         const body = await parseBody(req);
-        const anthropicPayload = JSON.parse(body);
+        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
 
         let totalTokens = 0;
 
@@ -1113,14 +1119,16 @@ async function handleResponsesCompact(req, res) {
  * @param {import('ws').WebSocket} clientWs - 客户端 WebSocket 连接
  * @param {http.IncomingMessage} req - 原始 HTTP 请求
  */
-export function handleCopilotResponsesWS(clientWs, req) {
+function handleCopilotResponsesWSInContext(clientWs, req) {
+    const tenantContext = currentCopilotContext();
     handleWSConnection(clientWs, {
         authenticate: () => true,
+        runInContext: callback => runWithCopilotContext(tenantContext, callback),
         req,
         handleRequest: async function* (payload, authResult, {signal}) {
             // Copilot 认证
             if (!isAuthenticated()) {
-                throw Object.assign(new Error('Not authenticated. Please visit /copilotFE to authenticate with GitHub.'), {
+                throw Object.assign(new Error('Not authenticated. Open the Copilot tab in /admin to connect GitHub.'), {
                     name: 'ResponsesWSError',
                     event: {type: 'error', error: {message: 'Not authenticated', code: 'unauthorized'}}
                 });
@@ -1263,14 +1271,14 @@ function handleRoot(req, res) {
             }
         },
         configuration: {
-            tokenSource: isAuthenticated() ? '.copilot/github_token' : 'not configured'
+            tokenSource: isAuthenticated() ? 'tenant credential database' : 'not configured'
         }
     });
 }
 
 /* ==================== 主路由 ==================== */
 
-export async function routeCopilotRequest(req, res) {
+async function routeCopilotRequestInContext(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
     const method = req.method;
@@ -1306,10 +1314,36 @@ export async function routeCopilotRequest(req, res) {
     if (pathname === '/copilot/v1/chat/completions' && method === 'POST') return handleOpenAIChatCompletions(req, res);
     if (pathname === '/copilot/v1/responses/compact' && method === 'POST') return handleResponsesCompact(req, res);
     if (pathname === '/copilot/v1/responses' && method === 'POST') return handleResponsesAPI(req, res);
-    if (pathname === '/copilot/v1/models' && method === 'GET') return handleOpenAIModels(req, res);
+    if (pathname === '/copilot/v1/models' && method === 'GET') {
+        return handleOpenAIModels(req, res);
+    }
 
     // ========== 根路径 ==========
     if (pathname === '/copilot' || pathname === '/copilot/') return handleRoot(req, res);
 
     sendOpenAIError(res, 404, 'Endpoint not found');
+}
+
+export async function routeCopilotRequest(req, res) {
+    try {
+        return await runCopilotTenantContext(
+            req.tenantId,
+            () => routeCopilotRequestInContext(req, res)
+        );
+    } catch (error) {
+        logger.error(`Copilot tenant context failed: ${error.message}`);
+        sendOpenAIError(res, 503, error.message);
+    }
+}
+
+export async function handleCopilotResponsesWS(clientWs, req) {
+    try {
+        return await runCopilotTenantContext(
+            req.tenantId,
+            () => handleCopilotResponsesWSInContext(clientWs, req)
+        );
+    } catch (error) {
+        logger.error(`Copilot WebSocket tenant context failed: ${error.message}`);
+        clientWs.close(1011, error.message.slice(0, 120));
+    }
 }
