@@ -156,6 +156,14 @@ function normalizeApiNamespacePath(pathname) {
     if (pathname === '/api/dashboard' || pathname.startsWith('/api/dashboard/')) {
         return pathname.slice(API_PREFIX.length) || '/dashboard';
     }
+    if (pathname === '/api/usage') return '/stats/api/overview';
+    if (pathname.startsWith('/api/usage/')) {
+        const usagePath = pathname.slice('/api/usage'.length);
+        if (usagePath === '/api' || usagePath.startsWith('/api/')) {
+            return `/stats${usagePath}`;
+        }
+        return `/stats/api${usagePath}`;
+    }
     if (pathname === '/api/stats') return '/stats/api/overview';
     if (pathname.startsWith('/api/stats/')) {
         const statsPath = pathname.slice('/api/stats'.length);

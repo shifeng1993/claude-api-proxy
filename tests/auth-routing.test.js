@@ -91,10 +91,10 @@ test('coding-prefixed protocol routes are normalized before service auth', async
     }
 });
 
-test('api-prefixed dashboard routes are normalized before page session auth', async t => {
+test('api-prefixed dashboard and usage routes are normalized before page session auth', async t => {
     const base = await startServer(t);
 
-    const stats = await fetch(`${base}/api/stats/overview`, {
+    const stats = await fetch(`${base}/api/usage/overview`, {
         headers: {accept: 'application/json'}
     });
     assert.equal(stats.status, 401);

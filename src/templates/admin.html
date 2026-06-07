@@ -439,8 +439,8 @@ function pageApiOrigin(){
 function apiUrl(path){
     if(/^https?:\/\//i.test(path))return path;
     if(path==='/login'||path.startsWith('/login?')||path==='/logout'||path.startsWith('/logout?')||path==='/dashboard'||path.startsWith('/dashboard/'))path='/api'+path;
-    else if(path==='/stats/api')path='/api/stats';
-    else if(path.startsWith('/stats/api/'))path='/api/stats/'+path.slice('/stats/api/'.length);
+    else if(path==='/stats/api')path='/api/usage';
+    else if(path.startsWith('/stats/api/'))path='/api/usage/'+path.slice('/stats/api/'.length);
     const origin=pageApiOrigin();
     return origin?origin+path:path;
 }

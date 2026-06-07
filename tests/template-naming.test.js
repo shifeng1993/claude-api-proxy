@@ -134,7 +134,8 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /function protocolBaseUrl\(\)/);
     assert.match(adminHtml, /location\.origin\}\/api\/coding/);
     assert.doesNotMatch(adminHtml, /api\.shifeng1993\.com/);
-    assert.match(adminHtml, /\/api\/stats/);
+    assert.match(adminHtml, /\/api\/usage/);
+    assert.doesNotMatch(adminHtml, /\/api\/stats/);
     assert.match(adminHtml, /const tabs=\[\['overview'/);
     assert.match(adminHtml, /enabledServices\(\)\.map\(\(\[type,title,desc,color\]\)=>serviceCard/);
     assert.match(adminHtml, /total_api_calls|apiCalls/);
