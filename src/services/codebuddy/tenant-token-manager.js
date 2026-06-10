@@ -369,10 +369,14 @@ class TenantTokenManager {
             credentialData.created_at = Math.floor(Date.now() / 1000);
         }
 
-        // 同一用户只保留最新凭证，更新而非新增
+        // 同一用户 + 同一 base_url 才视为重复凭证，更新而非新增
+        // 不同企业站（不同 base_url）即使 user_id 相同也是独立凭证
         const userId = credentialData.user_id;
+        const baseUrl = credentialData.base_url || '';
         if (userId) {
-            const existing = this.credentials.find((c) => c.data.user_id === userId);
+            const existing = this.credentials.find(
+                (c) => c.data.user_id === userId && (c.data.base_url || '') === baseUrl
+            );
             if (existing) {
                 try {
                     const recordFields = this._mapDataToRecord(credentialData);
