@@ -335,7 +335,7 @@ export function injectBehaviorRules(messages) {
         const systemStr =
             typeof originalSystem === 'string' ? originalSystem : originalSystem.map((p) => p.text ?? '').join('\n');
         // 客户端 system 已包含代理行为规则时跳过注入，避免重复
-        const alreadyHasRules = systemStr.includes('<proxy:thinking>');
+        const alreadyHasRules = systemStr.includes('<reasoning-rules>');
         // 剥离动态行（如 x-anthropic-billing-header），保持 system 前缀稳定
         // 动态行直接丢弃：它们的值每次请求都变（如 cch=xxx 哈希），
         // 即使追加到 user 消息尾部也会污染 messages 前缀导致缓存 miss
