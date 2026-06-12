@@ -82,6 +82,7 @@ function extractCacheHitTokens(usage) {
 /* ==================== 工具函数 ==================== */
 
 function sendJson(res, status, data) {
+    if (res.headersSent) return;
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
 }
@@ -1254,6 +1255,7 @@ async function handleResponsesAPI(req, res) {
                 originalModel: responsesReq.model,
                 contextKey: extractConversationKey(req, wsPayload, {tenantId}),
                 rejectUnauthorized: !upstream.skip_tls_verify,
+                autoLink: false,
                 ...tenantMeta
             });
 
@@ -1773,6 +1775,7 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             originalModel: payload.model,
             contextKey: conversationKey,
             rejectUnauthorized: !upstream.skip_tls_verify,
+            autoLink: false,
             ...tenantMeta
         });
 

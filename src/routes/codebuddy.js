@@ -69,6 +69,7 @@ function pickModelName(upstreamModel, clientModel) {
  * 发送 JSON 响应
  */
 function sendJson(res, status, data) {
+    if (res.headersSent) return;
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
 }
@@ -77,6 +78,10 @@ function sendJson(res, status, data) {
  * 发送 OpenAI 格式的错误响应
  */
 function sendOpenAIError(res, status, message, type = 'api_error') {
+    if (res.headersSent) {
+        try { res.end(); } catch {}
+        return;
+    }
     const errorResponse = {
         error: {
             message: message,

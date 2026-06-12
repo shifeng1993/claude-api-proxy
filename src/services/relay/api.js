@@ -369,6 +369,10 @@ export async function createResponsesWebSocket(payload, upstream, meta = {}, end
         `[${upstream.name}]: ${url}, model: ${payload.model || 'unknown'}, protocol: responses_ws, proxy: ${proxyMode}, ${userInfo}`
     );
 
+    // Chat→Responses 转换路径允许 auto-link（连接池自动注入 previous_response_id + 差集截断），
+    // 客户端直传 Responses 格式时不做 auto-link（input 由客户端自行管理）
+    const autoLink = meta.autoLink !== false && !payload.previous_response_id;
+
     const conn = await acquireResponsesWS({
         url,
         headers,
@@ -380,7 +384,7 @@ export async function createResponsesWebSocket(payload, upstream, meta = {}, end
         networkKey
     });
 
-    return {eventStream: sendResponsesWSRequest(conn, payload), conn};
+    return {eventStream: sendResponsesWSRequest(conn, {...payload, _autoLink: autoLink}), conn};
 }
 
 export function releaseResponsesWebSocketConnection(conn) {

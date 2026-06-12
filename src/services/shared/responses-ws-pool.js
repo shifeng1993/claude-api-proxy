@@ -14,6 +14,7 @@ class PooledConnection {
         this.idleTimer = null;
         this.contextKey = null;
         this.lastResponseId = null;
+        this.lastInputItems = null;
     }
 }
 
@@ -63,7 +64,10 @@ function bindConnectionContext(connection, contextKey, preserveResponseId = fals
     const normalizedContextKey = normalizeContextKey(contextKey);
     if (connection.contextKey !== normalizedContextKey) {
         connection.contextKey = normalizedContextKey;
-        if (!preserveResponseId) connection.lastResponseId = null;
+        if (!preserveResponseId) {
+            connection.lastResponseId = null;
+            connection.lastInputItems = null;
+        }
     }
 }
 

@@ -132,6 +132,7 @@ function extractConversationKey(req, payload) {
 }
 
 function sendJson(res, status, data) {
+    if (res.headersSent) return;
     res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(data));
 }
