@@ -26,7 +26,6 @@ import {BLOCKED_DOMAINS, getCodebuddyBaseUrl, isPersonalHost} from '../services/
 import {handleWSConnection} from '../services/shared/responses-ws-server.js';
 import logger from '../utils/logger.js';
 import {isNetworkError} from '../utils/http-client.js';
-import {sampleRequest} from '../services/coach/sampler.js';
 
 /**
  * 从上游 usage 中提取缓存命中 token 数
@@ -288,13 +287,6 @@ async function handleOpenAIChatCompletions(req, res) {
                         credit,
                         pickModelName(model, openAIPayload.model)
                     );
-                    sampleRequest(
-                        authResult.tenantId,
-                        'codebuddy',
-                        openAIPayload,
-                        null,
-                        pickModelName(model, openAIPayload.model)
-                    ).catch(() => {});
                 }
             });
         } else {
@@ -324,13 +316,6 @@ async function handleOpenAIChatCompletions(req, res) {
                     credit,
                     pickModelName(aggregated.model, openAIPayload.model)
                 );
-                sampleRequest(
-                    authResult.tenantId,
-                    'codebuddy',
-                    openAIPayload,
-                    aggregated,
-                    pickModelName(aggregated.model, openAIPayload.model)
-                ).catch(() => {});
             }
 
             const openAIResponse = {
@@ -602,13 +587,6 @@ async function handleAnthropicMessages(req, res) {
                         streamCredit,
                         pickModelName(streamModel, anthropicPayload.model)
                     );
-                    sampleRequest(
-                        authResult.tenantId,
-                        'codebuddy',
-                        anthropicPayload,
-                        null,
-                        pickModelName(streamModel, anthropicPayload.model)
-                    ).catch(() => {});
                 }
                 res.end();
             });
@@ -648,13 +626,6 @@ async function handleAnthropicMessages(req, res) {
                     credit,
                     pickModelName(aggregated.model, anthropicPayload.model)
                 );
-                sampleRequest(
-                    authResult.tenantId,
-                    'codebuddy',
-                    anthropicPayload,
-                    aggregated,
-                    pickModelName(aggregated.model, anthropicPayload.model)
-                ).catch(() => {});
             }
 
             const openAIResponse = {
@@ -928,13 +899,6 @@ async function handleResponsesAPI(req, res) {
                         streamCredit,
                         pickModelName(streamModel, responsesReq.model)
                     );
-                    sampleRequest(
-                        authResult.tenantId,
-                        'codebuddy',
-                        responsesReq,
-                        null,
-                        pickModelName(streamModel, responsesReq.model)
-                    ).catch(() => {});
                 }
                 res.end();
             });
@@ -971,13 +935,6 @@ async function handleResponsesAPI(req, res) {
                     credit,
                     pickModelName(aggregated.model, responsesReq.model)
                 );
-                sampleRequest(
-                    authResult.tenantId,
-                    'codebuddy',
-                    responsesReq,
-                    aggregated,
-                    pickModelName(aggregated.model, responsesReq.model)
-                ).catch(() => {});
             }
 
             const chatResponse = {
@@ -1074,13 +1031,6 @@ async function handleResponsesCompact(req, res) {
                 credit,
                 pickModelName(aggregated.model, compactReq.model)
             );
-            sampleRequest(
-                authResult.tenantId,
-                'codebuddy',
-                compactReq,
-                aggregated,
-                pickModelName(aggregated.model, compactReq.model)
-            ).catch(() => {});
         }
 
         const chatResponse = {

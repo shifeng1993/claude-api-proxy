@@ -231,26 +231,6 @@ test('stats APIs keep admin and superadmin scoped to their own tenant', async ()
         assert.equal(await routeStatsRequest(otherDetailReq, otherDetailRes), true);
         assert.equal(otherDetailRes.status, 403);
 
-        const adminGroupReq = {
-            method: 'GET',
-            url: '/stats/api/key-personnel?service=relay',
-            headers: sessionHeaders('alice', 'admin'),
-            socket: {remoteAddress: '127.0.0.1'}
-        };
-        const adminGroupRes = mockJsonResponse();
-        assert.equal(await routeStatsRequest(adminGroupReq, adminGroupRes), true);
-        assert.equal(adminGroupRes.status, 403);
-
-        const superAdminGroupReq = {
-            method: 'POST',
-            url: '/stats/api/coach-trigger?service=relay',
-            headers: sessionHeaders('root', 'superadmin'),
-            socket: {remoteAddress: '127.0.0.1'}
-        };
-        const superAdminGroupRes = mockJsonResponse();
-        assert.equal(await routeStatsRequest(superAdminGroupReq, superAdminGroupRes), true);
-        assert.equal(superAdminGroupRes.status, 403);
-
         assert.ok(usageWheres.some(where => where.tenant_id === 1));
         assert.ok(usageWheres.some(where => where.tenant_id === 3));
         assert.ok(usageWheres.every(where => where.tenant_id === 1 || where.tenant_id === 3));

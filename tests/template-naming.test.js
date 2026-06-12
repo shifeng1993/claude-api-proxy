@@ -103,7 +103,6 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /#\/stats\/codebuddy\/model-cache/);
     assert.doesNotMatch(adminHtml, /#\/stats\/(?:relay|codebuddy|copilot)\/trend/);
     assert.doesNotMatch(adminHtml, /#\/stats\/relay\/users/);
-    assert.doesNotMatch(adminHtml, /#\/stats\/(?:relay|codebuddy|copilot)\/coach/);
     assert.match(adminHtml, /function routeFromHash\(/);
     assert.match(adminHtml, /function syncHashRoute\(/);
     assert.match(adminHtml, /function syncStatsHash\(/);
@@ -120,10 +119,10 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /const ADMIN_STATS_TABS=\[\['monthly','月度统计'\],\['model-cache','模型分析'\]\]/);
     assert.doesNotMatch(adminHtml, /\['trend','用户趋势'\]|\['coach','使用建议'\]|趋势和使用建议|用户趋势/);
     assert.match(adminHtml, /function renderAdminStatsMonthly\(/);
-    assert.match(adminHtml, /function renderAdminStatsUsers\(/);
+    assert.doesNotMatch(adminHtml, /function renderAdminStatsUsers\(/);
     assert.match(adminHtml, /function renderAdminStatsModelCache\(/);
-    assert.match(adminHtml, /function renderAdminStatsTrend\(/);
-    assert.match(adminHtml, /function renderAdminStatsCoach\(/);
+    assert.doesNotMatch(adminHtml, /function renderAdminStatsTrend\(/);
+    assert.doesNotMatch(adminHtml, /function renderAdminStatsCoach\(/);
     assert.doesNotMatch(adminHtml, /function renderStatsSummaryCards\(/);
     assert.match(adminHtml, /function renderStatsServiceTabs\(/);
     assert.match(adminHtml, /function switchAdminStatsService\(/);
@@ -132,19 +131,19 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /function defaultStatsMonth\(/);
     assert.match(adminHtml, /function statsMonthRange\(/);
     assert.match(adminHtml, /function applyAdminStatsMonth\(/);
-    assert.match(adminHtml, /function searchAdminStatsUsers\(/);
-    assert.match(adminHtml, /function clearAdminStatsUserSearch\(/);
-    assert.match(adminHtml, /function applyAdminUserDateRange\(/);
+    assert.doesNotMatch(adminHtml, /function searchAdminStatsUsers\(/);
+    assert.doesNotMatch(adminHtml, /function clearAdminStatsUserSearch\(/);
+    assert.doesNotMatch(adminHtml, /function applyAdminUserDateRange\(/);
     assert.match(adminHtml, /function applyAdminModelDateRange\(/);
-    assert.match(adminHtml, /function setAdminUserTrendFilter\(/);
+    assert.doesNotMatch(adminHtml, /function setAdminUserTrendFilter\(/);
     assert.doesNotMatch(adminHtml, /oninput="updateAdminStatsSearch/);
     assert.match(adminHtml, /\['monthly'/);
-    assert.match(adminHtml, /id="adminUserStartDate"/);
-    assert.match(adminHtml, /id="adminUserEndDate"/);
+    assert.doesNotMatch(adminHtml, /id="adminUserStartDate"/);
+    assert.doesNotMatch(adminHtml, /id="adminUserEndDate"/);
     assert.match(adminHtml, /id="adminModelStartDate"/);
     assert.match(adminHtml, /id="adminModelEndDate"/);
-    assert.match(adminHtml, /仅工作日/);
-    assert.match(adminHtml, /adminTrendWorkdayOnly/);
+    assert.doesNotMatch(adminHtml, /仅工作日/);
+    assert.doesNotMatch(adminHtml, /adminTrendWorkdayOnly/);
     assert.match(adminHtml, /输入Tokens\(命中缓存\)/);
     assert.match(adminHtml, /输入Tokens\(未命中缓存\)/);
     assert.match(adminHtml, /缓存命中率/);
@@ -154,9 +153,8 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /endDate/);
     assert.match(adminHtml, /p\.set\('month',S\.adminStatsMonth\)/);
     assert.match(adminHtml, /\/stats\/api\/model-cache-stats/);
-    assert.match(adminHtml, /\/stats\/api\/daily-trend/);
-    assert.match(adminHtml, /\/stats\/api\/key-personnel/);
-    assert.match(adminHtml, /\/stats\/api\/coach-trigger/);
+    assert.doesNotMatch(adminHtml, /\/stats\/api\/daily-trend/);
+    assert.doesNotMatch(adminHtml, /\/stats\/api\/key-personnel/);
     assert.match(adminHtml, /adminStatsCharts/);
     assert.match(adminHtml, /function enabledServices\(\)/);
     assert.match(adminHtml, /function canUseService\(type\)/);
@@ -281,14 +279,12 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(loginHtml, /function openForgotPassword\(\)/);
     const forgotPasswordModal = loginHtml.match(/id="forgotPasswordModal"[\s\S]*?<script>/)?.[0] || '';
     assert.doesNotMatch(forgotPasswordModal, /电话|手机|邮箱|email|mail|tel/i);
-    assert.match(adminHtml, /key-personnel/);
-    assert.match(adminHtml, /coach-assessment/);
-    assert.match(adminHtml, /coach-samples/);
-    assert.match(adminHtml, /coach-trigger/);
+    assert.doesNotMatch(adminHtml, /key-personnel/);
+    assert.doesNotMatch(adminHtml, /coach-assessment|coach-samples|coach-trigger/);
     assert.doesNotMatch(adminHtml, /disabled-personnel|disabled-trigger/);
     assert.match(statsRoute, /getSessionUser/);
-    assert.match(statsRoute, /function isStatsAdmin\(req\)/);
-    assert.match(statsRoute, /requireStatsAdmin\(req, res\)/);
+    assert.doesNotMatch(statsRoute, /function isStatsAdmin\(req\)/);
+    assert.doesNotMatch(statsRoute, /requireStatsAdmin\(req, res\)/);
     assert.match(statsRoute, /function buildDateRangeWhere\(/);
     assert.match(statsRoute, /getStatsService\(url\)/);
     assert.match(statsRoute, /getOverviewStats\(service, startDate, endDate, tenantId\)/);
@@ -305,7 +301,7 @@ test('unified admin exposes inline event handlers on window', () => {
     const adminHtml = readFileSync(join(root, 'src/templates/admin.html'), 'utf8');
     const scripts = extractInlineScripts(adminHtml);
 
-    for (const fn of ['showConsole', 'showFeedback', 'showStats', 'showUsers', 'routeFromHash', 'openUserEdit', 'saveUserEdit', 'searchAdminStatsUsers', 'clearAdminStatsUserSearch', 'applyAdminStatsMonth', 'applyAdminUserDateRange', 'applyAdminModelDateRange', 'setAdminUserTrendFilter']) {
+    for (const fn of ['showConsole', 'showFeedback', 'showStats', 'showUsers', 'routeFromHash', 'openUserEdit', 'saveUserEdit', 'applyAdminStatsMonth', 'applyAdminModelDateRange', 'queryAdminModelCache', 'openAdminModelCacheDaily']) {
         assert.match(scripts, new RegExp(`Object\\.assign\\(window,[\\s\\S]*\\b${fn}\\b`));
     }
 

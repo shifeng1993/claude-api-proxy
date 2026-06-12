@@ -24,10 +24,6 @@ export const Tenant = sequelize.define('tenants', {
     username: {
         type: DataTypes.STRING
     },
-    is_key_personnel: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false
-    },
     password_hash: {
         type: DataTypes.STRING(255),
         allowNull: true

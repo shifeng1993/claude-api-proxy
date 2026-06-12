@@ -85,7 +85,6 @@ class TenantManager {
       total_input_tokens: t.total_input_tokens || 0,
       total_output_tokens: t.total_output_tokens || 0,
       total_cache_hit_tokens: t.total_cache_hit_tokens || 0,
-      is_key_personnel: !!t.is_key_personnel,
       created_at: t.created_at
     };
   }
@@ -373,7 +372,6 @@ class TenantManager {
       apiKeyPrefix: tenant.api_key_prefix,
       apiKeyPlain: tenant.api_key_plain || null,
       createdAt: tenant.created_at,
-      is_key_personnel: !!tenant.is_key_personnel,
       upstreamCount,
       enabledCount,
       customApiCallCount: tenant.total_api_calls || 0,

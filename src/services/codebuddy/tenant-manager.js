@@ -91,7 +91,6 @@ class TenantManager {
             total_output_tokens: tenant.total_output_tokens || 0,
             total_cache_hit_tokens: tenant.total_cache_hit_tokens || 0,
             total_credit: tenant.total_credit || 0,
-            is_key_personnel: !!tenant.is_key_personnel,
             state: tenant.state ? {
                 current_index: tenant.state.current_index,
                 disabled_indexes: tenant.state.disabled_indexes,

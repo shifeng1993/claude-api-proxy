@@ -6,8 +6,6 @@ import {TenantState} from './tenant-state.js';
 import {TenantServiceProfile} from './tenant-service-profile.js';
 import {TenantCopilotCredential} from './tenant-copilot-credential.js';
 import {Feedback} from './feedback.js';
-import {ApiSample} from './api-sample.js';
-import {AiAssessment} from './ai-assessment.js';
 
 // Existing associations
 Tenant.hasMany(TenantCredential, {foreignKey: 'tenant_id', as: 'credentials', onDelete: 'CASCADE'});
@@ -29,19 +27,10 @@ TenantServiceProfile.belongsTo(Tenant, {foreignKey: 'tenant_id', as: 'tenant'});
 Tenant.hasMany(TenantCopilotCredential, {foreignKey: 'tenant_id', as: 'copilotCredentials', onDelete: 'CASCADE'});
 TenantCopilotCredential.belongsTo(Tenant, {foreignKey: 'tenant_id', as: 'tenant'});
 
-// Existing
-Tenant.hasMany(ApiSample, {foreignKey: 'tenant_id', as: 'apiSamples', onDelete: 'CASCADE'});
-ApiSample.belongsTo(Tenant, {foreignKey: 'tenant_id', as: 'tenant'});
-
-Tenant.hasMany(AiAssessment, {foreignKey: 'tenant_id', as: 'aiAssessments', onDelete: 'CASCADE'});
-AiAssessment.belongsTo(Tenant, {foreignKey: 'tenant_id', as: 'tenant'});
-
 export const models = {
     Tenant, TenantCredential, TenantUpstream, TenantDailyUsage, TenantState,
     TenantServiceProfile, TenantCopilotCredential,
-    Feedback, ApiSample, AiAssessment
+    Feedback
 };
 
 export {Feedback};
-export {ApiSample};
-export {AiAssessment};

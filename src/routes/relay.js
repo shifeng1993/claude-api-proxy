@@ -23,7 +23,6 @@ import {
     RelayUpstreamError
 } from '../services/relay/api.js';
 import {readBody, isNetworkError} from '../utils/http-client.js';
-import {sampleRequest} from '../services/coach/sampler.js';
 import {
     anthropicToOpenAI,
     openAIToAnthropic,
@@ -391,9 +390,6 @@ function recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens = 0, mo
     unifiedTenantManager.incrementApiCallCount(tenantId, 'relay');
     unifiedTenantManager.incrementTokenUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens);
     unifiedTenantManager.recordDailyUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens, 0, model);
-    if (samplePayload) {
-        sampleRequest(tenantId, 'relay', samplePayload, sampleResponse, model).catch(() => {});
-    }
 }
 
 /* ==================== 处理函数 ==================== */
@@ -484,7 +480,6 @@ async function handleOpenAIChatCompletions(req, res) {
                 cacheHitTokens,
                 relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', openAIPayload, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, chatResponse);
             return;
         }
@@ -651,7 +646,6 @@ async function handleOpenAIChatCompletions(req, res) {
                 parsed.usage?.input_tokens_details?.cached_tokens || 0,
                 relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', openAIPayload, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, responsesResponseToChat(parsed));
             return;
         }
@@ -692,7 +686,6 @@ async function handleOpenAIChatCompletions(req, res) {
                 cacheHitTokens,
                 relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', openAIPayload, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, parsed);
         }
     } catch (error) {
@@ -815,7 +808,6 @@ async function handleAnthropicMessages(req, res) {
                 extractAnthropicCacheHitTokens(parsed.usage),
                 parsed.model || relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', anthropicPayload, parsed, parsed.model || relayStatsModel).catch(() => {});
             sendJson(res, 200, parsed);
             return;
         }
@@ -864,7 +856,6 @@ async function handleAnthropicMessages(req, res) {
             const completedResponse = await collectResponsesWebSocketResponse(wsResult);
             recordResponsesUsage(tenantId, completedResponse.usage, relayStatsModel);
             const chatResponse = responsesResponseToChat(completedResponse);
-            sampleRequest(tenantId, 'relay', anthropicPayload, completedResponse, relayStatsModel).catch(() => {});
             sendJson(res, 200, openAIToAnthropic(chatResponse));
             return;
         }
@@ -907,7 +898,6 @@ async function handleAnthropicMessages(req, res) {
             const parsed = JSON.parse(responseBody);
             recordResponsesUsage(tenantId, parsed.usage, relayStatsModel);
             const chatResponse = responsesResponseToChat(parsed);
-            sampleRequest(tenantId, 'relay', anthropicPayload, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, openAIToAnthropic(chatResponse));
             return;
         }
@@ -1062,7 +1052,6 @@ async function handleAnthropicMessages(req, res) {
             const outputTokens = aggregated.usage ? aggregated.usage.completion_tokens || 0 : 0;
             const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
             recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, relayStatsModel);
-            sampleRequest(tenantId, 'relay', anthropicPayload, aggregated, relayStatsModel).catch(() => {});
 
             const openAIResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -1246,7 +1235,6 @@ async function handleResponsesAPI(req, res) {
                 chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
                 relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', responsesReq, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, chatResponseToResponses(chatResponse));
             return;
         }
@@ -1494,7 +1482,6 @@ async function handleResponsesAPI(req, res) {
             const outputTokens = aggregated.usage?.completion_tokens || 0;
             const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
             recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, relayStatsModel);
-            sampleRequest(tenantId, 'relay', responsesReq, aggregated, relayStatsModel).catch(() => {});
 
             const chatResponse = {
                 id: aggregated.id || `chatcmpl_${Date.now()}`,
@@ -1581,7 +1568,6 @@ async function handleResponsesCompact(req, res) {
                 chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
                 relayStatsModel
             );
-            sampleRequest(tenantId, 'relay', compactReq, parsed, relayStatsModel).catch(() => {});
             sendJson(res, 200, chatResponseToCompact(chatResponse));
             return;
         }
@@ -1679,7 +1665,6 @@ async function handleResponsesCompact(req, res) {
         const outputTokens = aggregated.usage?.completion_tokens || 0;
         const cacheHitTokens = extractCacheHitTokens(aggregated.usage);
         recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, relayStatsModel);
-        sampleRequest(tenantId, 'relay', compactReq, aggregated, relayStatsModel).catch(() => {});
 
         const chatResponse = {
             id: aggregated.id || `chatcmpl_${Date.now()}`,

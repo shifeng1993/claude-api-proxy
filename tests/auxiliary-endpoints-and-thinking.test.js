@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readFileSync} from 'fs';
+import {existsSync, readFileSync} from 'fs';
 import {join} from 'path';
 import {
     sanitizeAnthropicPayload,
@@ -160,11 +160,4 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
 
     assert.doesNotMatch(source, /getProtocolErrorMessage\(upstream, 'anthropic', '\/relay\/v1\/responses'\)/);
     assert.doesNotMatch(source, /getProtocolErrorMessage\(upstream, 'responses', '\/relay\/anthropic\/v1\/messages'\)/);
-});
-
-test('coach analyzer API key is environment-driven', () => {
-    const source = readFileSync(join(root, 'src/services/coach/config.js'), 'utf8');
-
-    assert.match(source, /process\.env\.COACH_API_KEY/);
-    assert.doesNotMatch(source, /sk-relay-/);
 });
