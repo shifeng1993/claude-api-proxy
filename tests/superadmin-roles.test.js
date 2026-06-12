@@ -10,6 +10,7 @@ import {
     deleteLocalUser
 } from '../src/services/shared/local-user-manager.js';
 import {ensureAdminFromEnv} from '../src/services/shared/local-auth.js';
+import {canManageDashboardTenant} from '../src/routes/dashboard-frontend.js';
 
 function patchTenant(t, overrides) {
     const original = {};
@@ -32,7 +33,7 @@ function tenant(row) {
     };
 }
 
-test('local user listing hides superadmin and limits admin scope to normal users', async t => {
+test('local user listing hides superadmin and lets admins view peer admins and users', async t => {
     patchTenant(t, {
         findAll: async () => [
             tenant({username: 'root', role: 'superadmin'}),
@@ -42,7 +43,7 @@ test('local user listing hides superadmin and limits admin scope to normal users
     });
 
     assert.deepEqual((await listLocalUsers('superadmin')).map(user => user.username), ['admin-a', 'alice']);
-    assert.deepEqual((await listLocalUsers('admin')).map(user => user.username), ['alice']);
+    assert.deepEqual((await listLocalUsers('admin')).map(user => user.username), ['admin-a', 'alice']);
 });
 
 test('only superadmin can create administrator accounts', async t => {
@@ -212,4 +213,13 @@ test('unified tenant manager treats superadmin as administrator', () => {
     } finally {
         unifiedTenantManager.tenantsCache = original;
     }
+});
+
+test('dashboard tenant operations let admins manage only ordinary users', () => {
+    assert.equal(canManageDashboardTenant('superadmin', {role: 'admin'}), true);
+    assert.equal(canManageDashboardTenant('superadmin', {role: 'user'}), true);
+    assert.equal(canManageDashboardTenant('superadmin', {role: 'superadmin'}), false);
+    assert.equal(canManageDashboardTenant('admin', {role: 'user'}), true);
+    assert.equal(canManageDashboardTenant('admin', {role: 'admin'}), false);
+    assert.equal(canManageDashboardTenant('admin', {role: 'superadmin'}), false);
 });

@@ -350,7 +350,7 @@
     <main class="content">
         <div class="topbar">
             <div><h1 id="pageTitle">服务控制台</h1><p id="pageSubtitle">统一管理 API Key、上游和服务凭证</p></div>
-            <div class="user"><div class="avatar" id="avatar">U</div><span id="username"></span><button class="btn btn-ghost btn-sm" onclick="logout()">退出</button></div>
+            <div class="user"><div class="avatar" id="avatar">U</div><span id="username"></span><button class="btn btn-ghost btn-sm" id="changeOwnPasswordBtn" onclick="openOwnPassword()">修改密码</button><button class="btn btn-ghost btn-sm" onclick="logout()">退出</button></div>
         </div>
         <div id="main"><div class="empty">正在加载控制台...</div></div>
     </main>
@@ -414,6 +414,14 @@
     <div class="dialog-foot"><button class="btn" onclick="closeModal('passwordModal')">取消</button><button class="btn btn-primary" onclick="resetUserPassword()">确认重置</button></div>
 </div></div>
 
+<div class="modal" id="changeOwnPasswordModal"><div class="dialog">
+    <div class="card-head"><div><h2>修改密码</h2><div class="muted">需要输入当前密码，修改后请使用新密码登录。</div></div><button class="btn btn-ghost" onclick="closeModal('changeOwnPasswordModal')">关闭</button></div>
+    <div class="field"><label>当前密码</label><input id="ownCurrentPassword" type="password" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="请输入当前密码"></div>
+    <div class="field"><label>新密码</label><input id="ownNewPassword" type="password" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="至少 8 个字符"></div>
+    <div class="field"><label>确认新密码</label><input id="ownConfirmPassword" type="password" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="再次输入新密码"></div>
+    <div class="dialog-foot"><button class="btn" onclick="closeModal('changeOwnPasswordModal')">取消</button><button class="btn btn-primary" onclick="changeOwnPassword()">保存</button></div>
+</div></div>
+
 <div class="modal" id="copilotCredentialModal"><div class="dialog">
     <div class="card-head"><div><h2 id="copilotCredentialTitle">新增 Copilot 凭据</h2><div class="muted">网络配置仅作用于当前租户的这条 GitHub 凭据。</div></div><button class="btn btn-ghost" onclick="closeModal('copilotCredentialModal')">关闭</button></div>
     <div class="grid grid-2">
@@ -462,7 +470,7 @@
 
 <div class="toast" id="toast"></div>
 <script>
-const S={me:null,tenants:[],tenant:null,tab:'relay',statsTab:'relay',statsPage:'monthly',adminStats:null,adminStatsSearch:'',adminStatsPageNo:1,adminStatsPageSize:20,adminStatsSort:'apiCalls',adminStatsSortDir:'desc',adminStatsMonth:'',adminStatsStartDate:'',adminStatsEndDate:'',adminModelStartDate:'',adminModelEndDate:'',adminModelPageNo:1,adminTrendPageNo:1,adminCoachPageNo:1,adminTrendWorkdayOnly:true,adminModelCache:[],adminSelectedCoach:null,upstreams:[],credentials:[],currentCredential:0,codebuddyOptions:null,codebuddyCustomSiteLabels:{},editingUpstream:null,oauthState:null,oauthTimer:null,passwordUser:null,editingUser:null,copilotCredentials:[],editingCopilot:null,copilotAuthId:null,copilotDeviceCode:null,copilotAuthTimer:null,feedbackItems:[],feedbackPage:1,feedbackPageSize:10,feedbackTotal:0,relayTestResults:{},relayTesting:false};
+const S={me:null,tenants:[],tenant:null,tab:'relay',statsTab:'relay',statsPage:'monthly',adminStats:null,adminStatsSearch:'',adminStatsPageNo:1,adminStatsPageSize:20,adminStatsSort:'apiCalls',adminStatsSortDir:'desc',adminStatsMonth:'',adminStatsStartDate:'',adminStatsEndDate:'',adminModelStartDate:'',adminModelEndDate:'',adminModelPageNo:1,adminTrendPageNo:1,adminCoachPageNo:1,adminTrendWorkdayOnly:true,adminModelCache:[],adminSelectedCoach:null,upstreams:[],credentials:[],currentCredential:0,codebuddyOptions:null,codebuddyCustomSiteLabels:{},editingUpstream:null,oauthState:null,oauthTimer:null,passwordUser:null,editingUser:null,copilotCredentials:[],editingCopilot:null,copilotAuthId:null,copilotDeviceCode:null,copilotAuthTimer:null,feedbackItems:[],feedbackPage:1,feedbackPageSize:10,feedbackTotal:0,relayTestResults:{},relayTesting:false,relaySingleTesting:null};
 const HASH_ROUTES=['#/relay','#/codebuddy','#/copilot','#/stats/relay/monthly','#/stats/relay/model-cache','#/stats/codebuddy/monthly','#/stats/codebuddy/model-cache','#/stats/copilot/monthly','#/stats/copilot/model-cache'];
 const ADMIN_STATS_TABS=[['monthly','月度统计'],['model-cache','模型分析']];
 const ADMIN_STATS_SERVICES=[['relay','Relay'],['codebuddy','CodeBuddy'],['copilot','Copilot']];
@@ -490,12 +498,28 @@ function apiUrl(path){
     return origin?origin+path:path;
 }
 async function api(url,options={}){
-    const headers=options.body instanceof FormData?{}:{'Content-Type':'application/json'};
-    const response=await fetch(apiUrl(url),{credentials:'include',headers,...options});
+    const {timeoutMs,signal,...fetchOptions}=options;
+    const headers=fetchOptions.body instanceof FormData?{}:{'Content-Type':'application/json'};
+    const response=await fetchWithTimeout(apiUrl(url),{credentials:'include',headers,...fetchOptions,signal},timeoutMs);
     if(response.status===401){location.href='/login';throw new Error('登录已过期');}
     const text=await response.text();let data={};try{data=text?JSON.parse(text):{};}catch{data={error:text||'请求失败'};}
     if(!response.ok)throw new Error(data.error||data.message||`HTTP ${response.status}`);
     return data;
+}
+async function fetchWithTimeout(url,options={},timeoutMs=0){
+    if(!timeoutMs)return fetch(url,options);
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    const signal=options.signal;
+    if(signal)signal.addEventListener('abort',()=>controller.abort(),{once:true});
+    try{
+        return await fetch(url,{...options,signal:controller.signal});
+    }catch(error){
+        if(error?.name==='AbortError')throw new Error(`请求超时（${Math.round(timeoutMs/1000)} 秒）`);
+        throw error;
+    }finally{
+        clearTimeout(timer);
+    }
 }
 function syncHashRoute(view,detail,options={}){
     const hash=detail?`#/${view}/${detail}`:`#/${view}`;
@@ -536,6 +560,7 @@ async function init(){
     try{
         S.me=await api('/dashboard/me');document.getElementById('username').textContent=S.me.username;
         document.getElementById('avatar').textContent=(S.me.username||'U').slice(0,1).toUpperCase();
+        document.getElementById('changeOwnPasswordBtn').style.display=S.me.canChangeOwnPassword===false?'none':'';
         if(S.me.isAdmin){document.getElementById('nav-users').style.display='';}
         document.getElementById('newRoleAdminOption').hidden=S.me.role!=='superadmin';
         document.getElementById('editRoleAdminOption').hidden=S.me.role!=='superadmin';
@@ -578,7 +603,7 @@ function renderApiKeyCard(){
 async function copyKey(){const text=S.tenant.api_key_plain||'';try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);}else{const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;left:-9999px;opacity:0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);}toast('API Key 已复制');}catch{toast('复制失败','error');}}
 async function regenerateKey(){if(!confirm('重新生成后，旧 API Key 会立即失效。确认继续？'))return;try{const d=await api(`/dashboard/tenants/${S.tenant.id}/regenerate-key`,{method:'POST'});S.tenant.api_key_plain=d.api_key;S.tenant.api_key_prefix=d.api_key_prefix;switchTab(S.tab||'relay',{skipHash:true});toast('API Key 已重新生成');}catch(e){toast(e.message,'error');}}
 function mapTestResults(results,key='index'){const out={};(results||[]).forEach(r=>{const id=r?.[key]??r?.index;if(id!==undefined&&id!==null)out[id]=r;});return out;}
-function testResultBadge(result){if(!result)return '';return `<span class="badge ${result.success?'on':'off'}">${result.success?'测试通过':'测试失败'}</span>`;}
+function testResultBadge(result){if(!result)return '';if(result.pending)return '<span class="badge">测试中...</span>';return `<span class="badge ${result.success?'on':'off'}">${result.success?'测试通过':'测试失败'}</span>`;}
 function renderTestResultMessage(result){if(!result)return '';const message=result.message||result.error||'';return message?`<p class="test-result ${result.success?'ok':'bad'}">${esc(message)}</p>`:'';}
 function showBatchTestToast(results){const ok=(results||[]).filter(r=>r.success).length;toast(`批量测试完成：${ok}/${(results||[]).length} 可用`,ok===(results||[]).length?'success':'error');}
 function renderRelay(){document.getElementById('tabBody').innerHTML=`<div class="content-with-anchor">${renderAnchorNav([['section-relay-list','上游配置列表'],['section-guide','使用指南'],['section-custom-stats','自定义统计面板']])}<div id="section-relay-list" class="card"><div class="card-head"><div><h2>Relay 上游</h2><div class="muted">请求仅发送到当前活跃上游，可手动切换使用的配置。</div></div><div class="actions"><button class="btn" id="relayBatchTestBtn" ${S.relayTesting?'disabled':''} onclick="testAllUpstreams()">${S.relayTesting?'测试中...':'批量测试'}</button><button class="btn btn-primary" onclick="openUpstream()">添加上游</button></div></div><div class="list" id="relayList"><div class="empty">正在加载...</div></div></div>${serviceInsights('relay')}</div>`;}
@@ -588,6 +613,7 @@ function renderRelayList(){
     if(!S.upstreams.length){el.innerHTML='<div class="empty">还没有上游。添加第一个上游后，Relay 即可开始转发请求。</div>';return;}
     el.innerHTML=S.upstreams.map((u,i)=>{const result=S.relayTestResults[i];const protocol=esc(u.protocol||'openai');const wsMode=u.protocol==='responses_ws'?` · WS ${esc(u.ws_mode||'ctx_pool')}`:'';return `<div class="item ${u.is_active?'active':''}"><div><h3>${esc(u.name||'未命名')} ${u.is_active?'<span class="badge on">活跃</span>':''} ${testResultBadge(result)}</h3><p>${esc(u.base_url)} · ${protocol}${wsMode}</p><p>${u.enabled?'已启用':'已停用'} · Key ${esc(u.api_key_preview||'未配置')}${u.proxy?' · 代理 '+esc(u.proxy):''}</p>${renderTestResultMessage(result)}</div><div class="actions">
         ${!u.is_active&&u.enabled?`<button class="btn btn-sm" onclick="setActive(${i})">设为活跃</button>`:''}
+        <button class="btn btn-sm" ${S.relayTesting||S.relaySingleTesting===i?'disabled':''} onclick="testUpstream(${i})">${S.relaySingleTesting===i?'测试中...':'测试'}</button>
         <button class="btn btn-sm" onclick="openUpstream(${i})">编辑</button>
         <button class="btn btn-sm" onclick="cloneUpstream(${i})">复制</button><button class="btn btn-sm" ${i===0?'disabled':''} onclick="moveUpstream(${i},'up')">上移</button>
         <button class="btn btn-sm" ${i===S.upstreams.length-1?'disabled':''} onclick="moveUpstream(${i},'down')">下移</button><button class="btn btn-danger btn-sm" onclick="deleteUpstream(${i})">删除</button>
@@ -908,8 +934,8 @@ async function showUsers(){
     const options=arguments[0]||{};if(!options.skipHash)syncHashRoute('users');
     setNav('users');document.getElementById('pageTitle').textContent='用户管理';document.getElementById('pageSubtitle').textContent='管理本地登录账号与用户端点';
     const serviceLabels={relay:'Relay',codebuddy:'CodeBuddy',copilot:'Copilot'};
-    const serviceToggles=u=>u.tenant?Object.entries(serviceLabels).map(([type,label])=>{const p=profile(u.tenant,type);return `<label class="actions" style="gap:6px;margin-right:10px"><input class="toggle user-service-toggle" type="checkbox" autocomplete="off" ${p.enabled?'checked':''} onchange="toggleUserService(${u.tenant.id},'${type}',this.checked)"><span>${label}</span></label>`;}).join(''):'<span class="muted">未绑定配置</span>';
-    try{const d=await api('/dashboard/users');const isLdap=d.authMode==='ldap';const canCreate=d.capabilities?.canCreate!==false;const canResetPassword=d.capabilities?.canResetPassword!==false;const createButton=canCreate?'<button class="btn btn-primary" onclick="openCreateUser()">创建用户</button>':'';document.getElementById('main').innerHTML=`<div class="card"><div class="card-head"><div><h2>${isLdap?'LDAP 用户':'本地用户'}</h2><div class="muted">${isLdap?'LDAP 模式下展示已登录过的 LDAP 用户，可编辑角色和显示名，也可删除用户记录。':'超级管理员账号不会出现在列表中；超级管理员可创建管理员和普通用户，管理员只管理普通用户。'}</div></div>${createButton}</div><div class="table-wrap"><table><thead><tr><th>用户名</th><th>显示名</th><th>角色</th><th>服务端点</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${(d.users||[]).map(u=>{const canManage=S.me.role==='superadmin'||u.role!=='admin';return `<tr><td>${esc(u.username)}</td><td>${esc(u.displayName||'-')}</td><td>${esc(u.role)}</td><td><div class="actions">${serviceToggles(u)}</div></td><td>${u.createdAt?new Date(u.createdAt*1000).toLocaleString():'-'}</td><td><div class="actions">${canManage?`<button class="btn btn-sm" onclick="openUserEdit(${jsArg(u.username)},${jsArg(u.displayName||'')},${jsArg(u.role||'user')})">编辑</button>${canResetPassword?`<button class="btn btn-sm" onclick="openPassword(${jsArg(u.username)})">重置密码</button>`:''}<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(u.username)})">删除</button>`:'-'}</div></td></tr>`;}).join('')}</tbody></table></div></div>`;}catch(e){toast(e.message,'error');}
+    const serviceToggles=(u,canManage)=>u.tenant?Object.entries(serviceLabels).map(([type,label])=>{const p=profile(u.tenant,type);return `<label class="actions" style="gap:6px;margin-right:10px"><input class="toggle user-service-toggle" type="checkbox" autocomplete="off" ${p.enabled?'checked':''} ${canManage?`onchange="toggleUserService(${u.tenant.id},'${type}',this.checked)"`:'disabled'}><span>${label}</span></label>`;}).join(''):'<span class="muted">未绑定配置</span>';
+    try{const d=await api('/dashboard/users');const isLdap=d.authMode==='ldap';const canCreate=d.capabilities?.canCreate!==false;const canResetPassword=d.capabilities?.canResetPassword!==false;const createButton=canCreate?'<button class="btn btn-primary" onclick="openCreateUser()">创建用户</button>':'';document.getElementById('main').innerHTML=`<div class="card"><div class="card-head"><div><h2>${isLdap?'LDAP 用户':'本地用户'}</h2><div class="muted">${isLdap?'LDAP 模式下展示已登录过的 LDAP 用户，可编辑角色和显示名，也可删除用户记录。':'超级管理员账号不会出现在列表中；管理员可查看同级管理员和普通用户，但只能操作普通用户。'}</div></div>${createButton}</div><div class="table-wrap"><table><thead><tr><th>用户名</th><th>显示名</th><th>角色</th><th>服务端点</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${(d.users||[]).map(u=>{const canManage=S.me.role==='superadmin'||u.role!=='admin';return `<tr><td>${esc(u.username)}</td><td>${esc(u.displayName||'-')}</td><td>${esc(u.role)}</td><td><div class="actions">${serviceToggles(u,canManage)}</div></td><td>${u.createdAt?new Date(u.createdAt*1000).toLocaleString():'-'}</td><td><div class="actions">${canManage?`<button class="btn btn-sm" onclick="openUserEdit(${jsArg(u.username)},${jsArg(u.displayName||'')},${jsArg(u.role||'user')})">编辑</button>${canResetPassword?`<button class="btn btn-sm" onclick="openPassword(${jsArg(u.username)})">重置密码</button>`:''}<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(u.username)})">删除</button>`:'-'}</div></td></tr>`;}).join('')}</tbody></table></div></div>`;}catch(e){toast(e.message,'error');}
 }
 function openCreateUser(){document.getElementById('userModal').classList.add('show');}
 async function toggleUserService(tenantId,type,enabled){try{await api(`/dashboard/tenants/${tenantId}/services/${type}`,{method:'PUT',body:JSON.stringify({enabled})});await showUsers();if(S.tenant?.id===tenantId)await loadMyTenant();toast(`${type} 已${enabled?'启用':'停用'}`);}catch(e){toast(e.message,'error');await showUsers();}}
@@ -919,8 +945,37 @@ async function saveUserEdit(){try{await api(`/dashboard/users/${encodeURICompone
 function openPassword(username){S.passwordUser=username;passwordTarget.textContent='账号：'+username;resetPassword.value='';document.getElementById('passwordModal').classList.add('show');}
 async function resetUserPassword(){try{await api(`/dashboard/users/${encodeURIComponent(S.passwordUser)}/password`,{method:'PUT',body:JSON.stringify({password:resetPassword.value})});closeModal('passwordModal');toast('密码已重置');}catch(e){toast(e.message,'error');}}
 async function deleteUser(username){if(!confirm(`确认删除用户 ${username}？关联配置数据也会被删除。`))return;try{await api(`/dashboard/users/${encodeURIComponent(username)}`,{method:'DELETE'});await loadMyTenant();await showUsers();toast('用户已删除');}catch(e){toast(e.message,'error');}}
+function openOwnPassword(){ownCurrentPassword.value='';ownNewPassword.value='';ownConfirmPassword.value='';document.getElementById('changeOwnPasswordModal').classList.add('show');}
+async function changeOwnPassword(){
+  const currentPassword=ownCurrentPassword.value;
+  const newPassword=ownNewPassword.value;
+  const confirmPassword=ownConfirmPassword.value;
+  if(newPassword!==confirmPassword)return toast('两次输入的新密码不一致','error');
+  try{
+    await api('/dashboard/me/password',{method:'PUT',body:JSON.stringify({currentPassword,newPassword})});
+    closeModal('changeOwnPasswordModal');
+    toast('密码已修改');
+  }catch(e){toast(e.message,'error');}
+}
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 function setRelayTesting(loading){S.relayTesting=!!loading;const btn=document.getElementById('relayBatchTestBtn');if(btn){btn.disabled=S.relayTesting;btn.textContent=S.relayTesting?'测试中...':'批量测试';}}
+async function testUpstream(i){
+  if(S.relayTesting||S.relaySingleTesting!==null)return;
+  S.relaySingleTesting=i;
+  S.relayTestResults[i]={index:i,name:S.upstreams[i]?.name||`#${i+1}`,pending:true,message:'正在测试连接...'};
+  renderRelayList();
+  try{
+    const r=await api(`/dashboard/tenants/${S.tenant.id}/upstreams/test`,{method:'POST',body:JSON.stringify({index:i}),timeoutMs:35000});
+    S.relayTestResults[r.index??i]=r;
+    toast(r.success?'测试通过':'测试失败',r.success?'success':'error');
+  }catch(e){
+    S.relayTestResults[i]={index:i,name:S.upstreams[i]?.name||`#${i+1}`,success:false,message:e.message};
+    toast(e.message,'error');
+  }finally{
+    S.relaySingleTesting=null;
+    renderRelayList();
+  }
+}
 async function testAllUpstreams(){
   if(S.relayTesting)return;
   setRelayTesting(true);
@@ -932,7 +987,7 @@ async function testAllUpstreams(){
   let done=0,ok=0;
   toast('正在批量测试连接...');
   try{
-    const resp=await fetch(`/dashboard/tenants/${S.tenant.id}/upstreams/test-all`,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'}});
+    const resp=await fetchWithTimeout(apiUrl(`/dashboard/tenants/${S.tenant.id}/upstreams/test-all`),{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'}},40000);
     const reader=resp.body.getReader();
     const decoder=new TextDecoder();
     let buf='';
@@ -965,8 +1020,8 @@ async function testAllUpstreams(){
   finally{setRelayTesting(false);}
 }
 Object.assign(window,{
-    showConsole,showFeedback,showStats,showUsers,routeFromHash,syncHashRoute,syncStatsHash,scrollToSection,logout,switchTab,copyKey,regenerateKey,
-    openUpstream,saveUpstream,setActive,testAllUpstreams,cloneUpstream,moveUpstream,deleteUpstream,toggleApiKeyVisibility,
+    showConsole,showFeedback,showStats,showUsers,routeFromHash,syncHashRoute,syncStatsHash,scrollToSection,logout,switchTab,copyKey,regenerateKey,openOwnPassword,changeOwnPassword,
+    openUpstream,saveUpstream,setActive,testUpstream,testAllUpstreams,cloneUpstream,moveUpstream,deleteUpstream,toggleApiKeyVisibility,
     openOAuth,startOAuth,closeOAuth,credentialAction,moveCodebuddyCredential,resetServiceStats,refreshServiceStats,loadServiceStats,
     copyGuideConfig,copyGuideOpenAIUrl,copyGuideResponsesUrl,copyTextFromElement,
     openCopilotCredential,saveCopilotCredential,setCopilotActive,toggleCopilotCredential,deleteCopilotCredential,

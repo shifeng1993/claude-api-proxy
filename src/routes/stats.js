@@ -31,8 +31,7 @@ function isStatsAdmin(req) {
 }
 
 function requireStatsAdmin(req, res) {
-    if (isStatsAdmin(req)) return true;
-    sendJson(res, 403, {error: 'Admin only'});
+    sendJson(res, 403, {error: 'Only own usage statistics are available'});
     return false;
 }
 
@@ -60,6 +59,7 @@ function formatNumber(num) {
 }
 
 const STATS_SERVICE_TYPES = new Set(['relay', 'codebuddy', 'copilot']);
+const EMPTY_STATS_TENANT_ID = -1;
 
 function normalizeStatsService(serviceType) {
     return STATS_SERVICE_TYPES.has(serviceType) ? serviceType : 'codebuddy';
@@ -79,6 +79,11 @@ function currentAuthMode() {
 
 function isStatsTenantIncluded(tenant) {
     return !(currentAuthMode() === 'local' && tenant?.role === 'superadmin');
+}
+
+function isStatsTenantVisibleInScope(tenant, tenantId) {
+    if (tenantId) return tenant?.id === tenantId;
+    return isStatsTenantIncluded(tenant);
 }
 
 function buildDateRangeWhere(startDate, endDate) {
@@ -113,7 +118,7 @@ async function getCurrentStatsTenantId(req) {
     const cachedTenantId = unifiedTenantManager.findTenantByUsername?.(session.username);
     if (cachedTenantId !== undefined && cachedTenantId !== null) return cachedTenantId;
     const entry = (await getStatsTenantEntries()).find(([, tenant]) => tenant?.username === session.username);
-    return entry?.[1]?.id || null;
+    return entry?.[1]?.id || EMPTY_STATS_TENANT_ID;
 }
 
 async function getExcludedStatsTenantIds() {
@@ -129,10 +134,7 @@ async function buildStatsUsageWhere(service, startDate, endDate, extra = {}) {
     const excludedTenantIds = await getExcludedStatsTenantIds();
     if (excludedTenantIds.length > 0) {
         if (where.tenant_id) {
-            const tenantCondition = where.tenant_id;
-            if (!excludedTenantIds.includes(tenantCondition)) return where;
-            delete where.tenant_id;
-            where[Op.and] = [{tenant_id: tenantCondition}, {tenant_id: {[Op.notIn]: excludedTenantIds}}];
+            return where;
         } else {
             where.tenant_id = {[Op.notIn]: excludedTenantIds};
         }
@@ -362,7 +364,7 @@ async function getModelCacheDailyTrend(serviceType = 'codebuddy', model, startDa
 /**
  * 获取每日趋势数据（全局汇总，按日期）
  */
-async function getDailyTrendData(serviceType = 'codebuddy') {
+async function getDailyTrendData(serviceType = 'codebuddy', tenantId) {
     if (!unifiedTenantManager.isEnabled()) {
         return [];
     }
@@ -378,7 +380,7 @@ async function getDailyTrendData(serviceType = 'codebuddy') {
                 [fn('SUM', col('input_cache_hit')), 'cacheHitTokens'],
                 [fn('SUM', col('credit')), 'credit']
             ],
-            where: await buildStatsUsageWhere(service),
+            where: await buildStatsUsageWhere(service, undefined, undefined, tenantId ? {tenant_id: tenantId} : {}),
             group: ['date'],
             order: [['date', 'ASC']],
             raw: true
@@ -413,8 +415,7 @@ async function getUserTrendData(serviceType = 'codebuddy', tenantId) {
     const service = normalizeStatsService(serviceType);
 
     const tenants = (await getStatsTenantEntries())
-        .filter(([, tenant]) => isStatsTenantIncluded(tenant))
-        .filter(([, tenant]) => !tenantId || tenant.id === tenantId);
+        .filter(([, tenant]) => isStatsTenantVisibleInScope(tenant, tenantId));
 
     // 按注册日期统计新增用户
     const newUsersByDate = {};
@@ -481,8 +482,7 @@ async function getOverviewStats(serviceType = 'codebuddy', startDate, endDate, t
     const service = normalizeStatsService(serviceType);
 
     const tenants = (await getStatsTenantEntries())
-        .filter(([, tenant]) => isStatsTenantIncluded(tenant))
-        .filter(([, tenant]) => !tenantId || tenant.id === tenantId);
+        .filter(([, tenant]) => isStatsTenantVisibleInScope(tenant, tenantId));
     const usageWhere = await buildStatsUsageWhere(service, startDate, endDate, tenantId ? {tenant_id: tenantId} : {});
     let tenantsWithCreds = 0;
     let totalCreds = 0;
@@ -728,7 +728,8 @@ async function handleApiRequest(req, res) {
     if (pathname === '/stats/api/daily-trend' && req.method === 'GET') {
         const service = getStatsService(url);
         try {
-            const data = await getDailyTrendData(service);
+            const tenantId = await getCurrentStatsTenantId(req);
+            const data = await getDailyTrendData(service, tenantId);
             sendJson(res, 200, data);
         } catch (error) {
             logger.error('获取每日趋势数据失败:', error);
@@ -747,7 +748,8 @@ async function handleApiRequest(req, res) {
         }
 
         try {
-            const data = await getDailyUserLists(service, date);
+            const tenantId = await getCurrentStatsTenantId(req);
+            const data = await getDailyUserLists(service, date, tenantId);
             sendJson(res, 200, data);
         } catch (error) {
             logger.error('获取每日用户列表失败:', error);
@@ -766,6 +768,11 @@ async function handleApiRequest(req, res) {
         }
 
         try {
+            const session = getSessionUser(req);
+            if (session.authenticated && username !== session.username) {
+                sendJson(res, 403, {error: 'Only own usage detail is available'});
+                return true;
+            }
             const userDetail = await getUserDetail(service, username);
             sendJson(res, 200, userDetail);
         } catch (error) {
@@ -1148,13 +1155,14 @@ function tryParseJson(str) {
  * 获取指定日期的新增用户和日活用户列表
  * @param {string} date - 日期字符串，如 2025-01-15
  */
-async function getDailyUserLists(serviceType = 'codebuddy', date) {
+async function getDailyUserLists(serviceType = 'codebuddy', date, tenantId) {
     if (!unifiedTenantManager.isEnabled()) {
         return {newUsers: [], activeUsers: []};
     }
     const service = normalizeStatsService(serviceType);
 
-    const tenants = (await getStatsTenantEntries()).filter(([, tenant]) => isStatsTenantIncluded(tenant));
+    const tenants = (await getStatsTenantEntries())
+        .filter(([, tenant]) => isStatsTenantVisibleInScope(tenant, tenantId));
 
     // 新增用户：created_at 对应的日期等于目标日期
     const newUsers = [];
@@ -1175,7 +1183,7 @@ async function getDailyUserLists(serviceType = 'codebuddy', date) {
     try {
         const activeRows = await TenantDailyUsage.findAll({
             attributes: ['tenant_id', [fn('SUM', col('api_calls')), 'totalCalls']],
-            where: await buildStatsUsageWhere(service, undefined, undefined, {date, api_calls: {[Op.gt]: 0}}),
+            where: await buildStatsUsageWhere(service, undefined, undefined, {date, api_calls: {[Op.gt]: 0}, ...(tenantId ? {tenant_id: tenantId} : {})}),
             group: ['tenant_id'],
             raw: true
         });

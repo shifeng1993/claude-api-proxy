@@ -21,6 +21,10 @@ function adminSessionHeaders() {
     return {cookie: `cap_session=${createSessionToken('route-test-admin', 'admin')}`};
 }
 
+function superAdminSessionHeaders() {
+    return {cookie: `cap_session=${createSessionToken('route-test-root', 'superadmin')}`};
+}
+
 test('dashboard entry path includes the default dashboard hash route', () => {
     assert.equal(DASHBOARD_ENTRY_PATH, '/dashboard#/relay');
 });
@@ -42,7 +46,7 @@ test('browser page API calls stay on the same host under the api namespace', () 
         assert.doesNotMatch(html, /api\.shifeng1993\.com/);
         assert.match(html, /function apiUrl\(path\)/);
         assert.match(html, /\/api/);
-        assert.match(html, /fetch\(apiUrl\(/);
+        assert.match(html, /(?:fetch|fetchWithTimeout)\(apiUrl\(/);
         assert.match(html, /credentials:'include'/);
     }
 });
@@ -120,7 +124,7 @@ test('api-prefixed dashboard and usage routes are normalized before page session
     assert.match(await dashboard.text(), /登录|过期/);
 });
 
-test('usage API is administrator-only and not blocked by stats IP whitelist for admins', async t => {
+test('usage API is available to the current signed-in user regardless of role', async t => {
     const base = await startServer(t);
 
     const response = await fetch(`${base}/api/usage/overview?service=relay`, {
@@ -131,7 +135,7 @@ test('usage API is administrator-only and not blocked by stats IP whitelist for 
         }
     });
 
-    assert.equal(response.status, 403);
+    assert.notEqual(response.status, 403);
 
     const adminResponse = await fetch(`${base}/api/usage/overview?service=relay`, {
         headers: {
@@ -142,6 +146,25 @@ test('usage API is administrator-only and not blocked by stats IP whitelist for 
     });
 
     assert.notEqual(adminResponse.status, 403);
+
+    const superAdminResponse = await fetch(`${base}/api/usage/overview?service=relay`, {
+        headers: {
+            ...superAdminSessionHeaders(),
+            accept: 'application/json',
+            'x-forwarded-for': '203.0.113.10'
+        }
+    });
+
+    assert.notEqual(superAdminResponse.status, 403);
+
+    const otherUserDetail = await fetch(`${base}/api/usage/user-detail?service=relay&username=someone-else`, {
+        headers: {
+            ...adminSessionHeaders(),
+            accept: 'application/json'
+        }
+    });
+
+    assert.equal(otherUserDetail.status, 403);
 });
 
 test('unauthenticated page routes lead to login and legacy FE routes lead to dashboard', async t => {

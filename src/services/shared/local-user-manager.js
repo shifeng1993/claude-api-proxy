@@ -8,7 +8,7 @@ import {createHash, randomBytes} from 'crypto';
 import {Op} from 'sequelize';
 import logger from '../../utils/logger.js';
 import {models} from '../../db/models/index.js';
-import {hashPassword} from './local-auth.js';
+import {hashPassword, verifyPassword} from './local-auth.js';
 import {unifiedTenantManager} from '../gateway/tenant-manager.js';
 import {getAuthMode} from './auth-mode.js';
 
@@ -23,6 +23,14 @@ function canManageTarget(actorRole, targetRole) {
     if (targetRole === ROLE_SUPERADMIN) return false;
     if (actorRole === ROLE_SUPERADMIN) return targetRole === ROLE_ADMIN || targetRole === ROLE_USER;
     if (actorRole === ROLE_ADMIN) return targetRole === ROLE_USER;
+    return false;
+}
+
+function canViewTarget(actorRole, targetRole) {
+    if (targetRole === ROLE_SUPERADMIN) return false;
+    if (actorRole === ROLE_SUPERADMIN || actorRole === ROLE_ADMIN) {
+        return targetRole === ROLE_ADMIN || targetRole === ROLE_USER;
+    }
     return false;
 }
 
@@ -48,7 +56,7 @@ export async function listLocalUsers(actorRole = ROLE_ADMIN) {
         order: [['id', 'ASC']]
     });
     return tenants
-        .filter(t => canManageTarget(actorRole, t.role || ROLE_USER))
+        .filter(t => canViewTarget(actorRole, t.role || ROLE_USER))
         .map(t => ({
             username: t.username,
             displayName: t.name,
@@ -63,7 +71,7 @@ export async function listLdapUsers(actorRole = ROLE_ADMIN) {
         order: [['id', 'ASC']]
     });
     return tenants
-        .filter(t => canManageTarget(actorRole, t.role || ROLE_USER))
+        .filter(t => canViewTarget(actorRole, t.role || ROLE_USER))
         .map(t => ({
             username: t.username,
             displayName: t.name,
@@ -149,23 +157,52 @@ export async function resetLocalUserPassword(username, newPassword, actorRole = 
     return {ok: true};
 }
 
+export async function changeOwnLocalUserPassword(username, currentPassword, newPassword) {
+    if (username && username === process.env.LOCAL_ADMIN_USER) {
+        return {ok: false, status: 403, error: 'Env configured superadmin password is managed by environment variables'};
+    }
+    if (!currentPassword) {
+        return {ok: false, status: 400, error: '当前密码不能为空'};
+    }
+    if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+        return {ok: false, status: 400, error: `密码至少 ${MIN_PASSWORD_LENGTH} 字符`};
+    }
+    const target = await findLocalUser(username);
+    if (!target) {
+        return {ok: false, status: 404, error: '本地账号不存在'};
+    }
+    if (!verifyPassword(currentPassword, target.password_hash, target.password_salt)) {
+        return {ok: false, status: 403, error: '当前密码不正确'};
+    }
+    const {hash, salt} = hashPassword(newPassword);
+    const [count] = await models.Tenant.update(
+        {password_hash: hash, password_salt: salt},
+        {where: {username, password_hash: {[Op.ne]: null}}}
+    );
+    if (count === 0) {
+        return {ok: false, status: 404, error: '本地账号不存在'};
+    }
+    logger.info(`Changed own password for local user '${username}'`);
+    return {ok: true};
+}
+
 export async function updateLocalUser(username, input = {}, actorRole = ROLE_ADMIN) {
     const target = await findLocalUser(username);
     if (!target) {
-        return {ok: false, status: 404, error: '鏈湴璐﹀彿涓嶅瓨鍦?'};
+        return {ok: false, status: 404, error: '本地账号不存在'};
     }
 
     const currentRole = target.role || ROLE_USER;
     if (!canManageTarget(actorRole, currentRole)) {
-        return {ok: false, status: 403, error: '鏃犳潈淇敼璇ヨ处鍙?'};
+        return {ok: false, status: 403, error: '无权修改该账号'};
     }
 
     const requestedRole = input.role === undefined || input.role === '' ? currentRole : input.role;
     if (!MANAGED_ROLES.has(requestedRole)) {
-        return {ok: false, status: 400, error: '瑙掕壊涓嶅彲鐢?'};
+        return {ok: false, status: 400, error: '无效的角色'};
     }
     if (requestedRole === ROLE_ADMIN && actorRole !== ROLE_SUPERADMIN) {
-        return {ok: false, status: 403, error: '鍙湁瓒呯骇绠＄悊鍛樺彲浠ヨ缃鐞嗗憳璐﹀彿'};
+        return {ok: false, status: 403, error: '只有超级管理员可以授予管理员角色'};
     }
 
     const displayName = String(input.displayName ?? target.name ?? username).trim() || username;
@@ -175,7 +212,7 @@ export async function updateLocalUser(username, input = {}, actorRole = ROLE_ADM
         {where: {username, password_hash: {[Op.ne]: null}}}
     );
     if (count === 0) {
-        return {ok: false, status: 404, error: '鏈湴璐﹀彿涓嶅瓨鍦?'};
+        return {ok: false, status: 404, error: '本地账号不存在'};
     }
 
     syncLocalUserCache(username, updates);

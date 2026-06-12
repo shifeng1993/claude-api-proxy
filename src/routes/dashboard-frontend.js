@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 统一管理面板路由
  * @module routes/dashboard-frontend
  */
@@ -11,6 +11,8 @@ import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
 import {broadcast} from '../services/shared/cluster-broadcaster.js';
 import {getSessionUser} from '../services/gateway/session.js';
 import {handleAdminUsers} from './dashboard-users.js';
+import {changeOwnLocalUserPassword} from '../services/shared/local-user-manager.js';
+import {getAuthMode} from '../services/shared/auth-mode.js';
 import {getCodebuddyAdminOptions, handleCodebuddyAdminRoute} from './dashboard-codebuddy.js';
 import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/config.js';
 import {handleCopilotAdminRoute} from './dashboard-copilot.js';
@@ -71,6 +73,24 @@ function requireApiSession(req, res) {
         return null;
     }
     return session;
+}
+
+export async function testRelayUpstream(manager, index) {
+    const upstream = manager.listUpstreams()[index];
+    const name = upstream?.name || `#${index + 1}`;
+    try {
+        const result = await manager.testUpstream(index);
+        return {index, name, ...result};
+    } catch (err) {
+        return {index, name, success: false, message: err.message};
+    }
+}
+
+export function canManageDashboardTenant(actorRole, targetTenant) {
+    if (!targetTenant || targetTenant.role === 'superadmin') return false;
+    if (actorRole === 'superadmin') return ['admin', 'user'].includes(targetTenant.role || 'user');
+    if (actorRole === 'admin') return (targetTenant.role || 'user') === 'user';
+    return false;
 }
 
 function aggregateUsageRows(rows) {
@@ -223,7 +243,7 @@ async function relayOperation(req, res, tenantId, subPath) {
     }
     if (subPath === '/upstreams/test' && req.method === 'POST') {
         const {index} = await readRequestBody(req);
-        sendJson(res, 200, await manager.testUpstream(Number(index)));
+        sendJson(res, 200, await testRelayUpstream(manager, Number(index)));
         return true;
     }
     if (subPath === '/upstreams/test-all' && req.method === 'POST') {
@@ -239,9 +259,8 @@ async function relayOperation(req, res, tenantId, subPath) {
         const total = upstreams.length;
         let done = 0;
         const tasks = upstreams.map((upstream, index) =>
-            manager.testUpstream(index).then(result => {
+            testRelayUpstream(manager, index).then(entry => {
                 done++;
-                const entry = {index, name: upstream?.name || `#${index + 1}`, ...result};
                 write('result', entry);
                 if (done === total) write('done', {total});
             }).catch(err => {
@@ -280,7 +299,24 @@ export async function routeAdminFrontend(req, res) {
     const isAdmin = unifiedTenantManager.isAdmin(username);
 
     if (pathname === '/dashboard/me' && method === 'GET') {
-        return sendJson(res, 200, {username, role: session.role, isAdmin, isSuperAdmin: session.role === 'superadmin'});
+        const authMode = getAuthMode();
+        return sendJson(res, 200, {
+            username,
+            role: session.role,
+            isAdmin,
+            isSuperAdmin: session.role === 'superadmin',
+            canChangeOwnPassword: authMode !== 'ldap' && username !== process.env.LOCAL_ADMIN_USER
+        });
+    }
+
+    if (pathname === '/dashboard/me/password' && method === 'PUT') {
+        if (getAuthMode() === 'ldap') {
+            return sendJson(res, 403, {error: 'LDAP mode does not allow local password changes'});
+        }
+        const body = await readRequestBody(req);
+        const result = await changeOwnLocalUserPassword(username, body.currentPassword, body.newPassword);
+        if (!result.ok) return sendJson(res, result.status, {error: result.error});
+        return sendJson(res, 200, {message: 'Password changed'});
     }
 
     if (pathname === '/dashboard/codebuddy/options' && method === 'GET') {
@@ -340,9 +376,12 @@ export async function routeAdminFrontend(req, res) {
         const serviceMatch = subPath.match(/^\/services\/(relay|codebuddy|copilot)$/);
         if (serviceMatch && method === 'PUT') {
             if (!isAdmin) return sendJson(res, 403, {error: '需要管理员权限'});
+            if (!canManageDashboardTenant(session.role, unifiedTenantManager.getTenant(tenantId))) {
+                return sendJson(res, 403, {error: '无权操作该用户'});
+            }
             const {enabled} = await readRequestBody(req);
             const serviceType = serviceMatch[1];
-            if (!SERVICES.has(serviceType)) return sendJson(res, 400, {error: '未知服务'});
+            if (!SERVICES.has(serviceType)) return sendJson(res, 400, {error: '鏈煡鏈嶅姟'});
             await unifiedTenantManager.setServiceEnabled(tenantId, serviceType, enabled === true);
             return sendJson(res, 200, {message: '服务状态已更新'});
         }

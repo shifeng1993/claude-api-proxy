@@ -89,7 +89,8 @@ test('sendResponsesWebSocketRequest sanitizes previous response item ids and tra
     assert.deepEqual(socket.sent[0].input, [
         {
             role: 'assistant',
-            content: [{type: 'output_text', text: 'old text'}]
+            content: [{type: 'output_text', text: 'old text'}],
+            partial: true
         }
     ]);
 });

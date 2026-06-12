@@ -22,9 +22,52 @@ import {normalizeResponsesWebSocketMode} from '../shared/responses-ws-mode.js';
 import logger from '../../utils/logger.js';
 import {models} from '../../db/models/index.js';
 
+const DEFAULT_UPSTREAM_TEST_TIMEOUT_MS = 30000;
+
+function normalizeTimeoutMs(value, fallback = DEFAULT_UPSTREAM_TEST_TIMEOUT_MS) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function waitForResponsesWebSocketCompleted(eventStream, timeoutMs, onTimeout) {
+    const iterator = eventStream[Symbol.asyncIterator]();
+    while (true) {
+        let timer;
+        const next = iterator.next();
+        try {
+            const result = await Promise.race([
+                next,
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => {
+                        reject(new Error(`Responses WebSocket test timed out after ${timeoutMs}ms waiting for response.completed`));
+                    }, timeoutMs);
+                })
+            ]);
+            if (timer) clearTimeout(timer);
+            if (result.done) {
+                throw new Error('Responses WebSocket stream ended before response.completed');
+            }
+            if (result.value?.type === 'response.completed') return;
+        } catch (error) {
+            if (timer) clearTimeout(timer);
+            if (/timed out/i.test(error.message)) {
+                try {
+                    onTimeout?.();
+                } catch {}
+                next.catch(() => {});
+                try {
+                    iterator.return?.();
+                } catch {}
+            }
+            throw error;
+        }
+    }
+}
+
 export class UpstreamManager {
     constructor(options = {}) {
         this.tenantId = options.tenantId;
+        this.testTimeoutMs = normalizeTimeoutMs(options.testTimeoutMs ?? process.env.RELAY_UPSTREAM_TEST_TIMEOUT_MS);
         this.upstreams = [];
         // 活跃上游索引，-1 表示使用第一个启用的上游
         this._activeIndex = -1;
@@ -388,10 +431,9 @@ export class UpstreamManager {
                         upstream
                     );
                     conn = result.conn;
-                    // Consume the stream until response.completed to verify the connection works
-                    for await (const event of result.eventStream) {
-                        if (event.type === 'response.completed') break;
-                    }
+                    await waitForResponsesWebSocketCompleted(result.eventStream, this.testTimeoutMs, () => {
+                        if (conn) discardResponsesWebSocketConnection(conn);
+                    });
                     return {
                         success: true,
                         message: `连接成功 (protocol: ${upstream.protocol || 'responses_ws'}, model: ${model})`

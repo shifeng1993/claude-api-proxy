@@ -20,12 +20,16 @@ function mockJsonResponse() {
     };
 }
 
-function adminHeaders(username = 'alice') {
+function sessionHeaders(username = 'alice', role = 'admin') {
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'stats-service-filter-secret';
     return {
         host: 'localhost',
-        cookie: `cap_session=${createSessionToken(username, 'admin')}`
+        cookie: `cap_session=${createSessionToken(username, role)}`
     };
+}
+
+function adminHeaders(username = 'alice') {
+    return sessionHeaders(username, 'admin');
 }
 
 test('stats overview filters daily usage by requested service endpoint', async () => {
@@ -125,12 +129,14 @@ test('stats monthly overview and model cache are scoped to the current user tena
     const originalFindAll = TenantDailyUsage.findAll;
     const originalIsEnabled = unifiedTenantManager.isEnabled;
     const originalRegistry = unifiedTenantManager.registry;
+    const originalFindTenantByUsername = unifiedTenantManager.findTenantByUsername;
     const usageWheres = [];
 
     TenantDailyUsage.findAll = async (options = {}) => {
         if (options.where?.service_type === 'relay') usageWheres.push(options.where);
         return [];
     };
+    unifiedTenantManager.findTenantByUsername = username => ({alice: 1, bob: 2}[username] ?? null);
     unifiedTenantManager.isEnabled = () => true;
     unifiedTenantManager.registry = {
         tenants: {
@@ -169,5 +175,89 @@ test('stats monthly overview and model cache are scoped to the current user tena
         TenantDailyUsage.findAll = originalFindAll;
         unifiedTenantManager.isEnabled = originalIsEnabled;
         unifiedTenantManager.registry = originalRegistry;
+        unifiedTenantManager.findTenantByUsername = originalFindTenantByUsername;
+    }
+});
+
+test('stats APIs keep admin and superadmin scoped to their own tenant', async () => {
+    const originalFindAll = TenantDailyUsage.findAll;
+    const originalIsEnabled = unifiedTenantManager.isEnabled;
+    const originalRegistry = unifiedTenantManager.registry;
+    const originalFindTenantByUsername = unifiedTenantManager.findTenantByUsername;
+    const usageWheres = [];
+
+    TenantDailyUsage.findAll = async (options = {}) => {
+        if (options.where?.service_type === 'relay') usageWheres.push(options.where);
+        return [];
+    };
+    unifiedTenantManager.findTenantByUsername = username => ({alice: 1, bob: 2, root: 3}[username] ?? null);
+    unifiedTenantManager.isEnabled = () => true;
+    unifiedTenantManager.registry = {
+        tenants: {
+            tenant_1: {id: 1, name: 'Alice', username: 'alice', role: 'admin', created_at: Date.now(), serviceProfiles: []},
+            tenant_2: {id: 2, name: 'Bob', username: 'bob', role: 'admin', created_at: Date.now(), serviceProfiles: []},
+            tenant_3: {id: 3, name: 'Root', username: 'root', role: 'superadmin', created_at: Date.now(), serviceProfiles: []}
+        }
+    };
+
+    try {
+        const adminReq = {
+            method: 'GET',
+            url: '/stats/api/overview?service=relay',
+            headers: sessionHeaders('alice', 'admin'),
+            socket: {remoteAddress: '127.0.0.1'}
+        };
+        const adminRes = mockJsonResponse();
+        assert.equal(await routeStatsRequest(adminReq, adminRes), true);
+        assert.equal(adminRes.status, 200);
+
+        const superAdminReq = {
+            method: 'GET',
+            url: '/stats/api/model-cache-stats?service=relay',
+            headers: sessionHeaders('root', 'superadmin'),
+            socket: {remoteAddress: '127.0.0.1'}
+        };
+        const superAdminRes = mockJsonResponse();
+        assert.equal(await routeStatsRequest(superAdminReq, superAdminRes), true);
+        assert.equal(superAdminRes.status, 200);
+
+        const otherDetailReq = {
+            method: 'GET',
+            url: '/stats/api/user-detail?service=relay&username=bob',
+            headers: sessionHeaders('alice', 'admin'),
+            socket: {remoteAddress: '127.0.0.1'}
+        };
+        const otherDetailRes = mockJsonResponse();
+        assert.equal(await routeStatsRequest(otherDetailReq, otherDetailRes), true);
+        assert.equal(otherDetailRes.status, 403);
+
+        const adminGroupReq = {
+            method: 'GET',
+            url: '/stats/api/key-personnel?service=relay',
+            headers: sessionHeaders('alice', 'admin'),
+            socket: {remoteAddress: '127.0.0.1'}
+        };
+        const adminGroupRes = mockJsonResponse();
+        assert.equal(await routeStatsRequest(adminGroupReq, adminGroupRes), true);
+        assert.equal(adminGroupRes.status, 403);
+
+        const superAdminGroupReq = {
+            method: 'POST',
+            url: '/stats/api/coach-trigger?service=relay',
+            headers: sessionHeaders('root', 'superadmin'),
+            socket: {remoteAddress: '127.0.0.1'}
+        };
+        const superAdminGroupRes = mockJsonResponse();
+        assert.equal(await routeStatsRequest(superAdminGroupReq, superAdminGroupRes), true);
+        assert.equal(superAdminGroupRes.status, 403);
+
+        assert.ok(usageWheres.some(where => where.tenant_id === 1));
+        assert.ok(usageWheres.some(where => where.tenant_id === 3));
+        assert.ok(usageWheres.every(where => where.tenant_id === 1 || where.tenant_id === 3));
+    } finally {
+        TenantDailyUsage.findAll = originalFindAll;
+        unifiedTenantManager.isEnabled = originalIsEnabled;
+        unifiedTenantManager.registry = originalRegistry;
+        unifiedTenantManager.findTenantByUsername = originalFindTenantByUsername;
     }
 });

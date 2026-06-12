@@ -136,7 +136,7 @@ export async function handleAdminUsers(req, res, pathSuffix, currentUsername, cu
             if (!result.ok) {
                 sendJson(res, result.status, {error: result.error});
             } else {
-                sendJson(res, 200, {message: '璐﹀彿宸叉洿鏂?'});
+                sendJson(res, 200, {message: '用户信息已更新'});
             }
             return true;
         }
