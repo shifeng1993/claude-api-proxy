@@ -91,7 +91,7 @@ class TenantManager {
 
   /**
    * 将内存中的增量数据通过 INCREMENT 方式批量写回数据库
-   * 使用 sequelize.increment 执行 SQL "SET col = col + N"，多进程安全
+   * 使用 sequelize.increment 执行 SQL "SET col = col + N"，保证增量写入并发安全
    */
   async _flushDirtyTenants() {
     if (this._dirtyTenants.size === 0) return;
@@ -154,7 +154,7 @@ class TenantManager {
 
   /**
    * 获取租户的 UpstreamManager 实例（带缓存）
-   * 缓存实例会在每次获取时重新加载上游配置，确保多进程/多实例场景下数据及时同步
+   * 缓存实例会在每次获取时重新加载上游配置，确保数据库中的配置变更及时生效
    * @param {number} tenantId
    * @returns {Promise<UpstreamManager|null>}
    */
@@ -439,8 +439,7 @@ class TenantManager {
   }
 
   /**
-   * 重置租户的自定义统计数据（清零内存 + 增量 + 立即写 DB 0 + 广播通知其他进程）
-   * 多进程安全：先 flush 所有进程的脏数据（通过广播触发），再清零 DB，最后广播让各进程从 DB 读取零值
+   * 重置租户的自定义统计数据（清零内存 + 增量 + 立即写 DB 0）
    * @param {number} tenantId
    */
   async resetCustomStats(tenantId) {
@@ -490,9 +489,6 @@ class TenantManager {
     tenant.total_output_tokens = 0;
     tenant.total_cache_hit_tokens = 0;
 
-    // 广播通知其他进程：先 flush 再从 DB 读取零值
-    const {broadcast} = await import('../shared/cluster-broadcaster.js');
-    broadcast('relay:stats:reset', {tenantId});
   }
 
   /**
@@ -607,21 +603,17 @@ class TenantManager {
   }
 
   /**
-   * 从数据库重新加载租户数据到内存，并广播通知其他进程同步
+   * 从数据库重新加载租户数据到内存
    */
   async reloadRegistry() {
     await this._flushDirtyTenants();
     await this._loadFromDb();
     logger.info('Relay: Tenant registry reloaded from database');
-
-    // 广播通知其他进程同步
-    const {broadcast} = await import('../shared/cluster-broadcaster.js');
-    broadcast('relay:stats:refresh', {});
   }
 
   /**
-   * 从数据库同步指定租户的统计数据到内存（收到广播通知后调用）
-   * 先 flush 本进程的脏数据，再从 DB 读取最新值，确保多进程一致性
+   * 从数据库同步指定租户的统计数据到内存
+   * 先 flush 本进程的脏数据，再从 DB 读取最新值
    * @param {number} [tenantId] - 租户 ID，不传则同步所有租户
    * @param {boolean} [isReset=false] - 是否为重置操作，如果是则 flush 后再清零 DB（防止增量覆盖重置）
    */
@@ -686,7 +678,6 @@ class TenantManager {
 
   /**
    * 使指定租户的 UpstreamManager 缓存失效，下次请求时重新加载
-   * 收到上游变更广播后调用
    * @param {number} tenantId
    */
   invalidateUpstreamCache(tenantId) {

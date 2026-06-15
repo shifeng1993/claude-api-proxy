@@ -102,7 +102,7 @@ class TenantManager {
 
     /**
      * 将内存中的增量数据通过 INCREMENT 方式批量写回数据库
-     * 使用 sequelize.increment 执行 SQL "SET col = col + N"，多进程安全
+     * 使用 sequelize.increment 执行 SQL "SET col = col + N"，保证增量写入并发安全
      */
     async _flushDirtyTenants() {
         if (this._dirtyTenants.size === 0) return;
@@ -235,8 +235,7 @@ class TenantManager {
     }
 
     /**
-     * 重置租户的自定义统计数据（清零内存 + 增量 + 立即写 DB 0 + 广播通知其他进程）
-     * 多进程安全：先清除增量，再清零 DB，最后广播让各进程从 DB 读取零值
+     * 重置租户的自定义统计数据（清零内存 + 增量 + 立即写 DB 0）
      * @param {string} tenantId
      */
     async resetCustomStats(tenantId) {
@@ -289,9 +288,6 @@ class TenantManager {
         tenant.total_cache_hit_tokens = 0;
         tenant.total_credit = 0;
 
-        // 广播通知其他进程：先 flush 再从 DB 读取零值
-        const {broadcast} = await import('../shared/cluster-broadcaster.js');
-        broadcast('codebuddy:stats:reset', {tenantId});
     }
 
     /**
@@ -562,7 +558,7 @@ class TenantManager {
 
         if (this.tokenManagerCache.has(tenantId)) {
             const manager = this.tokenManagerCache.get(tenantId);
-            // 重新加载凭证列表和状态，确保多进程下数据一致
+            // 重新加载凭证列表和状态，确保数据库中的变更及时生效
             await manager.loadAllTokens();
             await manager.loadState();
             return manager;
@@ -819,16 +815,12 @@ class TenantManager {
     }
 
     /**
-     * 从数据库重新加载注册表，并广播通知其他进程同步
+     * 从数据库重新加载注册表
      */
     async reloadRegistry() {
         await this._flushDirtyTenants();
         await this._loadFromDb();
         logger.info('Tenant registry reloaded from DB');
-
-        // 广播通知其他进程同步
-        const {broadcast} = await import('../shared/cluster-broadcaster.js');
-        broadcast('codebuddy:stats:refresh', {});
     }
 
     /**
@@ -879,8 +871,8 @@ class TenantManager {
     }
 
     /**
-     * 从数据库同步指定租户的统计数据到内存（收到广播通知后调用）
-     * 先 flush 本进程的脏数据，再从 DB 读取最新值，确保多进程一致性
+     * 从数据库同步指定租户的统计数据到内存
+     * 先 flush 本进程的脏数据，再从 DB 读取最新值
      * @param {string} [tenantId] - 租户 key（如 'tenant_1'），不传则同步所有租户
      * @param {boolean} [isReset=false] - 是否为重置操作，如果是则 flush 后再清零 DB（防止增量覆盖重置）
      */
@@ -952,7 +944,7 @@ class TenantManager {
     }
 
     /**
-     * 重新加载指定租户的凭证缓存（收到广播通知后调用）
+     * 重新加载指定租户的凭证缓存
      * 清除 tokenManagerCache 中该租户的缓存，下次请求时重新从 DB 加载
      * @param {string} tenantId - 租户 key（如 'tenant_1'）
      */

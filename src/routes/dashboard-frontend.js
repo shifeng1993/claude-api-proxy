@@ -8,7 +8,6 @@ import {join, dirname} from 'path';
 import {fileURLToPath} from 'url';
 import logger from '../utils/logger.js';
 import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
-import {broadcast} from '../services/shared/cluster-broadcaster.js';
 import {getSessionUser} from '../services/gateway/session.js';
 import {handleAdminUsers} from './dashboard-users.js';
 import {changeOwnLocalUserPassword} from '../services/shared/local-user-manager.js';
@@ -179,7 +178,6 @@ async function relayOperation(req, res, tenantId, subPath) {
     }
     if (subPath === '/upstreams' && req.method === 'POST') {
         const upstream = await manager.addUpstream(await readRequestBody(req));
-        broadcast('relay:upstream:change', {tenantId});
         sendJson(res, 200, {message: '上游配置已添加', upstream});
         return true;
     }
@@ -193,13 +191,11 @@ async function relayOperation(req, res, tenantId, subPath) {
                 sendJson(res, 400, {error: '无效的上游索引'});
                 return true;
             }
-            broadcast('relay:upstream:change', {tenantId});
             sendJson(res, 200, {message: '上游配置已更新', upstream});
             return true;
         }
         if (req.method === 'DELETE') {
             const ok = await manager.deleteUpstream(index);
-            if (ok) broadcast('relay:upstream:change', {tenantId});
             sendJson(res, ok ? 200 : 400, ok ? {message: '上游已删除'} : {error: '无效的上游索引'});
             return true;
         }
@@ -220,7 +216,6 @@ async function relayOperation(req, res, tenantId, subPath) {
             model_map: {...(source.model_map || {})},
             models: [...(source.models || [])]
         });
-        broadcast('relay:upstream:change', {tenantId});
         sendJson(res, 200, {message: '上游已复制', upstream});
         return true;
     }
@@ -228,7 +223,6 @@ async function relayOperation(req, res, tenantId, subPath) {
     if (subPath === '/upstreams/set-active' && req.method === 'POST') {
         const {index} = await readRequestBody(req);
         const ok = await manager.setActiveUpstream(Number(index));
-        if (ok) broadcast('relay:upstream:change', {tenantId});
         sendJson(res, ok ? 200 : 400, ok ? {message: '活跃上游已切换'} : {error: '该上游无法启用'});
         return true;
     }
@@ -237,7 +231,6 @@ async function relayOperation(req, res, tenantId, subPath) {
         const ok = subPath.endsWith('move-up')
             ? await manager.moveUp(Number(index))
             : await manager.moveDown(Number(index));
-        if (ok) broadcast('relay:upstream:change', {tenantId});
         sendJson(res, ok ? 200 : 400, ok ? {message: '上游顺序已更新'} : {error: '无法继续移动'});
         return true;
     }

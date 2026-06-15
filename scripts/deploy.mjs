@@ -35,7 +35,7 @@ async function getPassword() {
 }
 
 const UPLOAD_DIRS = ['src'];
-const UPLOAD_FILES = ['ecosystem.cluster.config.cjs', 'package.json', 'package-lock.json'];
+const UPLOAD_FILES = ['ecosystem.config.cjs', 'package.json', 'package-lock.json'];
 const EXCLUDE_PATTERNS = [/node_modules/, /\.codebuddy/, /\.relay/, /\.git/, /\.env$/];
 
 function shouldExclude(filePath) {
@@ -95,7 +95,7 @@ async function deploy() {
     // Install dependencies and restart
     console.log('Installing dependencies and restarting...');
     const result = await ssh.execCommand(
-      `cd ${CONFIG.remotePath} && npm install --omit=dev && pm2 restart ecosystem.cluster.config.cjs && pm2 save`,
+      `cd ${CONFIG.remotePath} && npm install --omit=dev && pm2 startOrRestart ecosystem.config.cjs --env production && pm2 save`,
     );
     if (result.stdout) console.log(result.stdout);
     if (result.stderr) console.error(result.stderr);

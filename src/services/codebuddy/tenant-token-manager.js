@@ -262,7 +262,7 @@ class TenantTokenManager {
             return null;
         }
 
-        // 多进程环境下，其他进程可能已切换活跃凭证，先从数据库重新加载 currentIndex
+        // 控制台可能已切换活跃凭证，先从数据库重新加载 currentIndex
         await this._reloadCurrentIndex();
 
         // 惰性清理过期的会话亲和映射
@@ -309,7 +309,7 @@ class TenantTokenManager {
     }
 
     /**
-     * 从数据库重新加载 currentIndex，确保多进程环境下获取到最新的活跃凭证索引
+     * 从数据库重新加载 currentIndex，确保获取到最新的活跃凭证索引
      * 同时检测凭证数量变化，如果 DB 中的凭证数与内存不一致则重新加载全部凭证
      */
     async _reloadCurrentIndex() {
@@ -318,7 +318,7 @@ class TenantTokenManager {
                 where: {tenant_id: this.tenantId}
             });
 
-            // 检测凭证数量变化（其他进程可能增删了凭证）
+            // 检测凭证数量变化（控制台可能增删了凭证）
             const dbCredentialCount = await models.TenantCredential.count({
                 where: {tenant_id: this.tenantId}
             });

@@ -19,7 +19,6 @@ import {handleFeedback} from './routes/feedback.js';
 import {routeFeedbackAdmin} from './routes/feedback-admin.js';
 import {sendNotFoundPage, wantsHtml} from './routes/not-found.js';
 import Busboy from 'busboy';
-import {verifyInternalRequest, handleSyncNotification} from './services/shared/cluster-broadcaster.js';
 import {authenticateApiKey} from './services/gateway/gateway-auth.js';
 import {requireApiAuth} from './services/gateway/dashboard-auth.js';
 import {getSessionUser} from './services/gateway/session.js';
@@ -61,27 +60,6 @@ function requirePageSession(req, res, adminOnly = false) {
     }
     req.sessionUser = session;
     return true;
-}
-
-/**
- * 解析请求体为 JSON
- * @param {import('http').IncomingMessage} req - HTTP 请求对象
- * @returns {Promise<any>}
- */
-function parseBody(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', (chunk) => chunks.push(chunk));
-        req.on('end', () => {
-            try {
-                const body = Buffer.concat(chunks).toString('utf8');
-                resolve(JSON.parse(body));
-            } catch (e) {
-                reject(new Error('Invalid JSON'));
-            }
-        });
-        req.on('error', reject);
-    });
 }
 
 /**
@@ -262,23 +240,6 @@ export function createServer() {
         // 健康检查
         if (req.method === 'GET' && req.url === '/health') {
             handleHealthCheck(res);
-            return;
-        }
-
-        // 内部集群同步（多进程广播通知）
-        if (req.method === 'POST' && req.url === '/internal/sync') {
-            if (!verifyInternalRequest(req)) {
-                sendError(res, 403, 'Forbidden');
-                return;
-            }
-            try {
-                const payload = await parseBody(req);
-                await handleSyncNotification(payload);
-                sendJson(res, 200, {ok: true});
-            } catch (err) {
-                logger.error('Internal sync error:', err);
-                sendError(res, 500, 'Internal sync error');
-            }
             return;
         }
 

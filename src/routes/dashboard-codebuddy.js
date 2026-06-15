@@ -1,7 +1,6 @@
 import {randomBytes, randomUUID} from 'crypto';
 import logger from '../utils/logger.js';
 import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
-import {broadcast} from '../services/shared/cluster-broadcaster.js';
 import {
     BLOCKED_DOMAINS,
     getCodebuddyBaseUrl,
@@ -129,7 +128,6 @@ async function saveCodebuddyCredential(tenantId, baseUrl, tokenData, accountInfo
 
     if (saved) {
         await unifiedTenantManager.refreshCodebuddyCredentials(tenantId);
-        broadcast('codebuddy:credential:change', {tenantId});
     }
 
     return saved;
@@ -253,7 +251,6 @@ async function pollAuth(req, res, tenantId) {
     authStates.delete(authState);
     if (saved) {
         await unifiedTenantManager.refreshCodebuddyCredentials(tenantId);
-        broadcast('codebuddy:credential:change', {tenantId});
     }
     return sendJson(res, saved ? 200 : 500, {
         status: saved ? 'success' : 'error',
@@ -308,35 +305,30 @@ export async function handleCodebuddyAdminRoute(req, res, tenantId, subPath) {
         if (subPath === '/codebuddy/credentials/delete' && method === 'POST') {
             const {index} = await readRequestBody(req);
             const ok = await manager.deleteCredential(Number(index));
-            if (ok) broadcast('codebuddy:credential:change', {tenantId});
             sendJson(res, ok ? 200 : 400, ok ? {message: '凭证已删除'} : {error: '无效的凭证'});
             return true;
         }
         if (subPath === '/codebuddy/credentials/select' && method === 'POST') {
             const {index} = await readRequestBody(req);
             const ok = await manager.setActiveCredential(Number(index));
-            if (ok) broadcast('codebuddy:credential:change', {tenantId});
             sendJson(res, ok ? 200 : 400, ok ? {message: '活跃凭证已切换'} : {error: '无效的凭证'});
             return true;
         }
         if (subPath === '/codebuddy/credentials/toggle' && method === 'POST') {
             const {index} = await readRequestBody(req);
             const result = await manager.toggleCredentialDisable(Number(index));
-            broadcast('codebuddy:credential:change', {tenantId});
             sendJson(res, 200, {message: result.disabled ? '凭证已禁用' : '凭证已启用'});
             return true;
         }
         if (subPath === '/codebuddy/credentials/move-up' && method === 'POST') {
             const {index} = await readRequestBody(req);
             const ok = await manager.moveCredential(Number(index), 'up');
-            if (ok) broadcast('codebuddy:credential:change', {tenantId});
             sendJson(res, ok ? 200 : 400, ok ? {message: '凭证已上移'} : {error: '无法上移该凭证'});
             return true;
         }
         if (subPath === '/codebuddy/credentials/move-down' && method === 'POST') {
             const {index} = await readRequestBody(req);
             const ok = await manager.moveCredential(Number(index), 'down');
-            if (ok) broadcast('codebuddy:credential:change', {tenantId});
             sendJson(res, ok ? 200 : 400, ok ? {message: '凭证已下移'} : {error: '无法下移该凭证'});
             return true;
         }
