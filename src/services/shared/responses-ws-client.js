@@ -3,6 +3,8 @@ import logger from '../../utils/logger.js';
 import {sanitizeResponsesInput} from '../../transformer/responses-translator.js';
 
 const CONNECT_TIMEOUT = 30000;
+// 上游 WS 心跳间隔，防止中间代理因空闲超时切断连接
+const UPSTREAM_PING_INTERVAL = 25000;
 
 export class ResponsesWebSocketError extends Error {
     constructor(event) {
@@ -43,11 +45,20 @@ export function connectResponsesWebSocket(url, headers, agent, timeout = CONNECT
 
         socket.on('open', () => {
             clearTimeout(timer);
+            // 启动上游 WS 心跳，防止中间代理因空闲超时切断连接
+            socket._upstreamPingTimer = setInterval(() => {
+                if (socket.readyState === 1) {
+                    try { socket.ping(); } catch { stopUpstreamPing(socket); }
+                } else {
+                    stopUpstreamPing(socket);
+                }
+            }, UPSTREAM_PING_INTERVAL);
             resolve(socket);
         });
 
         socket.on('error', (error) => {
             clearTimeout(timer);
+            stopUpstreamPing(socket);
             reject(error);
         });
 
@@ -59,7 +70,18 @@ export function connectResponsesWebSocket(url, headers, agent, timeout = CONNECT
             });
             response.on('end', () => reject(new Error(`WebSocket upgrade failed: ${response.statusCode} ${body.slice(0, 200)}`)));
         });
+
+        socket.on('close', () => {
+            stopUpstreamPing(socket);
+        });
     });
+}
+
+function stopUpstreamPing(socket) {
+    if (socket?._upstreamPingTimer) {
+        clearInterval(socket._upstreamPingTimer);
+        socket._upstreamPingTimer = null;
+    }
 }
 
 export async function* sendResponsesWebSocketRequest(socketOrConnection, payload) {

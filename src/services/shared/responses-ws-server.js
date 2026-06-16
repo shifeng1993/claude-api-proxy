@@ -7,6 +7,11 @@
 
 import logger from '../../utils/logger.js';
 
+// 客户端 WS 心跳间隔，防止中间代理（Nginx/ALB）因空闲超时静默切断连接
+const PING_INTERVAL = 25000;
+// 客户端断连后，等待上游 generator 自行清理的超时时间
+const CLEANUP_TIMEOUT = 5000;
+
 /**
  * 处理客户端 WS 连接，实现标准 Responses API WS 协议
  *
@@ -33,6 +38,8 @@ export function handleWSConnection(clientWs, options) {
     let currentAbortController = null;
     let isProcessing = false;
     let closed = false;
+    let pingTimer = null;
+    let cleanupTimer = null;
 
     // 鉴权
     const authResult = authenticate(req);
@@ -46,6 +53,29 @@ export function handleWSConnection(clientWs, options) {
         }, 100);
         return;
     }
+
+    // 启动客户端 WS 心跳，防止中间代理因空闲超时静默切断连接
+    function startPing() {
+        stopPing();
+        pingTimer = setInterval(() => {
+            if (clientWs.readyState === 1) {
+                try { clientWs.ping(); } catch { stopPing(); }
+            } else {
+                stopPing();
+            }
+        }, PING_INTERVAL);
+    }
+    function stopPing() {
+        if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    }
+    function stopCleanup() {
+        if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+    }
+    startPing();
+
+    clientWs.on('pong', () => {
+        // 收到 pong 说明连接存活，无需额外操作，心跳定时器持续运行
+    });
 
     clientWs.on('message', async (raw) => {
         if (closed) return;
@@ -90,9 +120,16 @@ export function handleWSConnection(clientWs, options) {
 
     clientWs.on('close', () => {
         closed = true;
+        stopPing();
         if (currentAbortController) {
             currentAbortController.abort();
             currentAbortController = null;
+        }
+        // 客户端断连后设置清理超时，确保上游 generator 资源被释放
+        if (isProcessing) {
+            cleanupTimer = setTimeout(() => {
+                logger.info('WS server: cleanup timeout reached, forcing upstream connection cleanup');
+            }, CLEANUP_TIMEOUT);
         }
         if (onClose) onClose();
     });
@@ -100,6 +137,7 @@ export function handleWSConnection(clientWs, options) {
     clientWs.on('error', (err) => {
         logger.warn(`WS server: Client connection error: ${err.message}`);
         closed = true;
+        stopPing();
         if (currentAbortController) {
             currentAbortController.abort();
             currentAbortController = null;
@@ -240,6 +278,9 @@ async function _processRequest(clientWs, message, authResult, handleRequest, ctx
     } finally {
         // 注意：WS 上游连接的释放由各服务的 handleRequest 生成器自行处理
         // （在 for-await 循环结束后调用 releaseResponsesWebSocketConnection/discardResponsesWebSocketConnection）
+
+        // 清理断连超时定时器
+        if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
 
         // 记录用量
         if (ctx.onUsage && (inputTokens > 0 || outputTokens > 0)) {

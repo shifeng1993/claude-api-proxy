@@ -3,6 +3,8 @@ import logger from '../../utils/logger.js';
 
 const IDLE_TIMEOUT = 60000;
 const MAX_PER_KEY = 5;
+// 池化空闲连接心跳间隔，防止中间代理因空闲超时切断上游 WS 连接
+const POOL_PING_INTERVAL = 25000;
 
 class PooledConnection {
     constructor(ws, poolKey) {
@@ -12,6 +14,7 @@ class PooledConnection {
         this.createdAt = Date.now();
         this.lastUsedAt = Date.now();
         this.idleTimer = null;
+        this.pingTimer = null;
         this.contextKey = null;
         this.lastResponseId = null;
         this.lastInputItems = null;
@@ -52,6 +55,24 @@ function stopIdleTimer(connection) {
     }
 }
 
+function startPingTimer(connection) {
+    stopPingTimer(connection);
+    connection.pingTimer = setInterval(() => {
+        if (connection.ws.readyState === 1) {
+            try { connection.ws.ping(); } catch { stopPingTimer(connection); }
+        } else {
+            stopPingTimer(connection);
+        }
+    }, POOL_PING_INTERVAL);
+}
+
+function stopPingTimer(connection) {
+    if (connection.pingTimer) {
+        clearInterval(connection.pingTimer);
+        connection.pingTimer = null;
+    }
+}
+
 function normalizeContextKey(contextKey) {
     return typeof contextKey === 'string' && contextKey.trim() ? contextKey.trim() : null;
 }
@@ -73,6 +94,7 @@ function bindConnectionContext(connection, contextKey, preserveResponseId = fals
 
 function removeConnection(connection, reason = 'unknown') {
     stopIdleTimer(connection);
+    stopPingTimer(connection);
     const state = connection.ws.readyState;
     if (state === 1) {
         try {
@@ -109,6 +131,7 @@ export async function acquire({
                 connection.busy = true;
                 connection.lastUsedAt = Date.now();
                 stopIdleTimer(connection);
+                stopPingTimer(connection);
                 bindConnectionContext(connection, normalizedContextKey ?? connection.contextKey, true);
                 logger.info(`Responses WS pool: reusing connection by previous_response_id=${normalizedPreviousResponseId}`);
                 return connection;
@@ -122,6 +145,7 @@ export async function acquire({
                 connection.busy = true;
                 connection.lastUsedAt = Date.now();
                 stopIdleTimer(connection);
+                stopPingTimer(connection);
                 return connection;
             }
         }
@@ -132,6 +156,7 @@ export async function acquire({
             connection.busy = true;
             connection.lastUsedAt = Date.now();
             stopIdleTimer(connection);
+            stopPingTimer(connection);
             bindConnectionContext(connection, normalizedContextKey, false);
             return connection;
         }
@@ -142,6 +167,7 @@ export async function acquire({
             connection.busy = true;
             connection.lastUsedAt = Date.now();
             stopIdleTimer(connection);
+            stopPingTimer(connection);
             bindConnectionContext(connection, normalizedContextKey, false);
             return connection;
         }
@@ -177,6 +203,7 @@ export function release(connection) {
     connection.busy = false;
     connection.lastUsedAt = Date.now();
     startIdleTimer(connection);
+    startPingTimer(connection);
 }
 
 export function discard(connection) {
@@ -187,6 +214,7 @@ export function shutdown() {
     for (const [, pool] of pools) {
         for (const connection of pool) {
             stopIdleTimer(connection);
+            stopPingTimer(connection);
             try {
                 connection.ws.close();
             } catch {}

@@ -32,6 +32,11 @@ export function responsesRequestToChat(responsesReq) {
         }
     }
 
+    // 合并连续同角色消息（主要处理 reasoning → assistant 的合并）
+    // reasoning item 被转为 {role:'assistant', reasoning_content:'...'}，
+    // 后续的 assistant 消息需要与之合并为一条，否则 Chat API 不允许连续 assistant 消息
+    _mergeConsecutiveMessages(messages);
+
     const chatReq = {
         model: responsesReq.model,
         messages,
@@ -115,6 +120,13 @@ export function chatRequestToResponses(chatReq) {
         }
 
         if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+            // reasoning_content → reasoning item（在 function_call 之前）
+            if (message.reasoning_content) {
+                input.push({
+                    type: 'reasoning',
+                    summary: [{type: 'summary_text', text: message.reasoning_content}]
+                });
+            }
             if (message.content) {
                 input.push({
                     role: 'assistant',
@@ -130,6 +142,22 @@ export function chatRequestToResponses(chatReq) {
                     arguments: toolCall.function?.arguments || '{}'
                 });
             }
+            continue;
+        }
+
+        // assistant 消息（无 tool_calls）—— 处理 reasoning_content
+        if (message.role === 'assistant') {
+            // reasoning_content → reasoning item（在 message 之前）
+            if (message.reasoning_content) {
+                input.push({
+                    type: 'reasoning',
+                    summary: [{type: 'summary_text', text: message.reasoning_content}]
+                });
+            }
+            input.push({
+                role: 'assistant',
+                content: convertChatMessageContentToResponses(message.content, 'output_text')
+            });
             continue;
         }
 
@@ -189,6 +217,44 @@ export function chatRequestToResponses(chatReq) {
     }
 
     return responsesReq;
+}
+
+/**
+ * 合并连续同角色消息
+ * Responses API 中 reasoning 和 assistant message 是独立的 input item，
+ * 转换为 Chat Completions 后可能产生连续的 assistant 消息，需要合并
+ * 规则：后一条消息的内容（content/reasoning_content/tool_calls）合并到前一条
+ */
+function _mergeConsecutiveMessages(messages) {
+    let i = 0;
+    while (i < messages.length - 1) {
+        const curr = messages[i];
+        const next = messages[i + 1];
+        if (curr.role === next.role) {
+            // 合并 reasoning_content
+            if (next.reasoning_content && !curr.reasoning_content) {
+                curr.reasoning_content = next.reasoning_content;
+            } else if (next.reasoning_content && curr.reasoning_content) {
+                curr.reasoning_content += '\n\n' + next.reasoning_content;
+            }
+            // 合并 content
+            if (next.content != null && curr.content == null) {
+                curr.content = next.content;
+            } else if (next.content != null && curr.content != null) {
+                const currText = typeof curr.content === 'string' ? curr.content : JSON.stringify(curr.content);
+                const nextText = typeof next.content === 'string' ? next.content : JSON.stringify(next.content);
+                if (nextText) curr.content = currText ? currText + '\n\n' + nextText : nextText;
+            }
+            // 合并 tool_calls
+            if (next.tool_calls) {
+                curr.tool_calls = [...(curr.tool_calls || []), ...next.tool_calls];
+            }
+            messages.splice(i + 1, 1);
+            // 不递增 i，继续检查合并后的消息是否还需要和下一项合并
+        } else {
+            i++;
+        }
+    }
 }
 
 /**
@@ -1321,14 +1387,16 @@ export function sanitizeResponsesInput(input) {
             };
         }
 
-        // reasoning → 转为纯文本 content
+        // reasoning → 保留 reasoning 类型，去掉上游无法解析的 id/status
+        // DeepSeek/Kimi 要求多轮对话必须回传 reasoning_content，
+        // 转为 output_text 会丢失推理标记，导致后续 Chat Completions 转换时无法区分
         if (item.type === 'reasoning') {
-            const text = Array.isArray(item.summary)
-                ? item.summary.map(s => s.text || '').filter(Boolean).join('\n')
-                : '';
+            const summary = Array.isArray(item.summary)
+                ? item.summary.map(s => ({type: s.type || 'summary_text', text: s.text || ''})).filter(s => s.text)
+                : [];
             return {
-                role: 'assistant',
-                content: text ? [{type: 'output_text', text}] : []
+                type: 'reasoning',
+                summary
             };
         }
 
