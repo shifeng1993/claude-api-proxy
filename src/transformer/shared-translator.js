@@ -498,6 +498,56 @@ function hashAnchor(value, limit) {
     return createHash('sha256').update(stableAnchorText(value).slice(0, limit)).digest('hex').slice(0, 16);
 }
 
+function normalizeAnchorIdentity(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function extractEmbeddedSessionId(value, depth = 0) {
+    if (depth > 8 || value == null) return undefined;
+    if (typeof value === 'string') {
+        const match = value.match(/<session-id>\s*([^<]+?)\s*<\/session-id>/i);
+        return normalizeAnchorIdentity(match?.[1]);
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = extractEmbeddedSessionId(item, depth + 1);
+            if (found) return found;
+        }
+        return undefined;
+    }
+    if (typeof value === 'object') {
+        for (const item of Object.values(value)) {
+            const found = extractEmbeddedSessionId(item, depth + 1);
+            if (found) return found;
+        }
+    }
+    return undefined;
+}
+
+function extractPayloadConversationIdentity(payload) {
+    const metadata = payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+    const candidates = [
+        payload?.conversation_id,
+        payload?.conversationId,
+        payload?.session_id,
+        payload?.sessionId,
+        payload?.thread_id,
+        payload?.threadId,
+        metadata.conversation_id,
+        metadata.conversationId,
+        metadata.session_id,
+        metadata.sessionId,
+        metadata.thread_id,
+        metadata.threadId,
+        extractEmbeddedSessionId(payload)
+    ];
+    for (const candidate of candidates) {
+        const normalized = normalizeAnchorIdentity(candidate);
+        if (normalized) return normalized;
+    }
+    return undefined;
+}
+
 /**
  * 基于第一条用户消息 + tenantId 生成稳定 cache key。
  * 同一对话多轮只在 messages 尾部追加时，首条 user 和 tenantId 保持不变，
@@ -513,9 +563,18 @@ export function buildConversationAnchorKey(payload, meta = {}) {
             : [];
     const anchors = [];
 
+    const conversationIdentity = extractPayloadConversationIdentity(payload);
+    if (conversationIdentity) {
+        anchors.push('sid:' + hashAnchor(conversationIdentity, 500));
+    }
+
     const firstUserMsg = messages.find((message) => (message.role || message.type) === 'user');
-    if (firstUserMsg) {
+    if (firstUserMsg && !conversationIdentity) {
         anchors.push('u:' + hashAnchor(firstUserMsg.content, 300));
+    }
+
+    if (!conversationIdentity && meta.clientConnectionId) {
+        anchors.push('cid:' + hashAnchor(meta.clientConnectionId, 500));
     }
 
     const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};

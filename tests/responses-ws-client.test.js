@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'events';
+import {WebSocketServer} from 'ws';
 import {
     prepareResponsesWebSocketPayload,
     sendResponsesWebSocketRequest,
     ResponsesWebSocketError
 } from '../src/services/shared/responses-ws-client.js';
-import {connectionPoolKey} from '../src/services/shared/responses-ws-pool.js';
+import {
+    acquire,
+    connectionPoolKey,
+    discard,
+    release,
+    shutdown
+} from '../src/services/shared/responses-ws-pool.js';
 
 class FakeWebSocket extends EventEmitter {
     constructor(messages = []) {
@@ -121,6 +128,21 @@ test('sendResponsesWebSocketRequest auto-links contextual previous_response_id',
     assert.equal(socket.sent[0].previous_response_id, 'resp_1');
 });
 
+test('sendResponsesWebSocketRequest honors disabled auto-linking', async () => {
+    const socket = new FakeWebSocket([{type: 'response.completed', response: {id: 'resp_2'}}]);
+    const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: 'resp_1'};
+
+    for await (const _event of sendResponsesWebSocketRequest(connection, {
+        model: 'gpt-5.4',
+        input: 'continue',
+        _autoLink: false
+    })) {
+    }
+
+    assert.equal('previous_response_id' in socket.sent[0], false);
+    assert.equal('_autoLink' in socket.sent[0], false);
+});
+
 test('sendResponsesWebSocketRequest surfaces upstream error events', async () => {
     const socket = new FakeWebSocket([
         {type: 'error', status: 400, error: {message: 'bad request', code: 'bad_request'}}
@@ -143,3 +165,48 @@ test('connectionPoolKey separates auth and network dimensions', () => {
     assert.notEqual(directKey, proxiedKey);
     assert.notEqual(directKey, otherTokenKey);
 });
+
+test('responses ws pool does not reuse a bound connection for a different context key', async () => {
+    const server = await createServer();
+    const port = server.address().port;
+    const url = `ws://127.0.0.1:${port}/v1/responses`;
+    let connA = null;
+    let connB = null;
+
+    try {
+        connA = await acquire({
+            url,
+            headers: {},
+            authKey: 'sk-test',
+            contextKey: 'session-a',
+            networkKey: `test-${port}`
+        });
+        release(connA);
+
+        connB = await acquire({
+            url,
+            headers: {},
+            authKey: 'sk-test',
+            contextKey: 'session-b',
+            networkKey: `test-${port}`
+        });
+
+        assert.notEqual(connA, connB);
+    } finally {
+        if (connB) discard(connB);
+        if (connA && connA !== connB) discard(connA);
+        shutdown();
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+function createServer() {
+    return new Promise((resolve, reject) => {
+        const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+        server.once('error', reject);
+        server.once('listening', () => {
+            server.off('error', reject);
+            resolve(server);
+        });
+    });
+}

@@ -169,11 +169,18 @@ function extractConversationKey(req, payload, meta = {}) {
     const payloadResult = extractConversationKeyFromPayload(payload);
     if (payloadResult) return payloadResult;
 
-    // Fallback: 用共享的 buildConversationAnchorKey，只基于第一条 user + tenantId
+    const keyMeta = {
+        ...meta,
+        ...(req.relayClientConnectionId && !meta.clientConnectionId
+            ? {clientConnectionId: req.relayClientConnectionId}
+            : {})
+    };
+
+    // Fallback: 用共享的 buildConversationAnchorKey，优先识别 payload 内的 session-id。
     const anchorPayload = payload && typeof payload === 'object'
         ? {...payload, messages: payload?.messages || payload?.input}
         : {messages: payload?.messages || payload?.input};
-    return buildConversationAnchorKey(anchorPayload, meta);
+    return buildConversationAnchorKey(anchorPayload, keyMeta);
 }
 
 function sendResponsesWebSocketProtocolError(res, error) {
@@ -627,12 +634,12 @@ async function handleOpenAIChatCompletions(req, res) {
         const tenant = await unifiedTenantManager.getTenant(tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
         const relayStatsModel = upstreamManager.resolveModel(openAIPayload.model, upstream.index);
+        const baseConversationKey = extractConversationKey(req, openAIPayload, {tenantId});
 
         openAIPayload.messages = injectBehaviorRules(openAIPayload.messages, relayStatsModel);
         // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
         openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
         mergeConsecutiveAssistantMessages(openAIPayload.messages);
-        const baseConversationKey = extractConversationKey(req, openAIPayload, {tenantId});
         relayConversationStore.saveChatRequest({
             tenantId,
             conversationKey: baseConversationKey,
@@ -959,11 +966,11 @@ async function handleAnthropicMessages(req, res) {
         const tenant = await unifiedTenantManager.getTenant(tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
         const relayStatsModel = upstreamManager.resolveModel(anthropicPayload.model, upstream.index);
+        const baseConversationKey = extractConversationKey(req, anthropicPayload, {tenantId});
         const openAIPayload = anthropicToOpenAI(anthropicPayload, relayStatsModel);
         openAIPayload.messages = injectBehaviorRules(openAIPayload.messages, relayStatsModel);
         openAIPayload.messages = stripDynamicReminders(openAIPayload.messages);
         mergeConsecutiveAssistantMessages(openAIPayload.messages);
-        const baseConversationKey = extractConversationKey(req, openAIPayload, {tenantId});
         relayConversationStore.saveChatRequest({
             tenantId,
             conversationKey: baseConversationKey,
@@ -2349,6 +2356,7 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
 export async function handleRelayResponsesWS(clientWs, req) {
     const tenantId = req.tenantId;
     const upstreamManager = await unifiedTenantManager.getUpstreamManager(tenantId);
+    req.relayClientConnectionId = req.relayClientConnectionId || `relay-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     handleWSConnection(clientWs, {
         authenticate: () => true,
         req,

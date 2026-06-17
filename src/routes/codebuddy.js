@@ -169,11 +169,18 @@ function resolveConversationId(req, messages, payload = {}, meta = {}) {
     const payloadResult = extractConversationIdFromPayload(payload);
     if (payloadResult) return payloadResult;
 
+    const keyMeta = {
+        ...meta,
+        ...(req.codebuddyClientConnectionId && !meta.clientConnectionId
+            ? {clientConnectionId: req.codebuddyClientConnectionId}
+            : {})
+    };
+
     const anchorPayload =
         payload && typeof payload === 'object'
             ? {...payload, messages: Array.isArray(messages) ? messages : payload.messages}
             : {messages};
-    return buildConversationAnchorKey(anchorPayload, meta);
+    return buildConversationAnchorKey(anchorPayload, keyMeta);
 }
 
 /**
@@ -251,13 +258,13 @@ async function handleOpenAIChatCompletions(req, res) {
             openAIPayload.model = mapModelName(openAIPayload.model);
         }
 
-        prepareCodebuddyOutboundChatRequest(openAIPayload);
-
-        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
         const conversationId = resolveConversationId(req, openAIPayload.messages, openAIPayload, {
             tenantId: authResult.tenantId
         });
 
+        prepareCodebuddyOutboundChatRequest(openAIPayload);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
         const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
@@ -427,13 +434,13 @@ async function handleAnthropicMessages(req, res) {
             openAIPayload.model = mapModelName(openAIPayload.model);
         }
 
-        prepareCodebuddyOutboundChatRequest(openAIPayload);
-
-        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
-        const conversationId = resolveConversationId(req, openAIPayload.messages, openAIPayload, {
+        const conversationId = resolveConversationId(req, anthropicPayload.messages, anthropicPayload, {
             tenantId: authResult.tenantId
         });
 
+        prepareCodebuddyOutboundChatRequest(openAIPayload);
+
+        // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
         // 调用 CodeBuddy API
         const response = await createChatCompletions(openAIPayload, {
             credential: authResult.credential,
@@ -771,6 +778,9 @@ async function handleResponsesAPI(req, res) {
 
         const body = await parseBody(req);
         const responsesReq = JSON.parse(body);
+        const conversationId = resolveConversationId(req, responsesReq.input, responsesReq, {
+            tenantId: authResult.tenantId
+        });
 
         // Responses → Chat Completions
         const chatReq = responsesRequestToChat(responsesReq);
@@ -783,10 +793,6 @@ async function handleResponsesAPI(req, res) {
         prepareCodebuddyOutboundChatRequest(chatReq);
 
         // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
-        const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {
-            tenantId: authResult.tenantId
-        });
-
         const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
@@ -987,6 +993,9 @@ async function handleResponsesCompact(req, res) {
 
         const body = await parseBody(req);
         const compactReq = JSON.parse(body);
+        const conversationId = resolveConversationId(req, compactReq.input, compactReq, {
+            tenantId: authResult.tenantId
+        });
 
         // Compact → Chat Completions
         const chatReq = compactRequestToChat(compactReq);
@@ -999,10 +1008,6 @@ async function handleResponsesCompact(req, res) {
         prepareCodebuddyOutboundChatRequest(chatReq);
 
         // 从 messages 前缀推算稳定的 conversationId，确保同一对话的 prompt_cache_key 一致
-        const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {
-            tenantId: authResult.tenantId
-        });
-
         const tenant = unifiedTenantManager.getTenant(authResult.tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 
@@ -1220,6 +1225,7 @@ function handleRoot(req, res) {
  * @param {import('http').IncomingMessage} req - 原始 HTTP 请求（已注入 tenantId）
  */
 export function handleCodebuddyResponsesWS(clientWs, req) {
+    req.codebuddyClientConnectionId = req.codebuddyClientConnectionId || `codebuddy-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     handleWSConnection(clientWs, {
         authenticate: () => true,
         req,
@@ -1249,12 +1255,12 @@ export function handleCodebuddyResponsesWS(clientWs, req) {
             }
 
             // Responses → Chat Completions
+            const conversationId = resolveConversationId(req, payload.input, payload, {tenantId});
             const chatReq = responsesRequestToChat(payload);
             if (chatReq.model) chatReq.model = mapModelName(chatReq.model);
             prepareCodebuddyOutboundChatRequest(chatReq);
             chatReq.stream = true;
 
-            const conversationId = resolveConversationId(req, chatReq.messages, chatReq, {tenantId});
             const tenant = unifiedTenantManager.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
 

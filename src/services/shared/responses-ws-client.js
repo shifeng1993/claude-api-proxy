@@ -24,7 +24,7 @@ export function isResponsesWebSocketProtocolError(error) {
 }
 
 export function prepareResponsesWebSocketPayload(payload) {
-    const {stream, background, ...rest} = payload || {};
+    const {stream, background, _autoLink, ...rest} = payload || {};
     return rest;
 }
 
@@ -96,6 +96,8 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
     let closeCode = null;
     let closeReason = '';
 
+    const autoLinkEnabled = payload?._autoLink !== false;
+
     if (Array.isArray(payload.input)) {
         payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
     }
@@ -104,7 +106,7 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
         typeof payload.previous_response_id === 'string' && payload.previous_response_id.trim()
             ? payload.previous_response_id.trim()
             : null;
-    const autoPreviousResponseId = !explicitPreviousResponseId && connection?.contextKey && connection.lastResponseId
+    const autoPreviousResponseId = autoLinkEnabled && !explicitPreviousResponseId && connection?.contextKey && connection.lastResponseId
         ? connection.lastResponseId
         : null;
     const referencedPreviousResponseId = explicitPreviousResponseId || autoPreviousResponseId;

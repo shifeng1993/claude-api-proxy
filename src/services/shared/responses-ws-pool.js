@@ -162,14 +162,16 @@ export async function acquire({
         }
     }
 
-    for (const connection of pool) {
-        if (!connection.busy && connection.ws.readyState === 1) {
-            connection.busy = true;
-            connection.lastUsedAt = Date.now();
-            stopIdleTimer(connection);
-            stopPingTimer(connection);
-            bindConnectionContext(connection, normalizedContextKey, false);
-            return connection;
+    if (!normalizedContextKey) {
+        for (const connection of pool) {
+            if (!connection.busy && connection.ws.readyState === 1) {
+                connection.busy = true;
+                connection.lastUsedAt = Date.now();
+                stopIdleTimer(connection);
+                stopPingTimer(connection);
+                bindConnectionContext(connection, normalizedContextKey, false);
+                return connection;
+            }
         }
     }
 

@@ -48,6 +48,36 @@ test('conversation anchor key includes tenant dimension', () => {
     assert.notEqual(tenantA, tenantB);
 });
 
+test('conversation anchor key uses embedded session-id even outside the first user prefix', () => {
+    const longSharedPrefix = 'same prefix '.repeat(40);
+    const keyA = buildConversationAnchorKey({
+        model: 'glm-5.1',
+        messages: [
+            {role: 'user', content: `${longSharedPrefix}<session-id>session-a</session-id>\nContinue`}
+        ]
+    }, {tenantId: 'tenant_1'});
+    const keyB = buildConversationAnchorKey({
+        model: 'glm-5.1',
+        messages: [
+            {role: 'user', content: `${longSharedPrefix}<session-id>session-b</session-id>\nContinue`}
+        ]
+    }, {tenantId: 'tenant_1'});
+
+    assert.notEqual(keyA, keyB);
+});
+
+test('conversation anchor key can include client connection id when no stable session id exists', () => {
+    const payload = {
+        model: 'glm-5.1',
+        messages: [{role: 'user', content: 'Continue'}]
+    };
+
+    const keyA = buildConversationAnchorKey(payload, {tenantId: 'tenant_1', clientConnectionId: 'ws-a'});
+    const keyB = buildConversationAnchorKey(payload, {tenantId: 'tenant_1', clientConnectionId: 'ws-b'});
+
+    assert.notEqual(keyA, keyB);
+});
+
 // ---- 新增：只基于第一条 user 消息 + tenantId，不随 system/tools 变化 ----
 
 test('anchor key ignores system prompt changes — only first user message matters', () => {
