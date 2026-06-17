@@ -89,10 +89,25 @@ test('sendResponsesWebSocketRequest sanitizes previous response item ids and tra
     assert.deepEqual(socket.sent[0].input, [
         {
             role: 'assistant',
-            content: [{type: 'output_text', text: 'old text'}],
-            partial: true
+            content: [{type: 'output_text', text: 'old text'}]
         }
     ]);
+});
+
+test('sendResponsesWebSocketRequest injects partial only for doubao-seed prefill models', async () => {
+    const socket = new FakeWebSocket([
+        {type: 'response.created', response: {id: 'resp_1'}},
+        {type: 'response.completed', response: {id: 'resp_1', usage: {input_tokens: 1, output_tokens: 2}}}
+    ]);
+    const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: null};
+
+    for await (const _event of sendResponsesWebSocketRequest(connection, {
+        model: 'doubao-seed-1-6-251015',
+        input: [{role: 'assistant', content: 'def bubble_sort(arr):'}]
+    })) {
+    }
+
+    assert.equal(socket.sent[0].input[0].partial, true);
 });
 
 test('sendResponsesWebSocketRequest auto-links contextual previous_response_id', async () => {
