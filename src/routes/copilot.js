@@ -856,7 +856,7 @@ async function handleResponsesAPI(req, res) {
 
         // 净化 input：去除上游 WS 无法解析的 id 引用（CherryStudio 续接对话时带入的 output item id）
         if (Array.isArray(responsesReq.input)) {
-            responsesReq.input = sanitizeResponsesInput(responsesReq.input);
+            responsesReq.input = sanitizeResponsesInput(responsesReq.input, responsesReq.model);
         }
 
         // WS 通道：直接发送 Responses 格式
@@ -1144,7 +1144,7 @@ function handleCopilotResponsesWSInContext(clientWs, req) {
 
                 // 净化 input
                 if (Array.isArray(payload.input)) {
-                    payload = {...payload, input: sanitizeResponsesInput(payload.input)};
+                    payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
                 }
 
                 // 尝试 WS 模式（GPT 系列模型）

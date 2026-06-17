@@ -5,7 +5,7 @@
  */
 
 import logger from '../utils/logger.js';
-import {generateId} from './shared-translator.js';
+import {generateId, isDoubaoSeedModel} from './shared-translator.js';
 
 /* ================= Responses Request → Chat Completions Request ================= */
 
@@ -1495,9 +1495,10 @@ export function chatResponseToCompact(chatRes) {
  * - 其他类型 → 透传
  *
  * @param {Array|undefined} input - Responses API 的 input 数组
+ * @param {string} [model] - 上游模型名，用于判断是否注入 partial（仅 doubao-seed 系列支持续写模式）
  * @returns {Array} 净化后的 input 数组
  */
-export function sanitizeResponsesInput(input) {
+export function sanitizeResponsesInput(input, model) {
     if (!Array.isArray(input)) return input;
 
     const result = input.map(item => {
@@ -1565,11 +1566,12 @@ export function sanitizeResponsesInput(input) {
     });
 
     // 火山引擎 Responses API 要求：partial 只能用于 input 数组的最后一条消息
-    // 当最后一条消息是 assistant 时，必须设 partial=true（续写模式）
+    // 当最后一条消息是 assistant 时，可设 partial=true 开启续写（prefill）模式
     // 中间的 assistant 消息不能带 partial 字段
+    // 仅 doubao-seed 系列支持 partial prefill，glm 等模型不支持会报 400，故按模型族判定
     if (result.length > 0) {
         const lastItem = result[result.length - 1];
-        if (lastItem?.role === 'assistant' && lastItem.partial === undefined) {
+        if (lastItem?.role === 'assistant' && lastItem.partial === undefined && isDoubaoSeedModel(model)) {
             lastItem.partial = true;
         }
     }

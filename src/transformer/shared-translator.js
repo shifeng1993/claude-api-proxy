@@ -941,6 +941,16 @@ const RESPONSES_FIELD_ORDER = [
     'previous_response_id', 'text', 'caching', 'metadata'
 ];
 
+/**
+ * 判断模型是否支持 Responses API 的 partial（prefill）续写模式。
+ * 火山引擎仅 doubao-seed 系列支持 partial，glm 等其他模型传 partial 会报 400：
+ *   "The parameter `partial` specified in the request are not valid: partial (prefill) is not supported by current model"
+ * 支持清单参考火山引擎文档（doubao-seed-2-0-* / doubao-seed-1-8-* / doubao-seed-1-6-* / doubao-seed-code-preview-*）。
+ */
+export function isDoubaoSeedModel(model) {
+    return /^doubao-seed/i.test(String(model || '').trim());
+}
+
 export function normalizeResponsesPayload(payload, meta = {}) {
     const ordered = {};
     for (const key of RESPONSES_FIELD_ORDER) {
@@ -994,10 +1004,11 @@ export function normalizeResponsesPayload(payload, meta = {}) {
     // input 中 assistant 消息添加 partial 字段
     // 火山引擎 Responses API：partial 只能用在 input 最后一条消息上，且必须为 true
     // 中间的 assistant 消息不能带 partial 字段，否则报 400
-    // 只有当 input 最后一条是 assistant 消息时，才给它加 partial: true
+    // 只有 doubao-seed 系列模型支持续写模式（partial prefill），glm 等模型不支持会报 400，
+    // 因此仅当模型命中 doubao-seed 时才给最后一条 assistant 消息注入 partial: true
     if (Array.isArray(ordered.input) && ordered.input.length > 0) {
         const lastItem = ordered.input[ordered.input.length - 1];
-        if (lastItem?.role === 'assistant' && lastItem.partial === undefined) {
+        if (lastItem?.role === 'assistant' && lastItem.partial === undefined && isDoubaoSeedModel(ordered.model)) {
             lastItem.partial = true;
         }
     }

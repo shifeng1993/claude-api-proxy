@@ -97,7 +97,7 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
     let closeReason = '';
 
     if (Array.isArray(payload.input)) {
-        payload = {...payload, input: sanitizeResponsesInput(payload.input)};
+        payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
     }
 
     const explicitPreviousResponseId =
