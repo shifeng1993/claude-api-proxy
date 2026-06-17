@@ -2,16 +2,36 @@ import {estimateMessageTokens, roughTokenCountEstimation} from '../../utils/toke
 
 export const RELAY_COMPACTION_SUMMARY_PREFIX = '[Relay conversation summary]';
 
-const DEFAULT_THRESHOLD_TOKENS = 60_000;
-const DEFAULT_RECENT_TOKENS = 16_000;
 const DEFAULT_SUMMARY_TOKENS = 2048;
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+const TRIGGER_RATIO = 0.70;
+const RECENT_RATIO = 0.25;
+const MIN_RECENT_TOKENS = 2_000;
+const MAX_RECENT_TOKENS = 256_000;
 
-export function loadContextCompactionConfig(env = process.env) {
+export function inferModelContextWindowTokens(model) {
+    return hasOneMillionContextMarker(model) ? 1_000_000 : DEFAULT_CONTEXT_WINDOW_TOKENS;
+}
+
+export function resolveContextCompactionPolicy(modelOrRequest) {
+    const model = typeof modelOrRequest === 'object' && modelOrRequest !== null
+        ? modelOrRequest.model
+        : modelOrRequest;
+    const contextWindowTokens = inferModelContextWindowTokens(model);
     return {
-        enabled: env.RELAY_CONTEXT_COMPACTION_ENABLED !== 'false',
-        thresholdTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_THRESHOLD_TOKENS, DEFAULT_THRESHOLD_TOKENS),
-        recentTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_RECENT_TOKENS, DEFAULT_RECENT_TOKENS),
-        summaryTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_SUMMARY_TOKENS, DEFAULT_SUMMARY_TOKENS)
+        enabled: true,
+        contextWindowTokens,
+        thresholdTokens: Math.floor(contextWindowTokens * TRIGGER_RATIO),
+        recentTokens: clamp(
+            Math.floor(contextWindowTokens * RECENT_RATIO),
+            MIN_RECENT_TOKENS,
+            MAX_RECENT_TOKENS
+        ),
+        summaryTokens: contextWindowTokens <= 32_000
+            ? 1024
+            : contextWindowTokens >= 128_000
+                ? 4096
+                : DEFAULT_SUMMARY_TOKENS
     };
 }
 
@@ -29,21 +49,22 @@ export async function compactChatRequestIfNeeded({
     summarize,
     force = false,
     reason,
-    config = loadContextCompactionConfig()
+    config
 }) {
     if (!chatRequest || !Array.isArray(chatRequest.messages)) {
         return unchanged(chatRequest, 'invalid_request');
     }
-    if (!config.enabled) {
+    const policy = config ? normalizeContextCompactionPolicy(config, chatRequest) : resolveContextCompactionPolicy(chatRequest);
+    if (!policy.enabled) {
         return unchanged(chatRequest, 'disabled');
     }
 
     const estimatedTokens = estimateChatRequestTokens(chatRequest);
-    if (!force && estimatedTokens <= config.thresholdTokens) {
+    if (!force && estimatedTokens <= policy.thresholdTokens) {
         return unchanged(chatRequest, 'below_threshold', estimatedTokens);
     }
 
-    const split = splitMessagesForCompaction(chatRequest.messages, config.recentTokens);
+    const split = splitMessagesForCompaction(chatRequest.messages, policy.recentTokens);
     if (split.oldMessages.length === 0) {
         return unchanged(chatRequest, 'no_old_messages', estimatedTokens);
     }
@@ -52,12 +73,12 @@ export async function compactChatRequestIfNeeded({
         model: chatRequest.model,
         messages: split.oldMessages,
         previousSummary: split.previousSummary,
-        targetTokens: config.summaryTokens
+        targetTokens: policy.summaryTokens
     });
     const summary = normalizeSummary(await summarize({
         messages: clone(split.oldMessages),
         previousSummary: split.previousSummary,
-        targetTokens: config.summaryTokens,
+        targetTokens: policy.summaryTokens,
         summaryRequest
     }));
 
@@ -231,7 +252,28 @@ function safeStringify(value) {
     }
 }
 
-function readPositiveInteger(value, fallback) {
-    const parsed = Number.parseInt(value || '', 10);
+function hasOneMillionContextMarker(model) {
+    return /\[\s*1\s*m\s*\]/i.test(String(model || ''));
+}
+
+function normalizeContextCompactionPolicy(config, chatRequest) {
+    const automatic = resolveContextCompactionPolicy(chatRequest);
+    if (!config || typeof config !== 'object') return automatic;
+    return {
+        ...automatic,
+        ...config,
+        enabled: config.enabled !== false,
+        thresholdTokens: readPositiveNumber(config.thresholdTokens, automatic.thresholdTokens),
+        recentTokens: readPositiveNumber(config.recentTokens, automatic.recentTokens),
+        summaryTokens: readPositiveNumber(config.summaryTokens, automatic.summaryTokens)
+    };
+}
+
+function readPositiveNumber(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
 }

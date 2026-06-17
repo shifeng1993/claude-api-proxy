@@ -5,7 +5,9 @@ import {
     RELAY_COMPACTION_SUMMARY_PREFIX,
     compactChatRequestIfNeeded,
     estimateChatRequestTokens,
-    isContextWindowExceededError
+    inferModelContextWindowTokens,
+    isContextWindowExceededError,
+    resolveContextCompactionPolicy
 } from '../src/services/relay/context-compactor.js';
 
 function message(role, content) {
@@ -122,6 +124,101 @@ test('compactChatRequestIfNeeded folds a previous relay summary into the replace
     assert.equal(summaries[0].content, `${RELAY_COMPACTION_SUMMARY_PREFIX}\nUpdated compact summary.`);
 });
 
+test('resolveContextCompactionPolicy defaults unmarked models to 200k', () => {
+    for (const model of ['deepseek-chat', 'claude-3-5-sonnet-20241022', 'glm-5.2', 'kimi-k2.7', 'deepseek-v4-pro']) {
+        const policy = resolveContextCompactionPolicy(model);
+        assert.equal(policy.contextWindowTokens, 200_000);
+        assert.equal(policy.thresholdTokens, 140_000);
+        assert.equal(policy.recentTokens, 50_000);
+        assert.equal(policy.summaryTokens, 4096);
+    }
+});
+
+test('resolveContextCompactionPolicy uses bracketed 1m marker', () => {
+    const policy = resolveContextCompactionPolicy('glm-5.2 [1m]');
+    assert.equal(policy.contextWindowTokens, 1_000_000);
+    assert.equal(policy.thresholdTokens, 700_000);
+    assert.equal(policy.recentTokens, 250_000);
+    assert.equal(policy.summaryTokens, 4096);
+});
+
+test('inferModelContextWindowTokens only honors bracketed 1m marker', () => {
+    assert.equal(inferModelContextWindowTokens('provider-model-32k'), 200_000);
+    assert.equal(inferModelContextWindowTokens('custom-model-1m'), 200_000);
+    assert.equal(inferModelContextWindowTokens('custom-model [1m]'), 1_000_000);
+    assert.equal(inferModelContextWindowTokens('custom-model [1M]'), 1_000_000);
+    assert.equal(inferModelContextWindowTokens('unknown-private-model'), 200_000);
+});
+
+test('compactChatRequestIfNeeded ignores legacy env thresholds and uses automatic policy', async () => {
+    const previous = {
+        enabled: process.env.RELAY_CONTEXT_COMPACTION_ENABLED,
+        threshold: process.env.RELAY_CONTEXT_COMPACTION_THRESHOLD_TOKENS,
+        recent: process.env.RELAY_CONTEXT_COMPACTION_RECENT_TOKENS,
+        summary: process.env.RELAY_CONTEXT_COMPACTION_SUMMARY_TOKENS
+    };
+    process.env.RELAY_CONTEXT_COMPACTION_ENABLED = 'false';
+    process.env.RELAY_CONTEXT_COMPACTION_THRESHOLD_TOKENS = '1';
+    process.env.RELAY_CONTEXT_COMPACTION_RECENT_TOKENS = '1';
+    process.env.RELAY_CONTEXT_COMPACTION_SUMMARY_TOKENS = '1';
+
+    try {
+        let summarizeCalls = 0;
+        const chatRequest = {
+            model: 'deepseek-chat',
+            messages: [
+                message('system', 'Original system'),
+                message('user', 'short but above one env token'),
+                message('assistant', 'still small for the automatic deepseek threshold'),
+                message('user', 'latest question')
+            ]
+        };
+
+        const result = await compactChatRequestIfNeeded({
+            chatRequest,
+            summarize: async () => {
+                summarizeCalls++;
+                return 'unused';
+            }
+        });
+
+        assert.equal(result.compacted, false);
+        assert.equal(result.reason, 'below_threshold');
+        assert.equal(summarizeCalls, 0);
+    } finally {
+        restoreEnv('RELAY_CONTEXT_COMPACTION_ENABLED', previous.enabled);
+        restoreEnv('RELAY_CONTEXT_COMPACTION_THRESHOLD_TOKENS', previous.threshold);
+        restoreEnv('RELAY_CONTEXT_COMPACTION_RECENT_TOKENS', previous.recent);
+        restoreEnv('RELAY_CONTEXT_COMPACTION_SUMMARY_TOKENS', previous.summary);
+    }
+});
+
+test('compactChatRequestIfNeeded triggers using the automatic model threshold', async () => {
+    const oldText = 'old-auto-context '.repeat(30000);
+    const recentText = 'recent-auto-context '.repeat(200);
+    const chatRequest = {
+            model: 'test-auto-default',
+        messages: [
+            message('system', 'Original system'),
+            message('user', oldText + 'question 1'),
+            message('assistant', oldText + 'answer 1'),
+            message('user', recentText + 'latest question')
+        ]
+    };
+
+    const result = await compactChatRequestIfNeeded({
+        chatRequest,
+        summarize: async ({targetTokens}) => {
+            assert.equal(targetTokens, 4096);
+            return 'Automatic policy summary.';
+        }
+    });
+
+    assert.equal(result.compacted, true);
+    assert.equal(result.reason, 'threshold');
+    assert.equal(result.chatRequest.messages[1].content, `${RELAY_COMPACTION_SUMMARY_PREFIX}\nAutomatic policy summary.`);
+});
+
 test('isContextWindowExceededError matches only context-window 400 errors', () => {
     assert.equal(
         isContextWindowExceededError(new RelayUpstreamError('[upstream]: HTTP 400: context window exceeded', 400)),
@@ -140,3 +237,11 @@ test('isContextWindowExceededError matches only context-window 400 errors', () =
         false
     );
 });
+
+function restoreEnv(name, value) {
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+}
