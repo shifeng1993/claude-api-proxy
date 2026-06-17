@@ -59,6 +59,10 @@ import {
     relayConversationStore
 } from '../services/relay/conversation-state.js';
 import {
+    compactChatRequestIfNeeded,
+    isContextWindowExceededError
+} from '../services/relay/context-compactor.js';
+import {
     anthropicResponseToChat,
     anthropicStreamToChatChunks,
     chatRequestToAnthropic
@@ -339,6 +343,174 @@ function estimateAnthropicInputTokens(payload) {
         ? estimateMessageTokens(payload.tools.map((tool) => ({role: 'tool', content: JSON.stringify(tool)})))
         : 0;
     return messageTokens + toolTokens;
+}
+
+async function generateRelayContextSummary({
+    summaryRequest,
+    upstream,
+    upstreamManager,
+    tenantId,
+    tenantMeta = {},
+    conversationKey,
+    originalModel,
+    requestType,
+    req
+}) {
+    const model = upstreamManager.resolveModel(summaryRequest.model || originalModel, upstream.index);
+    const payload = {...summaryRequest, model, stream: false};
+    const compactConversationKey = conversationKey ? `${conversationKey}:compact` : undefined;
+    const compactMeta = {
+        requestType: `${requestType}ContextCompaction`,
+        stream: false,
+        originalModel,
+        conversationKey: compactConversationKey,
+        sessionId: tenantId ? `session-${tenantId}` : compactConversationKey,
+        ...tenantMeta
+    };
+
+    if (isAnthropicUpstream(upstream)) {
+        const anthropicPayload = chatRequestToAnthropic(payload);
+        const {response} = await callUpstream(upstream, (up) =>
+            createAnthropicMessages(
+                anthropicPayload,
+                up,
+                compactMeta,
+                getAnthropicRequestHeaders(req)
+            )
+        );
+        const responseBody = await readResponseBody(response.body);
+        const parsed = JSON.parse(responseBody);
+        const chatResponse = anthropicResponseToChat(parsed, originalModel || model);
+        recordUsage(
+            tenantId,
+            chatResponse.usage?.prompt_tokens || 0,
+            chatResponse.usage?.completion_tokens || 0,
+            chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+            model
+        );
+        return chatResponse.choices?.[0]?.message?.content || '';
+    }
+
+    const {response} = await callUpstream(upstream, (up) =>
+        createChatCompletions(payload, up, compactMeta)
+    );
+    const responseBody = await readResponseBody(response.body);
+    const parsed = JSON.parse(responseBody);
+    recordUsage(
+        tenantId,
+        parsed.usage?.prompt_tokens || 0,
+        parsed.usage?.completion_tokens || 0,
+        extractCacheHitTokens(parsed.usage),
+        model
+    );
+    return parsed.choices?.[0]?.message?.content || '';
+}
+
+async function compactRelayChatRequest({
+    chatRequest,
+    upstream,
+    upstreamManager,
+    tenantId,
+    tenantMeta,
+    conversationKey,
+    originalModel,
+    requestType,
+    req,
+    force = false,
+    reason
+}) {
+    const result = await compactChatRequestIfNeeded({
+        chatRequest,
+        force,
+        reason,
+        summarize: ({summaryRequest}) => generateRelayContextSummary({
+            summaryRequest,
+            upstream,
+            upstreamManager,
+            tenantId,
+            tenantMeta,
+            conversationKey,
+            originalModel,
+            requestType,
+            req
+        })
+    });
+
+    if (result.compacted) {
+        relayConversationStore.saveChatRequest({
+            tenantId,
+            conversationKey,
+            request: result.chatRequest
+        });
+        logger.info(
+            `Relay context compacted (${requestType}): messages ${result.oldMessageCount}+${result.recentMessageCount}, tokens ${result.estimatedTokens}->${result.compactedTokens}`
+        );
+    }
+
+    return result;
+}
+
+async function invokeWithRelayContextCompaction({
+    chatRequest,
+    compactOptions,
+    invoke
+}) {
+    let prepared = {chatRequest};
+    try {
+        prepared = await compactRelayChatRequest({
+            ...compactOptions,
+            chatRequest,
+            force: false
+        });
+    } catch (error) {
+        logger.warn(`Relay context proactive compaction skipped: ${error.message}`);
+        prepared = {chatRequest};
+    }
+
+    try {
+        return {
+            chatRequest: prepared.chatRequest,
+            result: await invoke(prepared.chatRequest),
+            retriedAfterCompaction: false
+        };
+    } catch (error) {
+        if (!isContextWindowExceededError(error)) throw error;
+
+        logger.warn(`Relay context exceeded, compacting and retrying once: ${error.message}`);
+        let retryPrepared;
+        try {
+            retryPrepared = await compactRelayChatRequest({
+                ...compactOptions,
+                chatRequest: prepared.chatRequest,
+                force: true,
+                reason: 'context-window-exceeded'
+            });
+        } catch (compactionError) {
+            logger.warn(`Relay context reactive compaction failed: ${compactionError.message}`);
+            throw error;
+        }
+        if (!retryPrepared.compacted) throw error;
+
+        return {
+            chatRequest: retryPrepared.chatRequest,
+            result: await invoke(retryPrepared.chatRequest),
+            retriedAfterCompaction: true
+        };
+    }
+}
+
+function prepareRelayOutboundChatRequest(chatRequest, {model, stream} = {}) {
+    const outbound = cloneJson(chatRequest || {});
+    outbound.model = model || outbound.model;
+    if (stream !== undefined) outbound.stream = stream;
+    outbound.messages = injectBehaviorRules(outbound.messages || [], outbound.model);
+    outbound.messages = stripDynamicReminders(outbound.messages);
+    mergeConsecutiveAssistantMessages(outbound.messages);
+    return outbound;
+}
+
+function cloneJson(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
 function mapAnthropicModelsToOpenAI(modelsData) {
@@ -1286,31 +1458,46 @@ async function handleResponsesAPI(req, res) {
                 conversationKey,
                 request: responsesReq
             });
-            const chatReq = hydrated.chatRequest;
-            chatReq.messages = injectBehaviorRules(chatReq.messages, relayStatsModel);
-            chatReq.messages = stripDynamicReminders(chatReq.messages);
-            mergeConsecutiveAssistantMessages(chatReq.messages);
+            let chatReq = hydrated.chatRequest;
             chatReq.stream = responsesReq.stream;
-            const anthropicPayload = chatRequestToAnthropic({
-                ...chatReq,
-                model: upstreamManager.resolveModel(chatReq.model, upstream.index),
-                stream: responsesReq.stream
-            });
             const tenant = await unifiedTenantManager.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
-            const {response} = await callUpstream(upstream, (up) =>
-                createAnthropicMessages(
-                    anthropicPayload,
-                    up,
-                    {
-                        requestType: 'ResponsesViaAnthropic',
-                        stream: responsesReq.stream,
-                        originalModel: responsesReq.model,
-                        ...tenantMeta
-                    },
-                    getAnthropicRequestHeaders(req)
-                )
-            );
+            const stateConversationKey = hydrated.conversationKey || conversationKey;
+            const invocation = await invokeWithRelayContextCompaction({
+                chatRequest: chatReq,
+                compactOptions: {
+                    upstream,
+                    upstreamManager,
+                    tenantId,
+                    tenantMeta,
+                    conversationKey: stateConversationKey,
+                    originalModel: responsesReq.model,
+                    requestType: 'ResponsesViaAnthropic',
+                    req
+                },
+                invoke: (readyChatReq) => {
+                    const outboundChatReq = prepareRelayOutboundChatRequest(readyChatReq, {
+                        model: upstreamManager.resolveModel(readyChatReq.model, upstream.index),
+                        stream: responsesReq.stream
+                    });
+                    const anthropicPayload = chatRequestToAnthropic(outboundChatReq);
+                    return callUpstream(upstream, (up) =>
+                        createAnthropicMessages(
+                            anthropicPayload,
+                            up,
+                            {
+                                requestType: 'ResponsesViaAnthropic',
+                                stream: responsesReq.stream,
+                                originalModel: responsesReq.model,
+                                ...tenantMeta
+                            },
+                            getAnthropicRequestHeaders(req)
+                        )
+                    );
+                }
+            });
+            chatReq = invocation.chatRequest;
+            const {response} = invocation.result;
 
             if (responsesReq.stream) {
                 res.writeHead(200, {
@@ -1322,7 +1509,6 @@ async function handleResponsesAPI(req, res) {
                 const streamState = createResponsesStreamState();
                 let finalUsage = null;
                 let completedResponse = null;
-                const stateConversationKey = hydrated.conversationKey || conversationKey;
                 for await (const chatChunk of anthropicStreamToChatChunks(response.body, parseSSEBlock, req.signal)) {
                     if (chatChunk.usage) finalUsage = chatChunk.usage;
                     const events = chatChunkToResponsesEvents(chatChunk, streamState);
@@ -1522,13 +1708,8 @@ async function handleResponsesAPI(req, res) {
             conversationKey: responsesConversationKey,
             request: responsesReq
         });
-        const chatReq = hydrated.chatRequest;
-        chatReq.messages = injectBehaviorRules(chatReq.messages, relayStatsModel);
-        // 剥离纯记账性质的 system-reminder 块，避免动态内容破坏缓存前缀匹配
-        chatReq.messages = stripDynamicReminders(chatReq.messages);
-        // 合并连续的 assistant 消息（hydrate 合并后可能产生重复的 assistant 消息，
-        // 例如 base 和 visible 去重失败时；DeepSeek 等上游不允许连续 assistant 消息）
-        mergeConsecutiveAssistantMessages(chatReq.messages);
+        let chatReq = hydrated.chatRequest;
+        // Keep the stored transcript raw; outbound-only prompt shaping happens in prepareRelayOutboundChatRequest.
 
         const tenant = await unifiedTenantManager.getTenant(tenantId);
         const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
@@ -1538,18 +1719,37 @@ async function handleResponsesAPI(req, res) {
             conversationKey,
             sessionId: tenantId ? `session-${tenantId}` : conversationKey
         };
-
-        const {response} = await callUpstream(upstream, (up) => {
-            const payload = {...chatReq, model: upstreamManager.resolveModel(chatReq.model, up.index)};
-            return createChatCompletions(payload, up, {
-                requestType: 'Responses',
-                stream: responsesReq.stream,
-                originalModel: responsesReq.model,
-                ...relayMeta
-            });
-        });
+        const compactOptions = {
+            upstream,
+            upstreamManager,
+            tenantId,
+            tenantMeta,
+            conversationKey,
+            originalModel: responsesReq.model,
+            requestType: 'ResponsesViaChat',
+            req
+        };
 
         if (responsesReq.stream) {
+            const invocation = await invokeWithRelayContextCompaction({
+                chatRequest: chatReq,
+                compactOptions,
+                invoke: (readyChatReq) => callUpstream(upstream, (up) => {
+                    const payload = prepareRelayOutboundChatRequest(readyChatReq, {
+                        model: upstreamManager.resolveModel(readyChatReq.model, up.index),
+                        stream: responsesReq.stream
+                    });
+                    return createChatCompletions(payload, up, {
+                        requestType: 'Responses',
+                        stream: responsesReq.stream,
+                        originalModel: responsesReq.model,
+                        ...relayMeta
+                    });
+                })
+            });
+            chatReq = invocation.chatRequest;
+            const {response} = invocation.result;
+
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
@@ -1639,15 +1839,24 @@ async function handleResponsesAPI(req, res) {
             });
         } else {
             // 非流式：强制 stream=true 请求上游，聚合后转 Responses 格式
-            const {response: streamResp} = await callUpstream(upstream, (up) => {
-                const payload = {...chatReq, model: upstreamManager.resolveModel(chatReq.model, up.index), stream: true};
-                return createChatCompletions(payload, up, {
-                    requestType: 'Responses',
-                    stream: false,
-                    originalModel: responsesReq.model,
-                    ...relayMeta
-                });
+            const invocation = await invokeWithRelayContextCompaction({
+                chatRequest: chatReq,
+                compactOptions,
+                invoke: (readyChatReq) => callUpstream(upstream, (up) => {
+                    const payload = prepareRelayOutboundChatRequest(readyChatReq, {
+                        model: upstreamManager.resolveModel(readyChatReq.model, up.index),
+                        stream: true
+                    });
+                    return createChatCompletions(payload, up, {
+                        requestType: 'Responses',
+                        stream: false,
+                        originalModel: responsesReq.model,
+                        ...relayMeta
+                    });
+                })
             });
+            chatReq = invocation.chatRequest;
+            const {response: streamResp} = invocation.result;
 
             const aggregated = await aggregateStreamResponse(streamResp.body);
             const inputTokens = aggregated.usage?.prompt_tokens || 0;
@@ -1908,28 +2117,45 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             if (error instanceof RelayStateMissingError) throw toResponsesWebSocketStateMissingError(error);
             throw error;
         }
-        const chatReq = hydrated.chatRequest;
-        chatReq.messages = injectBehaviorRules(chatReq.messages, resolvedModel);
-        chatReq.messages = stripDynamicReminders(chatReq.messages);
+        let chatReq = hydrated.chatRequest;
         chatReq.stream = true;
-        const anthropicPayload = chatRequestToAnthropic({
-            ...chatReq,
-            model: resolvedModel,
-            stream: true
+        const stateConversationKey = hydrated.conversationKey || conversationKey;
+        const stateRelayMeta = {...relayMeta, conversationKey: stateConversationKey};
+        const invocation = await invokeWithRelayContextCompaction({
+            chatRequest: chatReq,
+            compactOptions: {
+                upstream,
+                upstreamManager,
+                tenantId,
+                tenantMeta,
+                conversationKey: stateConversationKey,
+                originalModel: payload.model,
+                requestType: 'ResponsesWSViaAnthropic',
+                req
+            },
+            invoke: (readyChatReq) => {
+                const outboundChatReq = prepareRelayOutboundChatRequest(readyChatReq, {
+                    model: resolvedModel,
+                    stream: true
+                });
+                const anthropicPayload = chatRequestToAnthropic(outboundChatReq);
+                return callUpstream(upstream, (up) =>
+                    createAnthropicMessages(
+                        anthropicPayload,
+                        up,
+                        {
+                            requestType: 'ResponsesWSViaAnthropic',
+                            stream: true,
+                            originalModel: payload.model,
+                            ...stateRelayMeta
+                        },
+                        getAnthropicRequestHeaders(req)
+                    )
+                );
+            }
         });
-        const {response} = await callUpstream(upstream, (up) =>
-            createAnthropicMessages(
-                anthropicPayload,
-                up,
-                {
-                    requestType: 'ResponsesWSViaAnthropic',
-                    stream: true,
-                    originalModel: payload.model,
-                    ...relayMeta
-                },
-                getAnthropicRequestHeaders(req)
-            )
-        );
+        chatReq = invocation.chatRequest;
+        const {response} = invocation.result;
 
         const streamState = createResponsesStreamState();
         for await (const chatChunk of anthropicStreamToChatChunks(response.body, parseSSEBlock, signal)) {
@@ -1937,7 +2163,7 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             const events = chatChunkToResponsesEvents(chatChunk, streamState);
             for (const ev of events) {
                 if (ev.event === 'response.completed') {
-                    recordCompletedResponseState(tenantId, hydrated.conversationKey || conversationKey, ev.data?.response);
+                    recordCompletedResponseState(tenantId, stateConversationKey, ev.data?.response);
                 }
                 yield {type: ev.event, data: ev.data};
             }
@@ -2043,19 +2269,36 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
         if (error instanceof RelayStateMissingError) throw toResponsesWebSocketStateMissingError(error);
         throw error;
     }
-    const chatReq = hydrated.chatRequest;
-    chatReq.messages = injectBehaviorRules(chatReq.messages, resolvedModel);
-    chatReq.messages = stripDynamicReminders(chatReq.messages);
+    let chatReq = hydrated.chatRequest;
     chatReq.stream = true;
-
-    const {response} = await callUpstream(upstream, (up) =>
-        createChatCompletions(chatReq, up, {
-            requestType: 'ResponsesWS',
-            stream: true,
+    const stateConversationKey = hydrated.conversationKey || conversationKey;
+    const stateRelayMeta = {...relayMeta, conversationKey: stateConversationKey};
+    const invocation = await invokeWithRelayContextCompaction({
+        chatRequest: chatReq,
+        compactOptions: {
+            upstream,
+            upstreamManager,
+            tenantId,
+            tenantMeta,
+            conversationKey: stateConversationKey,
             originalModel: payload.model,
-            ...relayMeta
-        })
-    );
+            requestType: 'ResponsesWSViaChat',
+            req
+        },
+        invoke: (readyChatReq) => callUpstream(upstream, (up) =>
+            createChatCompletions(prepareRelayOutboundChatRequest(readyChatReq, {
+                model: resolvedModel,
+                stream: true
+            }), up, {
+                requestType: 'ResponsesWS',
+                stream: true,
+                originalModel: payload.model,
+                ...stateRelayMeta
+            })
+        )
+    });
+    chatReq = invocation.chatRequest;
+    const {response} = invocation.result;
 
     const streamState = createResponsesStreamState();
     let buffer = Buffer.alloc(0);
@@ -2078,7 +2321,7 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             const events = chatChunkToResponsesEvents(data, streamState);
             for (const ev of events) {
                 if (ev.event === 'response.completed') {
-                    recordCompletedResponseState(tenantId, hydrated.conversationKey || conversationKey, ev.data?.response);
+                    recordCompletedResponseState(tenantId, stateConversationKey, ev.data?.response);
                 }
                 yield {type: ev.event, data: ev.data};
             }

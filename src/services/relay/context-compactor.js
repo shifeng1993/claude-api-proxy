@@ -1,0 +1,237 @@
+import {estimateMessageTokens, roughTokenCountEstimation} from '../../utils/token-estimation.js';
+
+export const RELAY_COMPACTION_SUMMARY_PREFIX = '[Relay conversation summary]';
+
+const DEFAULT_THRESHOLD_TOKENS = 60_000;
+const DEFAULT_RECENT_TOKENS = 16_000;
+const DEFAULT_SUMMARY_TOKENS = 2048;
+
+export function loadContextCompactionConfig(env = process.env) {
+    return {
+        enabled: env.RELAY_CONTEXT_COMPACTION_ENABLED !== 'false',
+        thresholdTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_THRESHOLD_TOKENS, DEFAULT_THRESHOLD_TOKENS),
+        recentTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_RECENT_TOKENS, DEFAULT_RECENT_TOKENS),
+        summaryTokens: readPositiveInteger(env.RELAY_CONTEXT_COMPACTION_SUMMARY_TOKENS, DEFAULT_SUMMARY_TOKENS)
+    };
+}
+
+export function estimateChatRequestTokens(chatRequest) {
+    if (!chatRequest || typeof chatRequest !== 'object') return 0;
+    const messageTokens = estimateMessageTokens(chatRequest.messages || []);
+    const toolTokens = Array.isArray(chatRequest.tools)
+        ? roughTokenCountEstimation(JSON.stringify(chatRequest.tools), 2)
+        : 0;
+    return messageTokens + toolTokens;
+}
+
+export async function compactChatRequestIfNeeded({
+    chatRequest,
+    summarize,
+    force = false,
+    reason,
+    config = loadContextCompactionConfig()
+}) {
+    if (!chatRequest || !Array.isArray(chatRequest.messages)) {
+        return unchanged(chatRequest, 'invalid_request');
+    }
+    if (!config.enabled) {
+        return unchanged(chatRequest, 'disabled');
+    }
+
+    const estimatedTokens = estimateChatRequestTokens(chatRequest);
+    if (!force && estimatedTokens <= config.thresholdTokens) {
+        return unchanged(chatRequest, 'below_threshold', estimatedTokens);
+    }
+
+    const split = splitMessagesForCompaction(chatRequest.messages, config.recentTokens);
+    if (split.oldMessages.length === 0) {
+        return unchanged(chatRequest, 'no_old_messages', estimatedTokens);
+    }
+
+    const summaryRequest = buildContextSummaryChatRequest({
+        model: chatRequest.model,
+        messages: split.oldMessages,
+        previousSummary: split.previousSummary,
+        targetTokens: config.summaryTokens
+    });
+    const summary = normalizeSummary(await summarize({
+        messages: clone(split.oldMessages),
+        previousSummary: split.previousSummary,
+        targetTokens: config.summaryTokens,
+        summaryRequest
+    }));
+
+    if (!summary) {
+        return unchanged(chatRequest, 'empty_summary', estimatedTokens);
+    }
+
+    const compactedMessages = [
+        ...split.systemMessages,
+        {role: 'system', content: `${RELAY_COMPACTION_SUMMARY_PREFIX}\n${summary}`},
+        ...split.recentMessages
+    ];
+    const compactedRequest = {
+        ...clone(chatRequest),
+        messages: compactedMessages
+    };
+    const compactedTokens = estimateChatRequestTokens(compactedRequest);
+
+    return {
+        compacted: true,
+        reason: reason || (force ? 'forced' : 'threshold'),
+        estimatedTokens,
+        compactedTokens,
+        oldMessageCount: split.oldMessages.length,
+        recentMessageCount: split.recentMessages.length,
+        chatRequest: compactedRequest
+    };
+}
+
+export function buildContextSummaryChatRequest({model, messages, previousSummary = '', targetTokens = DEFAULT_SUMMARY_TOKENS}) {
+    const previousSection = previousSummary
+        ? `Existing compact summary to update:\n${previousSummary}\n\n`
+        : '';
+    return {
+        model,
+        stream: false,
+        max_tokens: targetTokens,
+        temperature: 0,
+        messages: [
+            {
+                role: 'system',
+                content: [
+                    'You compact relay conversation history for a coding agent proxy.',
+                    'Produce one dense, factual summary that can replace the older turns.',
+                    'Preserve user goals, decisions, constraints, file paths, commands, tool calls/results, errors, IDs, and unresolved tasks.',
+                    'Preserve important details in their original language. Do not invent facts. Omit greetings and repetitive raw logs unless they are necessary.',
+                    `Keep the summary under about ${targetTokens} tokens.`
+                ].join('\n')
+            },
+            {
+                role: 'user',
+                content: `${previousSection}Older conversation turns to compact:\n${formatMessagesForSummary(messages)}`
+            }
+        ]
+    };
+}
+
+export function isContextWindowExceededError(error) {
+    const status = Number(error?.status || error?.event?.status || error?.code);
+    if (status !== 400) return false;
+    const message = `${error?.message || ''} ${JSON.stringify(error?.event || {})}`;
+    return /context\s*(window|length)?\s*(exceeded|exceed|too large|too long)|maximum\s+context|context_length_exceeded|too many tokens|input tokens.*exceed/i.test(message);
+}
+
+function splitMessagesForCompaction(messages, recentTokens) {
+    const systemMessages = [];
+    const conversationMessages = [];
+    const previousSummaries = [];
+    let inLeadingSystem = true;
+
+    for (const message of messages) {
+        if (!message || typeof message !== 'object') continue;
+        if (isRelaySummaryMessage(message)) {
+            previousSummaries.push(stripSummaryPrefix(message.content));
+            continue;
+        }
+        if (inLeadingSystem && (message.role === 'system' || message.role === 'developer')) {
+            systemMessages.push(clone(message));
+            continue;
+        }
+        inLeadingSystem = false;
+        conversationMessages.push(clone(message));
+    }
+
+    let tailStart = conversationMessages.length;
+    let tailTokens = 0;
+    while (tailStart > 0 && (tailTokens < recentTokens || tailStart === conversationMessages.length)) {
+        tailStart--;
+        tailTokens += estimateMessageTokens([conversationMessages[tailStart]]);
+    }
+
+    while (tailStart > 0 && conversationMessages[tailStart]?.role === 'tool') {
+        tailStart--;
+    }
+
+    return {
+        systemMessages,
+        previousSummary: previousSummaries.filter(Boolean).join('\n\n'),
+        oldMessages: conversationMessages.slice(0, tailStart),
+        recentMessages: conversationMessages.slice(tailStart)
+    };
+}
+
+function isRelaySummaryMessage(message) {
+    return typeof message?.content === 'string'
+        && message.content.startsWith(RELAY_COMPACTION_SUMMARY_PREFIX);
+}
+
+function stripSummaryPrefix(content) {
+    return String(content || '').replace(RELAY_COMPACTION_SUMMARY_PREFIX, '').trim();
+}
+
+function formatMessagesForSummary(messages) {
+    return (messages || [])
+        .map((message, index) => {
+            const parts = [`Turn ${index + 1}`, `role: ${message.role || 'unknown'}`];
+            const text = contentToText(message.content);
+            if (text) parts.push(`content:\n${text}`);
+            if (message.reasoning_content) parts.push(`reasoning:\n${message.reasoning_content}`);
+            if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+                parts.push(`tool_calls:\n${safeStringify(message.tool_calls)}`);
+            }
+            if (message.tool_call_id) parts.push(`tool_call_id: ${message.tool_call_id}`);
+            return parts.join('\n');
+        })
+        .join('\n\n---\n\n');
+}
+
+function contentToText(content) {
+    if (typeof content === 'string') return content;
+    if (content == null) return '';
+    if (!Array.isArray(content)) return safeStringify(content);
+    return content
+        .map((part) => {
+            if (typeof part === 'string') return part;
+            if (!part || typeof part !== 'object') return '';
+            if (part.text) return part.text;
+            if (part.input_text) return part.input_text;
+            if (part.output_text) return part.output_text;
+            return safeStringify(part);
+        })
+        .filter(Boolean)
+        .join('\n');
+}
+
+function normalizeSummary(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function unchanged(chatRequest, reason, estimatedTokens = estimateChatRequestTokens(chatRequest)) {
+    return {
+        compacted: false,
+        reason,
+        estimatedTokens,
+        compactedTokens: estimatedTokens,
+        oldMessageCount: 0,
+        recentMessageCount: Array.isArray(chatRequest?.messages) ? chatRequest.messages.length : 0,
+        chatRequest
+    };
+}
+
+function clone(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function safeStringify(value) {
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function readPositiveInteger(value, fallback) {
+    const parsed = Number.parseInt(value || '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
