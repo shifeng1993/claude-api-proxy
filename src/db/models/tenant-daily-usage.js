@@ -40,6 +40,10 @@ export const TenantDailyUsage = sequelize.define('tenant_daily_usage', {
         type: DataTypes.INTEGER,
         defaultValue: 0
     },
+    input_cache_creation: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0
+    },
     output_tokens: {
         type: DataTypes.INTEGER,
         defaultValue: 0
