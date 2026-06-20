@@ -284,7 +284,7 @@ async function handleOpenAIChatCompletions(req, res) {
 
                 if (streamInputTokens > 0 || streamOutputTokens > 0) {
                     copilotStore.incrementApiCallCount();
-                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                     copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                 } else {
                     copilotStore.incrementApiCallCount();
@@ -314,7 +314,7 @@ async function handleOpenAIChatCompletions(req, res) {
                     const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
                     const cacheCreationTokens = extractCacheCreationTokens(chatResponse.usage);
                     copilotStore.incrementApiCallCount();
-                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                     copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
                     sendJson(res, 200, chatResponse);
                 } else {
@@ -388,7 +388,7 @@ async function handleOpenAIChatCompletions(req, res) {
                     }
                     if (streamInputTokens > 0 || streamOutputTokens > 0) {
                         copilotStore.incrementApiCallCount();
-                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                         copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                     } else {
                         copilotStore.incrementApiCallCount();
@@ -424,7 +424,7 @@ async function handleOpenAIChatCompletions(req, res) {
                 const cacheCreationTokens = extractCacheCreationTokens(parsed.usage);
                 copilotStore.incrementApiCallCount();
                 if (inputTokens > 0 || outputTokens > 0) {
-                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                     copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
                 } else {
                     const estimated = estimateMessageTokens(openAIPayload.messages || []);
@@ -551,7 +551,7 @@ async function handleAnthropicMessages(req, res) {
 
                 if (streamInputTokens > 0 || streamOutputTokens > 0) {
                     copilotStore.incrementApiCallCount();
-                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                     copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                 } else {
                     copilotStore.incrementApiCallCount();
@@ -583,7 +583,7 @@ async function handleAnthropicMessages(req, res) {
                     const cacheCreationTokens = extractCacheCreationTokens(chatResponse.usage);
                     copilotStore.incrementApiCallCount();
                     if (inputTokens > 0 || outputTokens > 0) {
-                        copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                        copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                         copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
                     } else {
                         const estimated = estimateMessageTokens(anthropicPayload.messages || []);
@@ -696,7 +696,7 @@ async function handleAnthropicMessages(req, res) {
                     }
                     if (streamInputTokens > 0 || streamOutputTokens > 0) {
                         copilotStore.incrementApiCallCount();
-                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                        copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                         copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                     } else {
                         copilotStore.incrementApiCallCount();
@@ -731,7 +731,7 @@ async function handleAnthropicMessages(req, res) {
                 const cacheCreationTokens = extractCacheCreationTokens(openAIResponse.usage);
                 copilotStore.incrementApiCallCount();
                 if (inputTokens > 0 || outputTokens > 0) {
-                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                     copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
                 } else {
                     const estimated = estimateMessageTokens(anthropicPayload.messages || []);
@@ -908,7 +908,7 @@ async function handleResponsesAPI(req, res) {
                 }
 
                 copilotStore.incrementApiCallCount();
-                copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                 copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                 res.end();
             } else {
@@ -933,7 +933,7 @@ async function handleResponsesAPI(req, res) {
                     const cacheHitTokens = extractCacheHitTokens(chatUsage);
                     const cacheCreationTokens = extractCacheCreationTokens(chatUsage);
                     copilotStore.incrementApiCallCount();
-                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                    copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                     copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
                     sendJson(res, 200, completedData.response);
                 } else {
@@ -1037,7 +1037,7 @@ async function handleResponsesAPI(req, res) {
                         res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
                     }
                     copilotStore.incrementApiCallCount();
-                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
+                    copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);
                     copilotStore.recordDailyUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, undefined, streamCacheCreationTokens);
                     res.end();
                 });
@@ -1055,7 +1055,7 @@ async function handleResponsesAPI(req, res) {
                 const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
                 const cacheCreationTokens = extractCacheCreationTokens(chatResponse.usage);
                 copilotStore.incrementApiCallCount();
-                copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+                copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
                 copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
 
                 sendJson(res, 200, chatResponseToResponses(chatResponse));
@@ -1111,7 +1111,7 @@ async function handleResponsesCompact(req, res) {
         const cacheHitTokens = extractCacheHitTokens(chatResponse.usage);
         const cacheCreationTokens = extractCacheCreationTokens(chatResponse.usage);
         copilotStore.incrementApiCallCount();
-        copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+        copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
         copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, undefined, cacheCreationTokens);
 
         sendJson(res, 200, chatResponseToCompact(chatResponse));
@@ -1252,7 +1252,7 @@ function handleCopilotResponsesWSInContext(clientWs, req) {
         },
         onUsage: (inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens, model) => {
             copilotStore.incrementApiCallCount();
-            copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens);
+            copilotStore.incrementTokenUsage(inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
             copilotStore.recordDailyUsage(inputTokens, outputTokens, cacheHitTokens, model, cacheCreationTokens);
         }
     });

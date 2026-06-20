@@ -596,7 +596,7 @@ async function callUpstream(upstream, fn) {
 function recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens = 0, model = 'unknown', samplePayload = null, sampleResponse = null, cacheCreationTokens = 0) {
     if (!tenantId) return;
     unifiedTenantManager.incrementApiCallCount(tenantId, 'relay');
-    unifiedTenantManager.incrementTokenUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens);
+    unifiedTenantManager.incrementTokenUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens, cacheCreationTokens);
     unifiedTenantManager.recordDailyUsage(tenantId, 'relay', inputTokens, outputTokens, cacheHitTokens, 0, model, cacheCreationTokens);
 }
 
