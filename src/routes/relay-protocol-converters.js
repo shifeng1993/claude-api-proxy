@@ -1,9 +1,6 @@
 import {createHash} from 'crypto';
 import {mergeConsecutiveAssistantMessages} from '../transformer/responses-translator.js';
-
-function extractAnthropicCacheHitTokens(usage) {
-    return usage?.cache_read_input_tokens || 0;
-}
+import {extractCacheHitTokens, extractCacheCreationTokens} from '../transformer/shared-translator.js';
 
 export function chatContentToText(content) {
     if (typeof content === 'string') return content;
@@ -128,7 +125,10 @@ export function anthropicUsageToChatUsage(usage) {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
         total_tokens: promptTokens + completionTokens,
-        prompt_tokens_details: {cached_tokens: extractAnthropicCacheHitTokens(usage)}
+        prompt_tokens_details: {
+            cached_tokens: extractCacheHitTokens(usage),
+            cache_creation_tokens: extractCacheCreationTokens(usage)
+        }
     };
 }
 
@@ -233,7 +233,8 @@ export async function* anthropicStreamToChatChunks(stream, parseSSEBlock, signal
                 const usage = anthropicUsageToChatUsage({
                     input_tokens: state.inputTokens,
                     output_tokens: parsed.usage?.output_tokens || 0,
-                    cache_read_input_tokens: parsed.usage?.cache_read_input_tokens || 0
+                    cache_read_input_tokens: parsed.usage?.cache_read_input_tokens || 0,
+                    cache_creation_input_tokens: parsed.usage?.cache_creation_input_tokens || 0
                 });
                 yield makeChatChunk(state, {}, anthropicStopReasonToChat(parsed.delta?.stop_reason), usage);
             }
