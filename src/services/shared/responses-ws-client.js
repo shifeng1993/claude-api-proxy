@@ -1,6 +1,9 @@
 import WebSocket from 'ws';
 import logger from '../../utils/logger.js';
-import {sanitizeResponsesInput} from '../../transformer/responses-translator.js';
+import {
+    limitResponsesInputItems,
+    sanitizeResponsesInput
+} from '../../transformer/responses-translator.js';
 
 const CONNECT_TIMEOUT = 30000;
 // 上游 WS 心跳间隔，防止中间代理因空闲超时切断连接
@@ -97,11 +100,6 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
     let closeReason = '';
 
     const autoLinkEnabled = payload?._autoLink !== false;
-
-    if (Array.isArray(payload.input)) {
-        payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
-    }
-
     const explicitPreviousResponseId =
         typeof payload.previous_response_id === 'string' && payload.previous_response_id.trim()
             ? payload.previous_response_id.trim()
@@ -110,6 +108,18 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
         ? connection.lastResponseId
         : null;
     const referencedPreviousResponseId = explicitPreviousResponseId || autoPreviousResponseId;
+
+    if (Array.isArray(payload.input)) {
+        payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
+        const limited = limitResponsesInputItems(payload, {previousResponseId: referencedPreviousResponseId});
+        if (limited.truncated) {
+            logger.info(
+                `Responses WS: truncated input items ${limited.originalLength}->${limited.retainedLength} `
+                + `with previous_response_id=${limited.previousResponseId}`
+            );
+            payload = limited.payload;
+        }
+    }
 
     if (explicitPreviousResponseId) {
         payload = {...payload, previous_response_id: explicitPreviousResponseId};

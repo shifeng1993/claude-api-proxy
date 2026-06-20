@@ -140,7 +140,7 @@ export function isContextWindowExceededError(error) {
     const status = Number(error?.status || error?.event?.status || error?.code);
     if (status !== 400) return false;
     const message = `${error?.message || ''} ${JSON.stringify(error?.event || {})}`;
-    return /context\s*(window|length)?\s*(exceeded|exceed|too large|too long)|maximum\s+context|context_length_exceeded|too many tokens|input tokens.*exceed/i.test(message);
+    return /context\s*(window|length)?\s*(exceeded|exceed|too large|too long)|maximum\s+context|context_length_exceeded|too many tokens|input tokens.*exceed|maximum\s+of\s+\d+\s+items\s+allowed\s+in\s+input/i.test(message);
 }
 
 function splitMessagesForCompaction(messages, recentTokens) {

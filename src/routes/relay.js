@@ -34,7 +34,8 @@ import {
     buildConversationAnchorKey,
     sanitizeAnthropicPayload,
     extractCacheHitTokens,
-    extractCacheCreationTokens
+    extractCacheCreationTokens,
+    extractInputTokens
 } from '../transformer/shared-translator.js';
 import {
     responsesRequestToChat,
@@ -48,7 +49,8 @@ import {
     responsesEventToResponsesEvents,
     compactRequestToChat,
     chatResponseToCompact,
-    mergeConsecutiveAssistantMessages
+    mergeConsecutiveAssistantMessages,
+    limitResponsesInputItems
 } from '../transformer/responses-translator.js';
 import {isResponsesWebSocketProtocolError} from '../services/shared/responses-ws-client.js';
 import {handleWSConnection} from '../services/shared/responses-ws-server.js';
@@ -233,6 +235,19 @@ function recordCompletedResponseState(tenantId, conversationKey, response) {
     });
 }
 
+function limitResponsesPassthroughPayload(payload, {previousResponseId, requestType, conversationKey} = {}) {
+    const limited = limitResponsesInputItems(payload, {previousResponseId});
+    if (!limited.truncated) return limited.payload;
+
+    logger.info(
+        `Responses passthrough: truncated input items ${limited.originalLength}->${limited.retainedLength}`
+        + `${requestType ? ` requestType=${requestType}` : ''}`
+        + `${conversationKey ? ` conversationKey=${conversationKey}` : ''}`
+        + ` previous_response_id=${limited.previousResponseId}`
+    );
+    return limited.payload;
+}
+
 function upstreamErrorStatus(err) {
     if (err instanceof RelayUpstreamError && err.status) return err.status;
     if (isNetworkError(err)) return 502;
@@ -319,7 +334,9 @@ function handleAnthropicUsageEvent(eventName, payload, usageState) {
     const usage = payload?.usage || payload?.message?.usage;
     if (!usage) return;
 
-    if (usage.input_tokens !== undefined) usageState.inputTokens = usage.input_tokens;
+    if (usage.input_tokens !== undefined) {
+        usageState.inputTokens = extractInputTokens(usage);
+    }
     if (usage.output_tokens !== undefined) usageState.outputTokens = usage.output_tokens;
     usageState.cacheHitTokens = Math.max(usageState.cacheHitTokens, extractCacheHitTokens(usage));
     usageState.cacheCreationTokens = Math.max(usageState.cacheCreationTokens || 0, extractCacheCreationTokens(usage));
@@ -1612,7 +1629,12 @@ async function handleResponsesAPI(req, res) {
                 request: wsPayload
             });
             const stateConversationKey = prepared.conversationKey || conversationKey;
-            const wsResult = await createResponsesWebSocket(prepared.request, upstream, {
+            const limitedRequest = limitResponsesPassthroughPayload(prepared.request, {
+                previousResponseId: prepared.lastResponseId,
+                requestType: 'ResponsesWebSocket',
+                conversationKey: stateConversationKey
+            });
+            const wsResult = await createResponsesWebSocket(limitedRequest, upstream, {
                 requestType: 'ResponsesWebSocket',
                 stream: responsesReq.stream,
                 originalModel: responsesReq.model,
@@ -1675,6 +1697,11 @@ async function handleResponsesAPI(req, res) {
                 request: responsesPayload
             });
             const stateConversationKey = prepared.conversationKey || conversationKey;
+            const limitedRequest = limitResponsesPassthroughPayload(prepared.request, {
+                previousResponseId: prepared.lastResponseId,
+                requestType: 'ResponsesPassthrough',
+                conversationKey: stateConversationKey
+            });
             const relayMeta = {
                 ...tenantMeta,
                 conversationKey: stateConversationKey,
@@ -1682,7 +1709,7 @@ async function handleResponsesAPI(req, res) {
             };
             const {response} = await callUpstream(upstream, (up) =>
                 createResponses(
-                    {...prepared.request, model: upstreamManager.resolveModel(responsesReq.model, up.index)},
+                    {...limitedRequest, model: upstreamManager.resolveModel(responsesReq.model, up.index)},
                     up,
                     {
                         requestType: 'ResponsesPassthrough',
@@ -2254,7 +2281,12 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             request: wsPayload
         });
         const stateConversationKey = prepared.conversationKey || conversationKey;
-        const wsResult = await createResponsesWebSocket(prepared.request, upstream, {
+        const limitedRequest = limitResponsesPassthroughPayload(prepared.request, {
+            previousResponseId: prepared.lastResponseId,
+            requestType: 'RelayResponsesWebSocketRelay',
+            conversationKey: stateConversationKey
+        });
+        const wsResult = await createResponsesWebSocket(limitedRequest, upstream, {
             requestType: 'RelayResponsesWebSocketRelay',
             stream: true,
             originalModel: payload.model,
@@ -2301,8 +2333,13 @@ async function* _relayWSHandleRequest(payload, upstream, upstreamManager, tenant
             request: responsesPayload
         });
         const stateConversationKey = prepared.conversationKey || conversationKey;
+        const limitedRequest = limitResponsesPassthroughPayload(prepared.request, {
+            previousResponseId: prepared.lastResponseId,
+            requestType: 'ResponsesWS',
+            conversationKey: stateConversationKey
+        });
         const {response} = await callUpstream(upstream, (up) =>
-            createResponses(prepared.request, up, {
+            createResponses(limitedRequest, up, {
                 requestType: 'ResponsesWS',
                 stream: true,
                 originalModel: payload.model,

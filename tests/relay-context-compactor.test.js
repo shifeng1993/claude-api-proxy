@@ -265,6 +265,10 @@ test('isContextWindowExceededError matches only context-window 400 errors', () =
         true
     );
     assert.equal(
+        isContextWindowExceededError(new RelayUpstreamError('[upstream]: HTTP 400: Invalid input: Maximum of 1000 items allowed in input.', 400)),
+        true
+    );
+    assert.equal(
         isContextWindowExceededError(new RelayUpstreamError('[upstream]: HTTP 429: Requests are too frequent', 429)),
         false
     );

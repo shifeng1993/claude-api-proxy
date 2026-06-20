@@ -1493,10 +1493,138 @@ export function chatResponseToCompact(chatRes) {
 
 /* ================= WS Input 净化 ================= */
 
+export const DEFAULT_RESPONSES_INPUT_ITEMS_LIMIT = 500;
+export const MAX_RESPONSES_INPUT_ITEMS_LIMIT = 950;
+export const MIN_RESPONSES_INPUT_ITEMS_LIMIT = 50;
+
+export function resolveResponsesInputItemsLimit(value = process.env.RELAY_RESPONSES_INPUT_ITEMS_LIMIT) {
+    const parsed = Number.parseInt(value ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RESPONSES_INPUT_ITEMS_LIMIT;
+    return Math.min(MAX_RESPONSES_INPUT_ITEMS_LIMIT, Math.max(MIN_RESPONSES_INPUT_ITEMS_LIMIT, parsed));
+}
+
+export function truncateResponsesInputItems(input, {limit} = {}) {
+    if (!Array.isArray(input)) {
+        return {
+            input,
+            truncated: false,
+            originalLength: 0,
+            retainedLength: 0,
+            droppedCount: 0,
+            startIndex: 0,
+            limit: normalizeExplicitInputItemsLimit(limit)
+        };
+    }
+
+    const resolvedLimit = normalizeExplicitInputItemsLimit(limit);
+    const originalLength = input.length;
+    if (originalLength <= resolvedLimit) {
+        return {
+            input,
+            truncated: false,
+            originalLength,
+            retainedLength: originalLength,
+            droppedCount: 0,
+            startIndex: 0,
+            limit: resolvedLimit
+        };
+    }
+
+    const rawStart = originalLength - resolvedLimit;
+    const startIndex = findResponsesInputCutIndex(input, rawStart);
+    const truncatedInput = input.slice(startIndex);
+
+    return {
+        input: truncatedInput,
+        truncated: true,
+        originalLength,
+        retainedLength: truncatedInput.length,
+        droppedCount: originalLength - truncatedInput.length,
+        startIndex,
+        limit: resolvedLimit
+    };
+}
+
+export function limitResponsesInputItems(payload, {limit, previousResponseId} = {}) {
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.input)) {
+        return {
+            payload,
+            input: payload?.input,
+            truncated: false,
+            originalLength: Array.isArray(payload?.input) ? payload.input.length : 0,
+            retainedLength: Array.isArray(payload?.input) ? payload.input.length : 0,
+            droppedCount: 0,
+            previousResponseId: normalizeResponseId(payload?.previous_response_id) || normalizeResponseId(previousResponseId)
+        };
+    }
+
+    const explicitPreviousResponseId = normalizeResponseId(payload.previous_response_id);
+    const continuationResponseId = explicitPreviousResponseId || normalizeResponseId(previousResponseId);
+    if (!continuationResponseId) {
+        return {
+            payload,
+            input: payload.input,
+            truncated: false,
+            originalLength: payload.input.length,
+            retainedLength: payload.input.length,
+            droppedCount: 0,
+            previousResponseId: null
+        };
+    }
+
+    const truncated = truncateResponsesInputItems(payload.input, {limit});
+    if (!truncated.truncated) {
+        return {
+            ...truncated,
+            payload,
+            previousResponseId: continuationResponseId
+        };
+    }
+
+    return {
+        ...truncated,
+        payload: {
+            ...payload,
+            input: truncated.input,
+            previous_response_id: explicitPreviousResponseId || continuationResponseId
+        },
+        previousResponseId: explicitPreviousResponseId || continuationResponseId
+    };
+}
+
+function normalizeExplicitInputItemsLimit(value) {
+    if (value === undefined || value === null) return resolveResponsesInputItemsLimit();
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : resolveResponsesInputItemsLimit();
+}
+
+function findResponsesInputCutIndex(input, rawStart) {
+    const start = Math.min(input.length - 1, Math.max(0, rawStart));
+    for (let i = start; i < input.length; i++) {
+        if (isPreferredResponsesInputBoundary(input[i])) return i;
+    }
+    for (let i = start; i < input.length; i++) {
+        if (isSafeResponsesInputBoundary(input[i])) return i;
+    }
+    return start;
+}
+
+function isPreferredResponsesInputBoundary(item) {
+    return item?.role === 'user' || item?.role === 'system' || item?.role === 'developer';
+}
+
+function isSafeResponsesInputBoundary(item) {
+    return item?.type !== 'function_call_output' && item?.type !== 'reasoning';
+}
+
+function normalizeResponseId(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 /**
  * 净化 Responses API 请求的 input，去除上游 WS 无法解析的 id 引用
  *
- * 客户端（如 CherryStudio）续接对话时，会将上一轮响应的 output items（含 id）
+ * 客户端（如 Codex）续接对话时，会将上一轮响应的 output items（含 id）
  * 放入新请求的 input。部分上游无法查找这些历史 id，
  * 导致 "text part xxx not found" 错误。
  *

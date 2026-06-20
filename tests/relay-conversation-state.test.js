@@ -185,6 +185,42 @@ test('prepareResponsesPassthrough appends visible input to an existing conversat
     ]);
 });
 
+test('prepareResponsesPassthrough exposes the latest stored response id for continuation truncation', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {model: 'client-model', messages: [{role: 'user', content: 'first question'}]}
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_1',
+            output: [{type: 'message', role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]}]
+        }
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_2',
+            output: [{type: 'message', role: 'assistant', content: [{type: 'output_text', text: 'second answer'}]}]
+        }
+    });
+
+    const prepared = store.prepareResponsesPassthrough({
+        tenantId,
+        conversationKey,
+        request: {model: 'client-model', input: [{role: 'user', content: 'third question'}]}
+    });
+
+    assert.equal(prepared.lastResponseId, 'resp_2');
+});
+
 test('hydrateResponsesForFullHistory throws state_missing when previous response is unknown', () => {
     const store = new RelayConversationStore({ttlMs: 60_000});
 

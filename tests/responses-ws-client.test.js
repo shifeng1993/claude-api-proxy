@@ -129,6 +129,20 @@ test('sendResponsesWebSocketRequest auto-links contextual previous_response_id',
     assert.equal(socket.sent[0].previous_response_id, 'resp_1');
 });
 
+test('sendResponsesWebSocketRequest truncates oversized input when auto-linking context', async () => {
+    const socket = new FakeWebSocket([{type: 'response.completed', response: {id: 'resp_2'}}]);
+    const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: 'resp_1'};
+    const input = Array.from({length: 600}, (_, i) => ({role: 'user', content: `message ${i}`}));
+
+    for await (const _event of sendResponsesWebSocketRequest(connection, {model: 'gpt-5.4', input})) {
+    }
+
+    assert.equal(socket.sent[0].previous_response_id, 'resp_1');
+    assert.equal(socket.sent[0].input.length, 500);
+    assert.equal(socket.sent[0].input[0].content, 'message 100');
+    assert.equal(socket.sent[0].input.at(-1).content, 'message 599');
+});
+
 test('sendResponsesWebSocketRequest honors disabled auto-linking', async () => {
     const socket = new FakeWebSocket([{type: 'response.completed', response: {id: 'resp_2'}}]);
     const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: 'resp_1'};

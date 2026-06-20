@@ -15,6 +15,7 @@ import {
     prependThinkingHint,
     prependToolThinkingHint,
     openAIToAnthropic as sharedOpenAIToAnthropic,
+    openAIUsageToAnthropicUsage,
     normalizeClaudeModelAlias,
     sortObjectKeys
 } from '../../transformer/shared-translator.js';
@@ -77,7 +78,12 @@ class ClaudeStreamState {
                 model: this.model,
                 stop_reason: null,
                 stop_sequence: null,
-                usage: {input_tokens: 0, output_tokens: 0}
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0
+                }
             }
         });
     }
@@ -93,7 +99,12 @@ class ClaudeStreamState {
         this.writer.write('message_delta', {
             type: 'message_delta',
             delta: {stop_reason: stopReason, stop_sequence: null},
-            usage: {input_tokens: 0, output_tokens: 0}
+            usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0
+            }
         });
 
         this.writer.write('message_stop', {type: 'message_stop'});
@@ -572,10 +583,7 @@ export function translateStreamChunk(openAIChunk, state) {
                 model: openAIChunk.model,
                 stop_reason: null,
                 stop_sequence: null,
-                usage: {
-                    input_tokens: openAIChunk.usage?.prompt_tokens || 0,
-                    output_tokens: 0
-                }
+                usage: {...openAIUsageToAnthropicUsage(openAIChunk.usage), output_tokens: 0}
             }
         });
         state.messageStartSent = true;
@@ -687,9 +695,7 @@ export function translateStreamChunk(openAIChunk, state) {
                 stop_reason: mapStopReason(choice.finish_reason),
                 stop_sequence: null
             },
-            usage: {
-                output_tokens: openAIChunk.usage?.completion_tokens || 0
-            }
+            usage: openAIUsageToAnthropicUsage(openAIChunk.usage)
         });
 
         events.push({

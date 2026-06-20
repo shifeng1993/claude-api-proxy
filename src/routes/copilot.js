@@ -856,7 +856,7 @@ async function handleResponsesAPI(req, res) {
 
         const conversationKey = extractConversationKey(req, responsesReq);
 
-        // 净化 input：去除上游 WS 无法解析的 id 引用（CherryStudio 续接对话时带入的 output item id）
+        // 净化 input：去除上游 WS 无法解析的 id 引用（Codex 续接对话时带入的 output item id）
         if (Array.isArray(responsesReq.input)) {
             responsesReq.input = sanitizeResponsesInput(responsesReq.input, responsesReq.model);
         }
@@ -1034,7 +1034,7 @@ async function handleResponsesAPI(req, res) {
                             res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
                             streamState.output.push(item);
                         }
-                        res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`);
+                        res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens, input_tokens_details: {cached_tokens: streamCacheHitTokens, cache_creation_tokens: streamCacheCreationTokens}}}})}\n\n`);
                     }
                     copilotStore.incrementApiCallCount();
                     copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens, streamCacheCreationTokens);

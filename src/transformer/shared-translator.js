@@ -52,6 +52,29 @@ export function extractCacheCreationTokens(usage) {
     return extractCacheMetrics(usage).cacheCreation;
 }
 
+export function extractInputTokens(usage) {
+    if (!usage) return 0;
+    if (usage.prompt_tokens !== undefined) return usage.prompt_tokens || 0;
+    if (usage.input_tokens !== undefined) {
+        return (usage.input_tokens || 0)
+            + (usage.cache_read_input_tokens || 0)
+            + (usage.cache_creation_input_tokens || 0);
+    }
+    return 0;
+}
+
+export function openAIUsageToAnthropicUsage(usage) {
+    const promptTokens = usage?.prompt_tokens || 0;
+    const cacheReadTokens = extractCacheHitTokens(usage);
+    const cacheCreationTokens = extractCacheCreationTokens(usage);
+    return {
+        input_tokens: Math.max(0, promptTokens - cacheReadTokens - cacheCreationTokens),
+        output_tokens: usage?.completion_tokens || 0,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens
+    };
+}
+
 /**
  * 生成唯一 ID
  */
@@ -819,11 +842,7 @@ export function openAIToAnthropic(openAIResponse) {
             content: [{type: 'text', text: 'Empty response from upstream API'}],
             stop_reason: 'end_turn',
             stop_sequence: null,
-            usage: {
-                input_tokens: openAIResponse.usage?.prompt_tokens || 0,
-                output_tokens: openAIResponse.usage?.completion_tokens || 0,
-                cache_read_input_tokens: extractCacheHitTokens(openAIResponse.usage)
-            }
+            usage: openAIUsageToAnthropicUsage(openAIResponse.usage)
         };
     }
 
@@ -878,11 +897,7 @@ export function openAIToAnthropic(openAIResponse) {
         content: content,
         stop_reason: mapStopReason(choice.finish_reason),
         stop_sequence: null,
-        usage: {
-            input_tokens: openAIResponse.usage?.prompt_tokens || 0,
-            output_tokens: openAIResponse.usage?.completion_tokens || 0,
-            cache_read_input_tokens: extractCacheHitTokens(openAIResponse.usage)
-        }
+        usage: openAIUsageToAnthropicUsage(openAIResponse.usage)
     };
 }
 

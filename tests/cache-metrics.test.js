@@ -80,20 +80,22 @@ test('anthropicUsageToChatUsage 在 prompt_tokens_details 中保留 cached_token
         output_tokens: 500,
         cache_read_input_tokens: 700
     });
-    assert.equal(usage.prompt_tokens, 1000);
+    assert.equal(usage.prompt_tokens, 1700);
     assert.equal(usage.completion_tokens, 500);
-    assert.equal(usage.total_tokens, 1500);
+    assert.equal(usage.total_tokens, 2200);
     assert.equal(usage.prompt_tokens_details.cached_tokens, 700);
     assert.equal(usage.prompt_tokens_details.cache_creation_tokens, 0);
 });
 
-test('anthropicUsageToChatUsage 透传 Anthropic 的 cache_creation_input_tokens', () => {
+test('anthropicUsageToChatUsage 透传 Anthropic 的 cache_creation_input_tokens 并计入输入总量', () => {
     const usage = anthropicUsageToChatUsage({
         input_tokens: 1000,
         output_tokens: 500,
         cache_read_input_tokens: 700,
         cache_creation_input_tokens: 300
     });
+    assert.equal(usage.prompt_tokens, 2000);
+    assert.equal(usage.total_tokens, 2500);
     assert.equal(usage.prompt_tokens_details.cached_tokens, 700);
     assert.equal(usage.prompt_tokens_details.cache_creation_tokens, 300);
 });

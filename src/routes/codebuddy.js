@@ -896,7 +896,7 @@ async function handleResponsesAPI(req, res) {
                         streamState.output.push(item);
                     }
                     res.write(
-                        `event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens}}})}\n\n`
+                        `event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens, input_tokens_details: {cached_tokens: streamCacheHitTokens, cache_creation_tokens: streamCacheCreationTokens}}}})}\n\n`
                     );
                 }
                 if (authResult.tenantId) {

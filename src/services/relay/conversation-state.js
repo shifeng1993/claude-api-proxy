@@ -85,7 +85,8 @@ export class RelayConversationStore {
         }
         return {
             conversationKey: resolvedConversationKey,
-            request: {...request}
+            request: {...request},
+            lastResponseId: getLatestResponseId(state)
         };
     }
 
@@ -215,6 +216,14 @@ function readPositiveIntegerEnv(name, fallback) {
 
 function normalizeId(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function getLatestResponseId(state) {
+    let latest = null;
+    for (const responseId of state?.responses || []) {
+        latest = responseId;
+    }
+    return latest;
 }
 
 function clone(value) {

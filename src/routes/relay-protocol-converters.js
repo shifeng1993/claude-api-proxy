@@ -1,6 +1,6 @@
 import {createHash} from 'crypto';
 import {mergeConsecutiveAssistantMessages} from '../transformer/responses-translator.js';
-import {extractCacheHitTokens, extractCacheCreationTokens} from '../transformer/shared-translator.js';
+import {extractCacheHitTokens, extractCacheCreationTokens, extractInputTokens} from '../transformer/shared-translator.js';
 
 export function chatContentToText(content) {
     if (typeof content === 'string') return content;
@@ -119,7 +119,7 @@ function cloneChatMessages(messages) {
 }
 
 export function anthropicUsageToChatUsage(usage) {
-    const promptTokens = usage?.input_tokens || 0;
+    const promptTokens = extractInputTokens(usage);
     const completionTokens = usage?.output_tokens || 0;
     return {
         prompt_tokens: promptTokens,
@@ -182,7 +182,9 @@ export async function* anthropicStreamToChatChunks(stream, parseSSEBlock, signal
         model: 'unknown',
         toolIndexes: new Map(),
         nextToolIndex: 0,
-        inputTokens: 0
+        inputTokens: 0,
+        cacheHitTokens: 0,
+        cacheCreationTokens: 0
     };
     let buffer = '';
     for await (const chunk of stream) {
@@ -200,6 +202,8 @@ export async function* anthropicStreamToChatChunks(stream, parseSSEBlock, signal
                 state.id = message.id || state.id;
                 state.model = message.model || state.model;
                 state.inputTokens = message.usage?.input_tokens || 0;
+                state.cacheHitTokens = extractCacheHitTokens(message.usage);
+                state.cacheCreationTokens = extractCacheCreationTokens(message.usage);
                 yield makeChatChunk(state, {role: 'assistant'});
                 continue;
             }
@@ -230,11 +234,14 @@ export async function* anthropicStreamToChatChunks(stream, parseSSEBlock, signal
                 continue;
             }
             if (event === 'message_delta') {
+                if (parsed.usage?.input_tokens !== undefined) state.inputTokens = parsed.usage.input_tokens || 0;
+                state.cacheHitTokens = Math.max(state.cacheHitTokens || 0, extractCacheHitTokens(parsed.usage));
+                state.cacheCreationTokens = Math.max(state.cacheCreationTokens || 0, extractCacheCreationTokens(parsed.usage));
                 const usage = anthropicUsageToChatUsage({
                     input_tokens: state.inputTokens,
                     output_tokens: parsed.usage?.output_tokens || 0,
-                    cache_read_input_tokens: parsed.usage?.cache_read_input_tokens || 0,
-                    cache_creation_input_tokens: parsed.usage?.cache_creation_input_tokens || 0
+                    cache_read_input_tokens: state.cacheHitTokens || 0,
+                    cache_creation_input_tokens: state.cacheCreationTokens || 0
                 });
                 yield makeChatChunk(state, {}, anthropicStopReasonToChat(parsed.delta?.stop_reason), usage);
             }

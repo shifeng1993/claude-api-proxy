@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sanitizeResponsesInput} from '../src/transformer/responses-translator.js';
+import {
+    limitResponsesInputItems,
+    sanitizeResponsesInput,
+    truncateResponsesInputItems
+} from '../src/transformer/responses-translator.js';
 
 test('sanitizeResponsesInput removes previous response text part references from message content', () => {
     const sanitized = sanitizeResponsesInput(
@@ -96,4 +100,58 @@ test('sanitizeResponsesInput injects partial only for doubao-seed models with as
     assert.equal(glm.length, 1);
     assert.equal(glm[0].role, 'user');
     assert.equal(glm[0].partial, undefined);
+});
+
+test('truncateResponsesInputItems keeps the recent tail under the item limit at a user boundary', () => {
+    const input = [];
+    for (let i = 0; i < 600; i++) {
+        input.push({role: 'user', content: `question ${i}`});
+        input.push({role: 'assistant', content: `answer ${i}`});
+    }
+
+    const result = truncateResponsesInputItems(input, {limit: 500});
+
+    assert.equal(result.truncated, true);
+    assert.equal(result.originalLength, 1200);
+    assert.equal(result.input.length, 500);
+    assert.equal(result.input[0].role, 'user');
+    assert.equal(result.input[0].content, 'question 350');
+});
+
+test('truncateResponsesInputItems moves forward instead of keeping an orphaned tool output', () => {
+    const input = [
+        {role: 'user', content: 'old'},
+        {type: 'function_call', call_id: 'call_old', name: 'old_tool', arguments: '{}'},
+        {type: 'function_call_output', call_id: 'call_old', output: 'old result'},
+        {role: 'user', content: 'new question'},
+        {role: 'assistant', content: 'new answer'},
+        {role: 'user', content: 'latest question'},
+        {role: 'assistant', content: 'latest answer'}
+    ];
+
+    const result = truncateResponsesInputItems(input, {limit: 5});
+
+    assert.equal(result.truncated, true);
+    assert.equal(result.input.length <= 5, true);
+    assert.deepEqual(result.input.map(item => item.role || item.type), ['user', 'assistant', 'user', 'assistant']);
+    assert.equal(result.input[0].content, 'new question');
+});
+
+test('limitResponsesInputItems only truncates when a continuation response id is available', () => {
+    const input = Array.from({length: 600}, (_, i) => ({role: 'user', content: `message ${i}`}));
+    const unchanged = limitResponsesInputItems({model: 'glm-5.2', input}, {limit: 500});
+
+    assert.equal(unchanged.truncated, false);
+    assert.equal(unchanged.payload.input.length, 600);
+    assert.equal('previous_response_id' in unchanged.payload, false);
+
+    const truncated = limitResponsesInputItems(
+        {model: 'glm-5.2', input},
+        {limit: 500, previousResponseId: 'resp_prev'}
+    );
+
+    assert.equal(truncated.truncated, true);
+    assert.equal(truncated.payload.input.length, 500);
+    assert.equal(truncated.payload.previous_response_id, 'resp_prev');
+    assert.equal(truncated.payload.input[0].content, 'message 100');
 });

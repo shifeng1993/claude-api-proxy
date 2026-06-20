@@ -8,8 +8,18 @@ import {
     sanitizeAnthropicMessages
 } from '../src/transformer/shared-translator.js';
 import {anthropicToOpenAI as copilotAnthropicToOpenAI} from '../src/services/copilot/anthropic-translator.js';
+import {
+    createStreamState as createCopilotStreamState,
+    translateStreamChunk as translateCopilotStreamChunk
+} from '../src/services/copilot/anthropic-translator.js';
 import {anthropicToOpenAI as relayAnthropicToOpenAI} from '../src/services/relay/translator.js';
+import {ClaudeStreamState as RelayClaudeStreamState} from '../src/services/relay/translator.js';
 import {anthropicToOpenAI as codebuddyAnthropicToOpenAI} from '../src/services/codebuddy/translator.js';
+import {
+    ClaudeStreamState as CodebuddyClaudeStreamState,
+    createStreamState as createCodebuddyStreamState,
+    translateStreamChunk as translateCodebuddyStreamChunk
+} from '../src/services/codebuddy/translator.js';
 import {
     anthropicResponseToChat,
     chatRequestToAnthropic
@@ -113,6 +123,100 @@ test('openAIToAnthropic returns reasoning_content as a thinking block', () => {
 
     assert.deepEqual(converted.content.map((block) => block.type), ['thinking', 'text', 'tool_use']);
     assert.equal(converted.content[0].thinking, 'check the file first');
+});
+
+test('openAIToAnthropic splits cached prompt tokens from Anthropic input_tokens', () => {
+    const converted = openAIToAnthropic({
+        id: 'chatcmpl_1',
+        model: 'kimi-k2.6',
+        choices: [{
+            index: 0,
+            message: {role: 'assistant', content: 'ok'},
+            finish_reason: 'stop'
+        }],
+        usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 5,
+            prompt_tokens_details: {cached_tokens: 300, cache_creation_tokens: 200}
+        }
+    });
+
+    assert.equal(converted.usage.input_tokens, 500);
+    assert.equal(converted.usage.cache_read_input_tokens, 300);
+    assert.equal(converted.usage.cache_creation_input_tokens, 200);
+    assert.equal(converted.usage.output_tokens, 5);
+});
+
+test('OpenAI to Anthropic stream chunks transmit complete split usage fields', () => {
+    const chunk = {
+        id: 'chatcmpl_1',
+        model: 'kimi-k2.6',
+        choices: [{
+            index: 0,
+            delta: {content: 'ok'},
+            finish_reason: 'stop'
+        }],
+        usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 5,
+            prompt_tokens_details: {cached_tokens: 300, cache_creation_tokens: 200}
+        }
+    };
+
+    for (const [createState, translateChunk] of [
+        [createCopilotStreamState, translateCopilotStreamChunk],
+        [createCodebuddyStreamState, translateCodebuddyStreamChunk]
+    ]) {
+        const events = translateChunk(chunk, createState());
+        const messageStart = events.find(event => event.type === 'message_start');
+        const messageDelta = events.find(event => event.type === 'message_delta');
+
+        assert.deepEqual(messageStart.message.usage, {
+            input_tokens: 500,
+            output_tokens: 0,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 200
+        });
+        assert.deepEqual(messageDelta.usage, {
+            input_tokens: 500,
+            output_tokens: 5,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 200
+        });
+    }
+});
+
+test('Claude stream states transmit zero-valued cache usage fields', () => {
+    for (const StateClass of [RelayClaudeStreamState, CodebuddyClaudeStreamState]) {
+        const events = [];
+        const state = new StateClass({write: (event, data) => events.push({event, data})});
+
+        state.startMessage('claude-sonnet-4');
+        state.endMessage('end_turn');
+
+        const start = events.find(item => item.event === 'message_start');
+        const delta = events.find(item => item.event === 'message_delta');
+
+        assert.deepEqual(start.data.message.usage, {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0
+        });
+        assert.deepEqual(delta.data.usage, {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0
+        });
+    }
+});
+
+test('Responses fallback completed events transmit cache usage details', () => {
+    for (const file of ['src/routes/codebuddy.js', 'src/routes/copilot.js']) {
+        const source = readFileSync(join(root, file), 'utf8');
+        assert.match(source, /input_tokens_details:\s*\{\s*cached_tokens:\s*streamCacheHitTokens,\s*cache_creation_tokens:\s*streamCacheCreationTokens\s*\}/);
+    }
 });
 
 test('chatRequestToAnthropic moves preceding tool result after assistant tool_use', () => {
@@ -244,4 +348,12 @@ test('relay Responses-capable passthrough paths remember visible input before co
     const prepareCalls = source.match(/prepareResponsesPassthrough/g) || [];
 
     assert.equal(prepareCalls.length >= 4, true);
+});
+
+test('relay Responses passthrough paths limit oversized input before upstream transport', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const limitCalls = source.match(/limitResponsesPassthroughPayload/g) || [];
+
+    assert.equal(limitCalls.length >= 5, true);
+    assert.match(source, /lastResponseId/);
 });

@@ -5,7 +5,7 @@
  */
 
 import logger from '../../utils/logger.js';
-import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, extractCacheHitTokens, extractReasoningFromDelta, openAIToAnthropic as sharedOpenAIToAnthropic, normalizeClaudeModelAlias} from '../../transformer/shared-translator.js';
+import {generateId, mapStopReason, translateToolChoice, mapContent, injectBehaviorRules, prependThinkingHint, prependToolThinkingHint, extractReasoningFromDelta, openAIToAnthropic as sharedOpenAIToAnthropic, openAIUsageToAnthropicUsage, normalizeClaudeModelAlias} from '../../transformer/shared-translator.js';
 import {responsesEventToChatChunks} from '../../transformer/responses-translator.js';
 
 /**
@@ -278,10 +278,7 @@ export function translateStreamChunk(openAIChunk, state) {
                 model: openAIChunk.model,
                 stop_reason: null,
                 stop_sequence: null,
-                usage: {
-                    input_tokens: openAIChunk.usage?.prompt_tokens || 0,
-                    output_tokens: 0
-                }
+                usage: {...openAIUsageToAnthropicUsage(openAIChunk.usage), output_tokens: 0}
             }
         });
         state.messageStartSent = true;
@@ -489,17 +486,13 @@ export function translateStreamChunk(openAIChunk, state) {
             state.contentBlockOpen = false;
         }
 
-        const usage = {output_tokens: openAIChunk.usage?.completion_tokens || 0};
-        const cacheTokens = extractCacheHitTokens(openAIChunk.usage);
-        if (cacheTokens > 0) usage.cache_read_input_tokens = cacheTokens;
-
         events.push({
             type: 'message_delta',
             delta: {
                 stop_reason: mapStopReason(choice.finish_reason),
                 stop_sequence: null
             },
-            usage
+            usage: openAIUsageToAnthropicUsage(openAIChunk.usage)
         });
 
         events.push({

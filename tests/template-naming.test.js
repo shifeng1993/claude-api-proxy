@@ -177,6 +177,9 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /switchTab\(S\.tab\|\|'relay',\{skipHash:true\}\);toast\('API Key 已重新生成'\)/);
     assert.match(adminHtml, /total_api_calls|apiCalls/);
     assert.match(adminHtml, /cacheHitRate|CustomCacheRate/);
+    assert.doesNotMatch(adminHtml, /写缓存 Tokens|写缓存成本|CustomCacheCreation/);
+    assert.doesNotMatch(adminHtml, /input_cache_creation|total_cache_creation_tokens|CustomCacheCreation/);
+    assert.doesNotMatch(frontendRoute, /input_cache_creation|total_cache_creation_tokens|cacheCreationTokens/);
     assert.match(adminHtml, /total_credit|CodeBuddy/);
     assert.match(adminHtml, /echarts\.init/);
     assert.match(adminHtml, /\.service-status\s*\{[\s\S]*position: absolute/);
@@ -221,7 +224,7 @@ test('unified admin console includes all service management surfaces', () => {
     assert.doesNotMatch(refreshStats, /loadMyTenant|renderTenant|loadServiceStats/);
     assert.match(adminHtml, /function updateCustomStatsCard\(type, serviceProfile\)/);
     assert.match(adminHtml, /\/service-profile\?service=/);
-    assert.match(adminHtml, /stats-grid-\$\{type==='codebuddy'\?'7':'6'\}/);
+    assert.match(adminHtml, /stats-grid-\$\{type==='codebuddy'\?'6':'5'\}/);
     assert.match(adminHtml, /moveCodebuddyCredential/);
     assert.match(adminHtml, /moveCopilotCredential/);
     assert.match(adminHtml, /id="feedbackDetailModal"/);
@@ -320,6 +323,8 @@ test('admin Claude Code guides document auth compatibility and model pass-throug
     assert.match(adminHtml, /ANTHROPIC_AUTH_TOKEN/);
     assert.match(adminHtml, /ANTHROPIC_API_KEY/);
     assert.match(adminHtml, /deepseek-v4-pro\[1m\]/);
+    assert.match(adminHtml, /如 Codex，将 Base URL 设置为/);
+    assert.doesNotMatch(adminHtml, /Cherry Studio|CherryStudio/);
     assert.doesNotMatch(adminHtml, /ANTHROPIC_CUSTOM_HEADERS/);
     assert.match(adminHtml, /loadCodebuddyOptions/);
     assert.match(adminHtml, /renderCodebuddyModelGuide/);
