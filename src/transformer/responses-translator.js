@@ -1561,6 +1561,18 @@ export function limitResponsesInputItems(payload, {limit, previousResponseId} = 
     const explicitPreviousResponseId = normalizeResponseId(payload.previous_response_id);
     const continuationResponseId = explicitPreviousResponseId || normalizeResponseId(previousResponseId);
     if (!continuationResponseId) {
+        const hardCapped = truncateResponsesInputItems(payload.input, {limit: MAX_RESPONSES_INPUT_ITEMS_LIMIT});
+        if (hardCapped.truncated) {
+            return {
+                ...hardCapped,
+                payload: {
+                    ...payload,
+                    input: hardCapped.input
+                },
+                previousResponseId: null
+            };
+        }
+
         return {
             payload,
             input: payload.input,

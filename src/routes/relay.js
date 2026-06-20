@@ -62,6 +62,7 @@ import {
     RelayStateMissingError,
     relayConversationStore
 } from '../services/relay/conversation-state.js';
+import {prepareResponsesContinuationPayload} from '../services/relay/responses-continuation.js';
 import {
     compactChatRequestIfNeeded,
     isContextWindowExceededError
@@ -731,12 +732,20 @@ async function handleOpenAIChatCompletions(req, res) {
                 ...openAIPayload,
                 model: relayStatsModel
             });
-            const wsResult = await createResponsesWebSocket(responsesPayload, upstream, {
+            const continuation = prepareResponsesContinuationPayload({
+                conversationStore: relayConversationStore,
+                tenantId,
+                conversationKey: baseConversationKey,
+                request: responsesPayload,
+                requestType: 'ChatCompletionsViaResponsesWS'
+            });
+            const stateConversationKey = continuation.conversationKey || baseConversationKey;
+            const wsResult = await createResponsesWebSocket(continuation.request, upstream, {
                 requestType: 'ChatCompletionsViaResponsesWS',
                 stream: openAIPayload.stream,
                 originalModel: openAIPayload.model,
-                contextKey: baseConversationKey,
-                sessionId: baseConversationKey,
+                contextKey: stateConversationKey,
+                sessionId: stateConversationKey,
                 rejectUnauthorized: !upstream.skip_tls_verify,
                 ...tenantMeta
             });
@@ -768,7 +777,7 @@ async function handleOpenAIChatCompletions(req, res) {
                     throw error;
                 }
 
-                recordCompletedResponseState(tenantId, baseConversationKey, completedResponse);
+                recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
                 recordResponsesUsage(tenantId, usage, relayStatsModel);
                 res.write('data: [DONE]\n\n');
                 res.end();
@@ -776,7 +785,7 @@ async function handleOpenAIChatCompletions(req, res) {
             }
 
             const completedResponse = await collectResponsesWebSocketResponse(wsResult);
-            recordCompletedResponseState(tenantId, baseConversationKey, completedResponse);
+            recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
             recordResponsesUsage(tenantId, completedResponse.usage, relayStatsModel);
             sendJson(res, 200, responsesResponseToChat(completedResponse));
             return;
@@ -1110,12 +1119,20 @@ async function handleAnthropicMessages(req, res) {
                 model: upstreamManager.resolveModel(openAIPayload.model, upstream.index),
                 stream: anthropicPayload.stream
             });
-            const wsResult = await createResponsesWebSocket(responsesPayload, upstream, {
+            const continuation = prepareResponsesContinuationPayload({
+                conversationStore: relayConversationStore,
+                tenantId,
+                conversationKey: baseConversationKey,
+                request: responsesPayload,
+                requestType: 'AnthropicViaResponsesWebSocket'
+            });
+            const stateConversationKey = continuation.conversationKey || baseConversationKey;
+            const wsResult = await createResponsesWebSocket(continuation.request, upstream, {
                 requestType: 'AnthropicViaResponsesWebSocket',
                 stream: anthropicPayload.stream,
                 originalModel: anthropicPayload.model,
-                contextKey: baseConversationKey,
-                sessionId: baseConversationKey,
+                contextKey: stateConversationKey,
+                sessionId: stateConversationKey,
                 rejectUnauthorized: !upstream.skip_tls_verify,
                 ...tenantMeta
             });
@@ -1145,14 +1162,14 @@ async function handleAnthropicMessages(req, res) {
                     throw error;
                 }
 
-                recordCompletedResponseState(tenantId, baseConversationKey, completedResponse);
+                recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
                 recordResponsesUsage(tenantId, usage, relayStatsModel);
                 res.end();
                 return;
             }
 
             const completedResponse = await collectResponsesWebSocketResponse(wsResult);
-            recordCompletedResponseState(tenantId, baseConversationKey, completedResponse);
+            recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
             recordResponsesUsage(tenantId, completedResponse.usage, relayStatsModel);
             const chatResponse = responsesResponseToChat(completedResponse);
             sendJson(res, 200, openAIToAnthropic(chatResponse));

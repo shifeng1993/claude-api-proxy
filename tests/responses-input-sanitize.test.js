@@ -155,3 +155,14 @@ test('limitResponsesInputItems only truncates when a continuation response id is
     assert.equal(truncated.payload.previous_response_id, 'resp_prev');
     assert.equal(truncated.payload.input[0].content, 'message 100');
 });
+
+test('limitResponsesInputItems applies provider hard cap even without continuation state', () => {
+    const input = Array.from({length: 1200}, (_, i) => ({role: 'user', content: `message ${i}`}));
+    const result = limitResponsesInputItems({model: 'glm-5.2', input}, {limit: 500});
+
+    assert.equal(result.truncated, true);
+    assert.equal(result.previousResponseId, null);
+    assert.equal('previous_response_id' in result.payload, false);
+    assert.equal(result.payload.input.length, 950);
+    assert.equal(result.payload.input[0].content, 'message 250');
+});
