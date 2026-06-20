@@ -60,6 +60,7 @@ function tenantView(tenant, includePlainKey = false) {
             total_input_tokens: profile.total_input_tokens || 0,
             total_output_tokens: profile.total_output_tokens || 0,
             total_cache_hit_tokens: profile.total_cache_hit_tokens || 0,
+            total_cache_creation_tokens: profile.total_cache_creation_tokens || 0,
             total_credit: profile.total_credit || 0
         }))
     };
@@ -93,7 +94,7 @@ export function canManageDashboardTenant(actorRole, targetTenant) {
 }
 
 function aggregateUsageRows(rows) {
-    const totals = {apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, credit: 0};
+    const totals = {apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreationTokens: 0, credit: 0};
     const monthly = new Map();
     const daily = new Map();
     const modelsByName = new Map();
@@ -103,11 +104,13 @@ function aggregateUsageRows(rows) {
         const inputTokens = Number(row.input_tokens || 0);
         const outputTokens = Number(row.output_tokens || 0);
         const cacheHitTokens = Number(row.input_cache_hit || 0);
+        const cacheCreationTokens = Number(row.input_cache_creation || 0);
         const credit = Number(row.credit || 0);
         totals.apiCalls += apiCalls;
         totals.inputTokens += inputTokens;
         totals.outputTokens += outputTokens;
         totals.cacheHitTokens += cacheHitTokens;
+        totals.cacheCreationTokens += cacheCreationTokens;
         totals.credit += credit;
 
         const month = String(row.date || '').slice(0, 7);
@@ -115,11 +118,12 @@ function aggregateUsageRows(rows) {
         const model = row.model || 'unknown';
         for (const [key, map] of [[month, monthly], [day, daily], [model, modelsByName]]) {
             if (!key) continue;
-            const item = map.get(key) || {key, apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, credit: 0};
+            const item = map.get(key) || {key, apiCalls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreationTokens: 0, credit: 0};
             item.apiCalls += apiCalls;
             item.inputTokens += inputTokens;
             item.outputTokens += outputTokens;
             item.cacheHitTokens += cacheHitTokens;
+            item.cacheCreationTokens += cacheCreationTokens;
             item.credit += credit;
             map.set(key, item);
         }
@@ -416,6 +420,7 @@ export async function routeAdminFrontend(req, res) {
                     total_input_tokens: profile.total_input_tokens || 0,
                     total_output_tokens: profile.total_output_tokens || 0,
                     total_cache_hit_tokens: profile.total_cache_hit_tokens || 0,
+                    total_cache_creation_tokens: profile.total_cache_creation_tokens || 0,
                     total_credit: profile.total_credit || 0
                 } : null
             });
