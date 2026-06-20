@@ -33,11 +33,13 @@ export async function initDb() {
     await ensureCopilotCredentialColumns();
     await ensureTenantUpstreamColumns();
     await ensureTenantDailyUsageColumns();
+    await ensureTenantServiceProfileColumns();
     await sequelize.sync();
     await ensureTenantCredentialColumns();
     await ensureCopilotCredentialColumns();
     await ensureTenantUpstreamColumns();
     await ensureTenantDailyUsageColumns();
+    await ensureTenantServiceProfileColumns();
 }
 
 async function ensureTenantCredentialColumns() {
@@ -114,6 +116,25 @@ async function ensureTenantDailyUsageColumns() {
 
     if (!columns.input_cache_creation) {
         await queryInterface.addColumn(table, 'input_cache_creation', {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0
+        });
+    }
+}
+
+async function ensureTenantServiceProfileColumns() {
+    const queryInterface = sequelize.getQueryInterface();
+    const table = 'tenant_service_profiles';
+    let columns;
+    try {
+        columns = await queryInterface.describeTable(table);
+    } catch {
+        return;
+    }
+
+    if (!columns.total_cache_creation_tokens) {
+        await queryInterface.addColumn(table, 'total_cache_creation_tokens', {
             type: DataTypes.INTEGER,
             allowNull: false,
             defaultValue: 0

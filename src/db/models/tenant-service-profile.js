@@ -38,6 +38,10 @@ export const TenantServiceProfile = sequelize.define('tenant_service_profiles', 
         type: DataTypes.INTEGER,
         defaultValue: 0
     },
+    total_cache_creation_tokens: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0
+    },
     total_credit: {
         type: DataTypes.REAL,
         defaultValue: 0
