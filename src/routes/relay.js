@@ -217,9 +217,9 @@ async function collectResponsesWebSocketResponse(wsResult) {
 function recordResponsesUsage(tenantId, usage, model) {
     recordUsage(
         tenantId,
-        usage?.input_tokens || 0,
+        extractInputTokens(usage),
         usage?.output_tokens || 0,
-        usage?.input_tokens_details?.cached_tokens || 0,
+        extractCacheHitTokens(usage),
         model,
         null,
         null,
@@ -862,9 +862,9 @@ async function handleOpenAIChatCompletions(req, res) {
                             recordCompletedResponseState(tenantId, conversationKey, completedResponse);
                             recordUsage(
                                 tenantId,
-                                usage?.input_tokens || 0,
+                                extractInputTokens(usage),
                                 usage?.output_tokens || 0,
-                                usage?.input_tokens_details?.cached_tokens || 0,
+                                extractCacheHitTokens(usage),
                                 relayStatsModel,
                                 null,
                                 null,
@@ -908,9 +908,9 @@ async function handleOpenAIChatCompletions(req, res) {
 
             recordUsage(
                 tenantId,
-                parsed.usage?.input_tokens || 0,
+                extractInputTokens(parsed.usage),
                 parsed.usage?.output_tokens || 0,
-                parsed.usage?.input_tokens_details?.cached_tokens || 0,
+                extractCacheHitTokens(parsed.usage),
                 relayStatsModel,
                 null,
                 null,
@@ -1611,7 +1611,7 @@ async function handleResponsesAPI(req, res) {
                     tenantId,
                     finalUsage?.prompt_tokens || 0,
                     finalUsage?.completion_tokens || 0,
-                    finalUsage?.prompt_tokens_details?.cached_tokens || 0,
+                    extractCacheHitTokens(finalUsage),
                     relayStatsModel,
                     null,
                     null,
@@ -1628,7 +1628,7 @@ async function handleResponsesAPI(req, res) {
                 tenantId,
                 chatResponse.usage?.prompt_tokens || 0,
                 chatResponse.usage?.completion_tokens || 0,
-                chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+                extractCacheHitTokens(chatResponse.usage),
                 relayStatsModel,
                 null,
                 null,
@@ -1779,9 +1779,9 @@ async function handleResponsesAPI(req, res) {
                     recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
                     recordUsage(
                         tenantId,
-                        usage?.input_tokens || 0,
+                        extractInputTokens(usage),
                         usage?.output_tokens || 0,
-                        usage?.input_tokens_details?.cached_tokens || 0,
+                        extractCacheHitTokens(usage),
                         relayStatsModel,
                         null,
                         null,
@@ -1802,9 +1802,9 @@ async function handleResponsesAPI(req, res) {
             recordCompletedResponseState(tenantId, stateConversationKey, parsed);
             recordUsage(
                 tenantId,
-                parsed.usage?.input_tokens || 0,
+                extractInputTokens(parsed.usage),
                 parsed.usage?.output_tokens || 0,
-                parsed.usage?.input_tokens_details?.cached_tokens || 0,
+                extractCacheHitTokens(parsed.usage),
                 relayStatsModel,
                 null,
                 null,
@@ -2070,7 +2070,7 @@ async function handleResponsesCompact(req, res) {
                 tenantId,
                 chatResponse.usage?.prompt_tokens || 0,
                 chatResponse.usage?.completion_tokens || 0,
-                chatResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+                extractCacheHitTokens(chatResponse.usage),
                 relayStatsModel,
                 null,
                 null,
@@ -2136,9 +2136,9 @@ async function handleResponsesCompact(req, res) {
             const parsed = JSON.parse(responseBody);
             recordUsage(
                 tenantId,
-                parsed.usage?.input_tokens || 0,
+                extractInputTokens(parsed.usage),
                 parsed.usage?.output_tokens || 0,
-                parsed.usage?.input_tokens_details?.cached_tokens || 0,
+                extractCacheHitTokens(parsed.usage),
                 relayStatsModel,
                 null,
                 null,
