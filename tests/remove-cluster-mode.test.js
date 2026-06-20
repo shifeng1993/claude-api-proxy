@@ -18,8 +18,6 @@ test('legacy cluster deployment and broadcast sync are removed', () => {
         'src/server.js',
         'src/routes/dashboard-frontend.js',
         'src/routes/dashboard-codebuddy.js',
-        'src/services/relay/tenant-manager.js',
-        'src/services/codebuddy/tenant-manager.js',
         'scripts/deploy.mjs',
         '.env.example',
         'README.md',

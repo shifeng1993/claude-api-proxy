@@ -679,7 +679,7 @@ async function handleOpenAIChatCompletions(req, res) {
                     relayStatsModel,
                     null,
                     null,
-                    finalUsage?.prompt_tokens_details?.cache_creation_tokens || 0
+                    extractCacheCreationTokens(finalUsage)
                 );
                 res.write('data: [DONE]\n\n');
                 res.end();
@@ -1576,7 +1576,7 @@ async function handleResponsesAPI(req, res) {
                     relayStatsModel,
                     null,
                     null,
-                    finalUsage?.prompt_tokens_details?.cache_creation_tokens || 0
+                    extractCacheCreationTokens(finalUsage)
                 );
                 res.end();
                 return;
