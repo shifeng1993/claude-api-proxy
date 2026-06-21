@@ -1,6 +1,6 @@
 # 决策记录：cacheCreation 回滚后的两处遗留 (2026-06-21)
 
-写缓存（cacheCreation）token 追踪在 06-19 至 06-21 之间引入又删除（详见提交 dd39718..860f260，集中在 f79414e）。回滚过程中两处「不彻底」是有意为之，不是漏删。本文档记录决策与边界，避免后人翻 [`.specstory/plan.md`](../../.specstory/plan.md) 推倒重来。
+写缓存（cacheCreation）token 追踪在 06-19 至 06-21 之间引入又删除（详见提交 dd39718..860f260，集中在 f79414e）。回滚过程中两处「不彻底」是有意为之，不是漏删。本文档记录决策与边界，避免后人只看已删除的旧计划文档或历史讨论而推倒重来。
 
 ## 决策 1：保留 `tenant_daily_usage.input_cache_creation` 与 `tenant_service_profiles.total_cache_creation_tokens` 两列
 
@@ -41,7 +41,7 @@ await record.increment({
 
 **为什么不依赖前端/查询时派生**
 
-- **聚合性能**：命中率仪表盘聚合是 `SUM(miss) / SUM(input + miss)`，按租户 × 服务 × 日期分组。让 SQL 直接 `SUM` 一个已落库的列，避免每次查询都重算 `MAX(0, input - hit)` 表达式 ×百万行。
+- **聚合性能**：当前命中率口径是 `hit / input`，`input_cache_miss` 不参与命中率公式分子；它用于模型/用户统计中直接展示未命中输入 token。让 SQL 直接 `SUM(input_cache_miss)`，可以避免每次查询都重算 `MAX(0, input - hit)` 表达式 ×百万行。
 - **历史口径稳定**：`input_tokens` 在 d491b94 之后从 `extractInputTokens()` 取值（含 cache_read + cache_creation），口径变过一次。`hit` 取 `extractCacheHitTokens()`。把 miss 在写入时一次性算定，相当于把当时的口径冻结在该行；之后即使再改 helper，历史 miss 仍是当时的真实值，不会因为口径漂移而失真。
 - `Math.max(0, ...)` 兜底了上游 usage 字段错乱时 input < hit 的边缘场景，避免出现负数。
 
@@ -53,11 +53,10 @@ await record.increment({
 
 **触发重新评估的条件**：
 - 上游 usage 口径再次大改、需要重算历史命中率（这时直接重写整张表的 miss 列即可，不是删除该字段的理由）。
-- 切换到列存或时序后端，`SUM(input + miss)` 的实时计算变得便宜。
+- 切换到列存或时序后端，查询时实时计算 `MAX(0, input - hit)` 变得便宜。
 
 ## 关联
 
-- 计划/讨论留底：[`.specstory/plan.md`](../../.specstory/plan.md)
 - 触发回滚的提交：`f79414e` (`fix: drop cache_creation token tracking and fix 3 relay bugs`)
 - 反向保护断言：[`tests/template-naming.test.js`](../../tests/template-naming.test.js)（admin.html / dashboard-frontend.js 不得再含 `cacheCreation`）
 - `extractInputTokens` 仍把 `cache_creation_input_tokens` 计入总输入是另一个有意保留 —— 它属于 Anthropic 原生计费定义而非 cacheCreation 独立维度，见 [`src/transformer/shared-translator.js:32-34`](../../src/transformer/shared-translator.js#L32-L34)
