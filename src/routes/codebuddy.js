@@ -4,7 +4,7 @@
  */
 
 import {createChatCompletions, getModels} from '../services/codebuddy/api.js';
-import {anthropicToOpenAI, openAIToAnthropic, ClaudeStreamState, SSEWriter} from '../services/codebuddy/translator.js';
+import {anthropicToOpenAI, openAIToAnthropic} from '../services/codebuddy/translator.js';
 import {rewriteOpenAIStream} from '../transformer/shared-translator.js';
 import {
     buildConversationAnchorKey,
@@ -16,12 +16,14 @@ import {
 import {
     responsesRequestToChat,
     chatResponseToResponses,
-    createResponsesStreamState,
-    chatChunkToResponsesEvents,
     compactRequestToChat,
     chatResponseToCompact,
     mergeConsecutiveAssistantMessages
 } from '../transformer/responses-translator.js';
+import {
+    createChatToAnthropicStreamBridge,
+    createChatToResponsesStreamBridge
+} from '../services/relay/canonical-stream.js';
 import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
 import {resolveCredential} from '../services/gateway/gateway-auth.js';
 import {BLOCKED_DOMAINS, getCodebuddyBaseUrl, isPersonalHost} from '../services/codebuddy/config.js';
@@ -449,11 +451,8 @@ async function handleAnthropicMessages(req, res) {
                 Connection: 'keep-alive'
             });
 
-            const writer = new SSEWriter(res);
-            const state = new ClaudeStreamState(writer);
-
+            const chatToAnthropicBridge = createChatToAnthropicStreamBridge({model: anthropicPayload.model});
             let buffer = Buffer.alloc(0);
-            let partialTextBuffer = '';
             let streamInputTokens = 0;
             let streamOutputTokens = 0;
             let streamCacheHitTokens = 0;
@@ -485,9 +484,6 @@ async function handleAnthropicMessages(req, res) {
                         continue;
                     }
 
-                    const choice = data.choices?.[0];
-                    const delta = choice?.delta;
-
                     if (data.usage) {
                         streamInputTokens = data.usage.prompt_tokens || 0;
                         streamOutputTokens = data.usage.completion_tokens || 0;
@@ -496,70 +492,10 @@ async function handleAnthropicMessages(req, res) {
                     }
                     if (data.model) streamModel = data.model;
 
-                    state.startMessage(data.model);
-
-                    // 提取推理文本：delta.thinking 可能是字符串或对象 { content, signature }
-                    let reasoningText = null;
-                    let signature = null;
-
-                    if (delta?.reasoning_content) {
-                        reasoningText = delta.reasoning_content;
-                    } else if (typeof delta?.thinking === 'string') {
-                        reasoningText = delta.thinking;
-                    } else if (typeof delta?.thinking === 'object' && delta.thinking !== null) {
-                        reasoningText = delta.thinking.content || null;
-                        signature = delta.thinking.signature || null;
-                    } else if (delta?.thought) {
-                        reasoningText = typeof delta.thought === 'string' ? delta.thought : null;
-                    } else if (delta?.reasoning) {
-                        reasoningText = typeof delta.reasoning === 'string' ? delta.reasoning : null;
-                    }
-
-                    if (!signature) {
-                        signature =
-                            delta?.reasoning_signature ||
-                            (choice?.finish_reason === 'thinking' ? Date.now().toString() : null);
-                    }
-
-                    if (reasoningText) {
-                        state.appendThinking(reasoningText);
-                    }
-                    if (signature) {
-                        state.closeThinking(signature);
-                    }
-
-                    if (Array.isArray(delta?.tool_calls)) {
-                        for (const tool of delta.tool_calls) {
-                            const idx = tool.index;
-                            if (tool.function?.name) {
-                                // 传入 kimi 返回的原始 tool.id，保证 tool_use_id 与上游 tool_call_id 一致
-                                // 否则 Claude Code 下一轮 tool_result 携带的 id 将无法被 kimi 识别，导致 invoke model error
-                                state.startTool(idx, tool.function.name, tool.id);
-                            }
-                            if (tool.function?.arguments) {
-                                state.appendToolArgs(idx, tool.function.arguments);
-                            }
-                        }
-                    }
-
-                    // 判断是否有推理内容（使用已提取的 reasoningText 避免重复逻辑）
-                    if (delta?.content && !reasoningText) {
-                        partialTextBuffer += delta.content;
-                    }
-
-                    if (choice?.finish_reason) {
-                        if (partialTextBuffer) {
-                            state.appendText(partialTextBuffer);
-                            partialTextBuffer = '';
-                        }
-
-                        if (choice.finish_reason === 'tool_calls') {
-                            state.finalStopReason = 'tool_use';
-                        } else if (choice.finish_reason === 'length') {
-                            state.finalStopReason = 'max_tokens';
-                        } else {
-                            state.finalStopReason = 'end_turn';
-                        }
+                    for (const event of chatToAnthropicBridge.feed(data)) {
+                        if (res.destroyed) break;
+                        res.write(`event: ${event.type}\n`);
+                        res.write(`data: ${JSON.stringify(event)}\n\n`);
                     }
                 }
 
@@ -569,11 +505,13 @@ async function handleAnthropicMessages(req, res) {
             });
 
             responseBody.on('end', () => {
-                if (partialTextBuffer) {
-                    state.appendText(partialTextBuffer);
-                    partialTextBuffer = '';
+                if (!chatToAnthropicBridge.finished) {
+                    for (const event of chatToAnthropicBridge.finish()) {
+                        if (res.destroyed) break;
+                        res.write(`event: ${event.type}\n`);
+                        res.write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
                 }
-                state.endMessage(state.finalStopReason);
                 if (authResult.tenantId) {
                     unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
                     unifiedTenantManager.incrementTokenUsage(
@@ -599,9 +537,21 @@ async function handleAnthropicMessages(req, res) {
 
             responseBody.on('error', (err) => {
                 logger.error(`Stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
-                state.emitErrorText('模型请求异常，请稍后重试。\n' + (err?.message || ''));
-                state.finalStopReason = 'error';
-                state.endMessage('error');
+                if (!chatToAnthropicBridge.finished && !res.destroyed) {
+                    const errorChunk = {
+                        id: 'chatcmpl_error',
+                        model: streamModel || anthropicPayload.model,
+                        choices: [{
+                            delta: {content: `模型请求异常，请稍后重试。\n${err?.message || ''}`},
+                            finish_reason: 'stop'
+                        }]
+                    };
+                    for (const event of chatToAnthropicBridge.feed(errorChunk)) {
+                        if (res.destroyed) break;
+                        res.write(`event: ${event.type}\n`);
+                        res.write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
+                }
                 res.end();
             });
         } else {
@@ -802,7 +752,7 @@ async function handleResponsesAPI(req, res) {
                 Connection: 'keep-alive'
             });
 
-            const streamState = createResponsesStreamState();
+            const chatToResponsesBridge = createChatToResponsesStreamBridge({model: responsesReq.model});
             let buffer = Buffer.alloc(0);
             let streamInputTokens = 0;
             let streamOutputTokens = 0;
@@ -837,7 +787,7 @@ async function handleResponsesAPI(req, res) {
                     }
                     if (data.model) streamModel = data.model;
 
-                    const events = chatChunkToResponsesEvents(data, streamState);
+                    const events = chatToResponsesBridge.feed(data);
                     for (const ev of events) {
                         res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                     }
@@ -847,42 +797,10 @@ async function handleResponsesAPI(req, res) {
 
             response.body.on('end', () => {
                 // 如果没有正常完成，兜底发送 response.completed
-                if (!streamState.started || !streamState.finished) {
-                    if (streamState.reasoningOpen) {
-                        const item = {
-                            type: 'reasoning',
-                            id: streamState.reasoningItemId,
-                            status: 'completed',
-                            summary: [{type: 'summary_text', text: streamState.reasoningText}]
-                        };
-                        res.write(
-                            `event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`
-                        );
-                        res.write(
-                            `event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`
-                        );
-                        streamState.output.push(item);
-                        streamState.outputIndex++;
+                if (!chatToResponsesBridge.finished) {
+                    for (const ev of chatToResponsesBridge.finish()) {
+                        res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                     }
-                    if (streamState.messageOpen) {
-                        const item = {
-                            type: 'message',
-                            id: streamState.currentMessageId,
-                            status: 'completed',
-                            role: 'assistant',
-                            content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]
-                        };
-                        res.write(
-                            `event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`
-                        );
-                        res.write(
-                            `event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`
-                        );
-                        streamState.output.push(item);
-                    }
-                    res.write(
-                        `event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens, input_tokens_details: {cached_tokens: streamCacheHitTokens}}}})}\n\n`
-                    );
                 }
                 if (authResult.tenantId) {
                     unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
@@ -1263,7 +1181,7 @@ export function handleCodebuddyResponsesWS(clientWs, req) {
             });
 
             // 将 Chat SSE 流转换为 Responses WS 事件
-            const streamState = createResponsesStreamState();
+            const chatToResponsesBridge = createChatToResponsesStreamBridge({model: payload.model});
             let buffer = Buffer.alloc(0);
 
             for await (const chunk of response.body) {
@@ -1285,12 +1203,17 @@ export function handleCodebuddyResponsesWS(clientWs, req) {
                         continue;
                     }
 
-                    const events = chatChunkToResponsesEvents(data, streamState);
+                    const events = chatToResponsesBridge.feed(data);
                     for (const ev of events) {
                         yield {type: ev.event, data: ev.data};
                     }
                 }
                 if (start > 0) buffer = buffer.subarray(start);
+            }
+            if (!chatToResponsesBridge.finished) {
+                for (const ev of chatToResponsesBridge.finish()) {
+                    yield {type: ev.event, data: ev.data};
+                }
             }
         },
         onUsage: (inputTokens, outputTokens, cacheHitTokens, model) => {

@@ -1,19 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
-import {
-    createChatCompletionsStreamState,
-    createResponsesStreamState,
-    responsesEventToResponsesEvents
-} from '../src/transformer/responses-translator.js';
+import {createResponsesToResponsesStreamBridge} from '../src/services/relay/canonical-stream.js';
 import {bindAsyncIterableContext, handleWSConnection} from '../src/services/shared/responses-ws-server.js';
 import {RelayStateMissingError} from '../src/services/relay/conversation-state.js';
 
-test('responsesEventToResponsesEvents adds ordinary Responses scaffold before text deltas', () => {
-    const chatState = createChatCompletionsStreamState();
-    const responsesState = createResponsesStreamState();
+test('canonical Responses to Responses bridge adds ordinary scaffold before text deltas', () => {
+    const bridge = createResponsesToResponsesStreamBridge({model: 'gpt-5.4'});
 
-    const events = responsesEventToResponsesEvents(
+    const events = bridge.feed(
         'response.output_text.delta',
         {
             type: 'response.output_text.delta',
@@ -21,9 +16,7 @@ test('responsesEventToResponsesEvents adds ordinary Responses scaffold before te
             output_index: 0,
             content_index: 0,
             delta: 'hello'
-        },
-        chatState,
-        responsesState
+        }
     );
 
     assert.deepEqual(events.map(event => event.event), [
@@ -38,12 +31,11 @@ test('responsesEventToResponsesEvents adds ordinary Responses scaffold before te
     assert.notEqual(deltaEvent.data.item_id, '+MUL0xll7F6Jf7PoXj7bs2zL9fwEbVS+WMkG94nrgldVxJeLjXybDQpQ3sAlAW762v3sKlG1J217nIIy+NRWx5BXlvZkaIMBOX6JC0otE6jp2orviH1ArMUuMZFn5XVR5ymhayydhxT59/0zJa2dY9R7RikrYTY6W39o4R5rDWLH4tMwHYROgY3G74khcJWHfDFrLdYoZP4/OGqzYA4/OmZvoTdxdHDe7lzIOFvLdsX1fe4nj/lGX6jv3160CHHDeV4IB/Yy3EqMfbLA+XvFPquiO3tKsHbPBwR2zJa8IobpX8BHqzmxZslnrB3ztiWR5TUvbRuBV1Pp31C7hGMGa2x685wr11g6DKTDyZ6SDdR8XnU+KVCuJ7iKefvW50gdzG1mYTevR4MVzHhVk0KunOXRprYM0/Il5YS+KlL9qr9CcCKLCdQo1KUrx7ELrvF2fV29V9dH1OsY+C26Mexcvk/khqvX');
 });
 
-test('responsesEventToResponsesEvents includes completed message output for streamed text', () => {
-    const chatState = createChatCompletionsStreamState();
-    const responsesState = createResponsesStreamState();
+test('canonical Responses to Responses bridge includes completed message output for streamed text', () => {
+    const bridge = createResponsesToResponsesStreamBridge({model: 'gpt-5.4'});
     const events = [];
 
-    events.push(...responsesEventToResponsesEvents(
+    events.push(...bridge.feed(
         'response.output_text.delta',
         {
             type: 'response.output_text.delta',
@@ -51,11 +43,9 @@ test('responsesEventToResponsesEvents includes completed message output for stre
             output_index: 0,
             content_index: 0,
             delta: 'hello'
-        },
-        chatState,
-        responsesState
+        }
     ));
-    events.push(...responsesEventToResponsesEvents(
+    events.push(...bridge.feed(
         'response.completed',
         {
             type: 'response.completed',
@@ -71,9 +61,7 @@ test('responsesEventToResponsesEvents includes completed message output for stre
                 }],
                 usage: {input_tokens: 10, output_tokens: 2, total_tokens: 12}
             }
-        },
-        chatState,
-        responsesState
+        }
     ));
 
     const completed = events.at(-1).data.response;
@@ -83,9 +71,9 @@ test('responsesEventToResponsesEvents includes completed message output for stre
     assert.deepEqual(completed.output[0].content, [{type: 'output_text', text: 'hello', annotations: []}]);
 });
 
-test('responsesEventToChatChunks emits function calls found only in response.completed output', () => {
-    const chatState = createChatCompletionsStreamState();
-    const events = responsesEventToResponsesEvents(
+test('canonical Responses to Responses bridge emits function calls found only in response.completed output', () => {
+    const bridge = createResponsesToResponsesStreamBridge({model: 'gpt-5.4'});
+    const events = bridge.feed(
         'response.completed',
         {
             type: 'response.completed',
@@ -101,9 +89,7 @@ test('responsesEventToChatChunks emits function calls found only in response.com
                 }],
                 usage: {input_tokens: 10, output_tokens: 5, total_tokens: 15}
             }
-        },
-        chatState,
-        createResponsesStreamState()
+        }
     );
 
     assert.deepEqual(events.map(event => event.event), [

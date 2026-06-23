@@ -8,21 +8,16 @@ import {
     sanitizeAnthropicMessages
 } from '../src/transformer/shared-translator.js';
 import {anthropicToOpenAI as copilotAnthropicToOpenAI} from '../src/services/copilot/anthropic-translator.js';
-import {
-    createStreamState as createCopilotStreamState,
-    translateStreamChunk as translateCopilotStreamChunk
-} from '../src/services/copilot/anthropic-translator.js';
 import {anthropicToOpenAI as relayAnthropicToOpenAI} from '../src/services/relay/translator.js';
-import {ClaudeStreamState as RelayClaudeStreamState} from '../src/services/relay/translator.js';
 import {anthropicToOpenAI as codebuddyAnthropicToOpenAI} from '../src/services/codebuddy/translator.js';
-import {
-    ClaudeStreamState as CodebuddyClaudeStreamState,
-    createStreamState as createCodebuddyStreamState,
-    translateStreamChunk as translateCodebuddyStreamChunk
-} from '../src/services/codebuddy/translator.js';
+import {createChatToAnthropicStreamBridge} from '../src/services/relay/canonical-stream.js';
 import {
     anthropicResponseToChat,
-    chatRequestToAnthropic
+    chatResponseToAnthropic,
+    chatResponseToRelayResponses,
+    chatRequestToAnthropic,
+    chatRequestToRelayResponses,
+    responsesResponseToRelayChat
 } from '../src/routes/relay-protocol-converters.js';
 
 const root = process.cwd();
@@ -162,49 +157,48 @@ test('OpenAI to Anthropic stream chunks transmit complete split usage fields', (
         }
     };
 
-    for (const [createState, translateChunk] of [
-        [createCopilotStreamState, translateCopilotStreamChunk],
-        [createCodebuddyStreamState, translateCodebuddyStreamChunk]
-    ]) {
-        const events = translateChunk(chunk, createState());
-        const messageStart = events.find(event => event.type === 'message_start');
-        const messageDelta = events.find(event => event.type === 'message_delta');
+    const bridge = createChatToAnthropicStreamBridge({model: 'kimi-k2.6'});
+    const events = bridge.feed(chunk);
+    const messageStart = events.find(event => event.type === 'message_start');
+    const messageDelta = events.find(event => event.type === 'message_delta');
 
-        assert.deepEqual(messageStart.message.usage, {
-            input_tokens: 700,
-            output_tokens: 0,
-            cache_read_input_tokens: 300
-        });
-        assert.deepEqual(messageDelta.usage, {
-            input_tokens: 700,
-            output_tokens: 5,
-            cache_read_input_tokens: 300
-        });
-    }
+    assert.deepEqual(messageStart.message.usage, {
+        input_tokens: 700,
+        output_tokens: 0,
+        cache_read_input_tokens: 300
+    });
+    assert.deepEqual(messageDelta.usage, {
+        input_tokens: 700,
+        output_tokens: 5,
+        cache_read_input_tokens: 300
+    });
 });
 
-test('Claude stream states transmit zero-valued cache usage fields', () => {
-    for (const StateClass of [RelayClaudeStreamState, CodebuddyClaudeStreamState]) {
-        const events = [];
-        const state = new StateClass({write: (event, data) => events.push({event, data})});
+test('canonical Chat to Anthropic stream transmits zero-valued cache usage fields', () => {
+    const bridge = createChatToAnthropicStreamBridge({model: 'claude-sonnet-4'});
+    const events = bridge.feed({
+        id: 'chatcmpl_1',
+        model: 'claude-sonnet-4',
+        choices: [{
+            index: 0,
+            delta: {role: 'assistant'},
+            finish_reason: 'stop'
+        }]
+    });
 
-        state.startMessage('claude-sonnet-4');
-        state.endMessage('end_turn');
+    const start = events.find(event => event.type === 'message_start');
+    const delta = events.find(event => event.type === 'message_delta');
 
-        const start = events.find(item => item.event === 'message_start');
-        const delta = events.find(item => item.event === 'message_delta');
-
-        assert.deepEqual(start.data.message.usage, {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: 0
-        });
-        assert.deepEqual(delta.data.usage, {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: 0
-        });
-    }
+    assert.deepEqual(start.message.usage, {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0
+    });
+    assert.deepEqual(delta.usage, {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0
+    });
 });
 
 test('chatRequestToAnthropic moves preceding tool result after assistant tool_use', () => {
@@ -255,11 +249,18 @@ test('all service routes keep Anthropic endpoints out of OpenAI namespace', () =
 });
 
 test('OpenAI Responses stream fallback returns buffered output', () => {
-    for (const file of ['src/routes/relay.js', 'src/routes/codebuddy.js', 'src/routes/copilot.js']) {
-        const source = readFileSync(join(root, file), 'utf8');
-        assert.match(source, /if \(!streamState\.started \|\| !streamState\.finished\)/);
-        assert.match(source, /output: streamState\.output/);
-    }
+    const relaySource = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    assert.match(relaySource, /if \(!chatToResponsesBridge\.finished\)/);
+    assert.match(relaySource, /chatToResponsesBridge\.finish\(\)/);
+    assert.match(relaySource, /responsesAccumulator\.feed\(ev\.event,\s*ev\.data\)/);
+
+    const codebuddySource = readFileSync(join(root, 'src/routes/codebuddy.js'), 'utf8');
+    assert.match(codebuddySource, /if \(!chatToResponsesBridge\.finished\)/);
+    assert.match(codebuddySource, /chatToResponsesBridge\.finish\(\)/);
+
+    const copilotSource = readFileSync(join(root, 'src/routes/copilot.js'), 'utf8');
+    assert.match(copilotSource, /if \(!chatToResponsesBridge\.finished\)/);
+    assert.match(copilotSource, /chatToResponsesBridge\.finish\(\)/);
 });
 
 test('relay protocol converters preserve tools and cache usage across Chat and Anthropic', () => {
@@ -313,6 +314,131 @@ test('relay protocol converters preserve tools and cache usage across Chat and A
     assert.equal(chatRes.usage.prompt_tokens_details.cached_tokens, 5);
 });
 
+test('anthropicResponseToChat preserves image blocks through canonical rendering', () => {
+    const chatRes = anthropicResponseToChat({
+        id: 'msg_image',
+        model: 'claude-sonnet-4',
+        stop_reason: 'end_turn',
+        content: [
+            {type: 'text', text: 'see image'},
+            {type: 'image', source: {type: 'url', url: 'https://example.test/out.png'}}
+        ],
+        usage: {input_tokens: 1, output_tokens: 2}
+    });
+
+    assert.deepEqual(chatRes.choices[0].message.content, [
+        {type: 'text', text: 'see image'},
+        {type: 'image_url', image_url: {url: 'https://example.test/out.png'}}
+    ]);
+});
+
+test('chatResponseToAnthropic preserves file blocks through canonical rendering', () => {
+    const anthropicRes = chatResponseToAnthropic({
+        id: 'chatcmpl_file',
+        model: 'gpt-test',
+        choices: [{
+            message: {
+                role: 'assistant',
+                content: [
+                    {type: 'text', text: 'report ready'},
+                    {type: 'file', file: {filename: 'report.txt', file_data: 'base64-report'}}
+                ]
+            },
+            finish_reason: 'stop'
+        }],
+        usage: {prompt_tokens: 1, completion_tokens: 2, total_tokens: 3}
+    });
+
+    assert.deepEqual(anthropicRes.content, [
+        {type: 'text', text: 'report ready'},
+        {type: 'text', text: 'report.txt'}
+    ]);
+});
+
+test('responsesResponseToRelayChat preserves file blocks through canonical rendering', () => {
+    const chatRes = responsesResponseToRelayChat({
+        id: 'resp_file',
+        model: 'gpt-test',
+        output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [
+                {type: 'output_text', text: 'report ready'},
+                {type: 'file', file: {filename: 'report.txt', file_data: 'base64-report'}}
+            ]
+        }],
+        usage: {input_tokens: 1, output_tokens: 2, total_tokens: 3}
+    });
+
+    assert.deepEqual(chatRes.choices[0].message.content, [
+        {type: 'text', text: 'report ready'},
+        {type: 'file', file: 'base64-report'}
+    ]);
+});
+
+test('chatResponseToRelayResponses preserves file blocks through canonical rendering', () => {
+    const responsesRes = chatResponseToRelayResponses({
+        id: 'chatcmpl_file',
+        model: 'gpt-test',
+        choices: [{
+            message: {
+                role: 'assistant',
+                content: [
+                    {type: 'text', text: 'report ready'},
+                    {type: 'file', file: {filename: 'report.txt', file_data: 'base64-report'}}
+                ]
+            },
+            finish_reason: 'stop'
+        }],
+        usage: {prompt_tokens: 1, completion_tokens: 2, total_tokens: 3}
+    });
+
+    assert.deepEqual(responsesRes.output[0].content, [
+        {type: 'output_text', text: 'report ready'},
+        {type: 'input_file', file_data: 'base64-report'}
+    ]);
+});
+
+test('chatRequestToRelayResponses preserves file blocks through canonical rendering', () => {
+    const responsesReq = chatRequestToRelayResponses({
+        model: 'gpt-test',
+        messages: [{
+            role: 'user',
+            content: [
+                {type: 'text', text: 'inspect this file'},
+                {type: 'file', file: {filename: 'report.txt', file_data: 'base64-report'}}
+            ]
+        }],
+        max_tokens: 123,
+        response_format: {type: 'json_object'}
+    });
+
+    assert.deepEqual(responsesReq.input[0].content, [
+        {type: 'input_text', text: 'inspect this file'},
+        {type: 'input_file', file_data: 'base64-report'}
+    ]);
+    assert.equal(responsesReq.max_output_tokens, 123);
+    assert.deepEqual(responsesReq.text, {format: {type: 'json_object'}});
+});
+
+test('chatRequestToAnthropic preserves file blocks through canonical rendering', () => {
+    const anthropicReq = chatRequestToAnthropic({
+        model: 'claude-sonnet-4',
+        messages: [{
+            role: 'user',
+            content: [
+                {type: 'text', text: 'inspect this file'},
+                {type: 'file', file: {filename: 'report.txt', file_data: 'base64-report'}}
+            ]
+        }]
+    });
+
+    assert.deepEqual(anthropicReq.messages[0].content, [
+        {type: 'text', text: 'inspect this file'},
+        {type: 'text', text: 'report.txt'}
+    ]);
+});
+
 test('relay routes expose cross-protocol bridges without protocol mismatch rejects', () => {
     const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
 
@@ -362,4 +488,224 @@ test('relay Anthropic stream stats keep the maximum cache hit tokens across usag
         source,
         /usageState\.cacheHitTokens\s*=\s*Math\.max\(\s*usageState\.cacheHitTokens,\s*extractCacheHitTokens\(usage\)\s*\)/
     );
+});
+
+test('relay Chat handler does not reference Anthropic payload before it is created', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const start = source.indexOf('async function handleOpenAIChatCompletions');
+    const end = source.indexOf('async function handleAnthropicMessages');
+    const handler = source.slice(start, end);
+
+    const anthropicPayloadIndex = handler.indexOf('const anthropicPayload = chatRequestToAnthropic');
+    const earlyHandler = handler.slice(0, anthropicPayloadIndex);
+
+    assert.ok(anthropicPayloadIndex > -1);
+    assert.equal(earlyHandler.includes('canonicalFromAnthropicRequest(anthropicPayload'), false);
+});
+
+test('relay Anthropic passthrough stream records accumulated response into session', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+
+    assert.match(source, /const anthropicAccumulator = createAnthropicStreamAccumulator/);
+    assert.match(source, /anthropicAccumulator\.feed\(event, parsed\)/);
+    assert.match(
+        source,
+        /relayConversationStore\.recordAnthropicResponse\(\{\s*tenantId,\s*conversationKey: baseConversationKey,\s*response: anthropicResponse,/s
+    );
+});
+
+test('relay Anthropic via Chat stream records accumulated chat response into session', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const requestTypeIndex = source.indexOf("requestType: 'Anthropic'");
+    const start = source.lastIndexOf("if (anthropicPayload.stream) {", requestTypeIndex);
+    const end = source.indexOf('} else {', requestTypeIndex);
+    const streamBranch = source.slice(start, end);
+
+    assert.ok(requestTypeIndex > -1);
+    assert.ok(start > -1);
+    assert.ok(end > start);
+    assert.match(streamBranch, /const chatAccumulator = createChatStreamAccumulator/);
+    assert.match(streamBranch, /chatAccumulator\.feed\(data\)/);
+    assert.match(
+        streamBranch,
+        /relayConversationStore\.recordChatResponse\(\{\s*tenantId,\s*conversationKey,\s*response: chatResponse/s
+    );
+});
+
+test('relay OpenAI passthrough stream records accumulated chat response into session', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const start = source.indexOf('function _streamOpenAIPassthrough');
+    const end = source.indexOf('async function handleOpenAIModels', start);
+    const helper = source.slice(start, end);
+
+    assert.ok(start > -1);
+    assert.ok(end > start);
+    assert.match(helper, /const chatAccumulator = createChatStreamAccumulator/);
+    assert.match(helper, /chatAccumulator\.feed\(chunk\)/);
+    assert.match(helper, /relayConversationStore\.recordChatResponse\(\{/);
+});
+
+test('relay Responses output streams record accumulated responses when completed is missing', () => {
+    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+
+    assert.match(source, /createResponsesStreamAccumulator/);
+    assert.match(source, /responsesAccumulator\.feed\(ev\.event,\s*ev\.data\)/);
+    assert.match(source, /responsesAccumulator\.feed\(event\.type,\s*event\.data\)/);
+    assert.match(source, /responsesAccumulator\.feed\(eventType,\s*parsed\)/);
+    assert.match(source, /completedResponse\s*\|\|\s*responsesAccumulator\.toResponsesResponse\(\)/);
+});
+
+test('stream routes use canonical bridge wiring without legacy state machines', () => {
+    const cases = [
+        {
+            name: 'relay Responses to Chat',
+            file: 'src/routes/relay.js',
+            present: [
+                /createResponsesToChatStreamBridge/,
+                /responsesToChatBridge\.feed\(event\.type,\s*event\.data\)/,
+                /responsesToChatBridge\.feed\(eventType,\s*parsed\)/
+            ],
+            absent: [/responsesEventToChatChunks\(/]
+        },
+        {
+            name: 'relay Chat to Responses',
+            file: 'src/routes/relay.js',
+            present: [
+                /createChatToResponsesStreamBridge/,
+                /chatToResponsesBridge\.feed\(chatChunk\)/,
+                /chatToResponsesBridge\.feed\(data\)/
+            ],
+            absent: [/chatChunkToResponsesEvents\(/]
+        },
+        {
+            name: 'CodeBuddy Chat to Responses',
+            file: 'src/routes/codebuddy.js',
+            present: [/createChatToResponsesStreamBridge/, /chatToResponsesBridge\.feed\(data\)/],
+            absent: [/chatChunkToResponsesEvents\(/]
+        },
+        {
+            name: 'Copilot Chat to Responses',
+            file: 'src/routes/copilot.js',
+            present: [/createChatToResponsesStreamBridge/, /chatToResponsesBridge\.feed\(data\)/],
+            absent: [/chatChunkToResponsesEvents\(/]
+        },
+        {
+            name: 'Copilot Responses to Chat',
+            file: 'src/routes/copilot.js',
+            present: [/createResponsesToChatStreamBridge/, /responsesToChatBridge\.feed\(event\.type,\s*event\.data\)/],
+            absent: [/responsesEventToChatChunks\(/]
+        },
+        {
+            name: 'Copilot Responses to Responses',
+            file: 'src/routes/copilot.js',
+            present: [/createResponsesToResponsesStreamBridge/, /responsesToResponsesBridge\.feed\(event\.type,\s*event\.data\)/],
+            absent: [/responsesEventToResponsesEvents\(/]
+        },
+        {
+            name: 'Copilot Chat to Anthropic',
+            file: 'src/routes/copilot.js',
+            present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(openAIChunk\)/],
+            absent: [/translateStreamChunk\(openAIChunk/]
+        },
+        {
+            name: 'CodeBuddy Anthropic via Chat',
+            file: 'src/routes/codebuddy.js',
+            present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(data\)/],
+            absent: [/new ClaudeStreamState/, /new SSEWriter/]
+        },
+        {
+            name: 'Copilot Responses to Anthropic',
+            file: 'src/routes/copilot.js',
+            present: [/createResponsesToAnthropicStreamBridge/, /responsesToAnthropicBridge\.feed\(event\.type,\s*event\.data\)/],
+            absent: [/responsesEventToAnthropicEvents\(/]
+        },
+        {
+            name: 'relay Chat to Anthropic',
+            file: 'src/routes/relay.js',
+            present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(chatChunk\)/],
+            absent: [/chatChunkToAnthropicEvents\(/]
+        },
+        {
+            name: 'relay Anthropic via Chat',
+            file: 'src/routes/relay.js',
+            present: [/chatToAnthropicBridge\.feed\(data\)/],
+            absent: [/new ClaudeStreamState/, /new SSEWriter/]
+        },
+        {
+            name: 'relay Anthropic to Chat',
+            file: 'src/routes/relay.js',
+            present: [/streamAnthropicSSEToChatChunks/],
+            absent: [/anthropicStreamToChatChunks\(/]
+        },
+        {
+            name: 'relay Responses to Responses',
+            file: 'src/routes/relay.js',
+            present: [/createResponsesToResponsesStreamBridge/],
+            absent: [/responsesEventToResponsesEvents\(/]
+        }
+    ];
+
+    const sources = new Map();
+    for (const {name, file, present, absent} of cases) {
+        if (!sources.has(file)) sources.set(file, readFileSync(join(root, file), 'utf8'));
+        const source = sources.get(file);
+        for (const pattern of present) {
+            assert.match(source, pattern, `${name} should include ${pattern}`);
+        }
+        for (const pattern of absent) {
+            assert.doesNotMatch(source, pattern, `${name} should not include ${pattern}`);
+        }
+    }
+});
+
+test('legacy stream state machine exports stay out of translators', () => {
+    const cases = [
+        {
+            file: 'src/transformer/responses-translator.js',
+            absent: [
+                /export function createResponsesStreamState/,
+                /export function createChatCompletionsStreamState/,
+                /export function responsesEventToResponsesEvents/,
+                /export function responsesEventToChatChunks/,
+                /export function chatChunkToResponsesEvents/
+            ]
+        },
+        {
+            file: 'src/services/relay/translator.js',
+            absent: [
+                /class SSEWriter/,
+                /class ClaudeStreamState/,
+                /export \{SSEWriter, ClaudeStreamState\}/,
+                /export function createStreamState/,
+                /export function translateStreamChunk/
+            ]
+        },
+        {
+            file: 'src/services/copilot/anthropic-translator.js',
+            absent: [
+                /class SSEWriter/,
+                /class ClaudeStreamState/,
+                /export \{SSEWriter, ClaudeStreamState\}/,
+                /export function createStreamState/,
+                /export function translateStreamChunk/
+            ]
+        },
+        {
+            file: 'src/services/codebuddy/translator.js',
+            absent: [
+                /class SSEWriter/,
+                /class ClaudeStreamState/,
+                /export \{SSEWriter, ClaudeStreamState\}/,
+                /export function createStreamState/,
+                /export function translateStreamChunk/
+            ]
+        }
+    ];
+
+    for (const {file, absent} of cases) {
+        const source = readFileSync(join(root, file), 'utf8');
+        for (const pattern of absent) {
+            assert.doesNotMatch(source, pattern, `${file} should not include ${pattern}`);
+        }
+    }
 });

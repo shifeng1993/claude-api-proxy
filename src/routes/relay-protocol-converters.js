@@ -1,6 +1,20 @@
-import {createHash} from 'crypto';
-import {mergeConsecutiveAssistantMessages} from '../transformer/responses-translator.js';
-import {extractCacheHitTokens, extractInputTokens} from '../transformer/shared-translator.js';
+import {convertResponsesUsageToChat, mergeConsecutiveAssistantMessages} from '../transformer/responses-translator.js';
+import {
+    extractCacheHitTokens,
+    extractInputTokens,
+    mapStopReason,
+    openAIUsageToAnthropicUsage
+} from '../transformer/shared-translator.js';
+import {
+    appendChatResponseToCanonical,
+    canonicalFromAnthropicResponse,
+    canonicalFromChatRequest,
+    canonicalFromResponsesResponse,
+    renderCanonicalToAnthropic,
+    renderCanonicalToChat,
+    renderCanonicalToResponses
+} from '../services/relay/canonical-session.js';
+import {streamAnthropicSSEToChatChunks} from '../services/relay/canonical-stream.js';
 
 export function chatContentToText(content) {
     if (typeof content === 'string') return content;
@@ -11,103 +25,47 @@ export function chatContentToText(content) {
         .join('\n');
 }
 
-function chatContentToAnthropicBlocks(content) {
-    if (typeof content === 'string') return content;
-    if (!Array.isArray(content)) return chatContentToText(content);
-    const blocks = [];
-    for (const part of content) {
-        if (!part || typeof part !== 'object') continue;
-        if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
-            blocks.push({type: 'text', text: part.text || part.input_text || part.output_text || ''});
-        } else if (part.type === 'image_url' && part.image_url?.url) {
-            blocks.push({type: 'image', source: {type: 'url', url: part.image_url.url}});
-        }
-    }
-    return blocks.length > 0 ? blocks : chatContentToText(content);
-}
-
-function chatToolsToAnthropicTools(tools) {
-    if (!Array.isArray(tools)) return undefined;
-    const out = tools
-        .filter((tool) => tool?.type === 'function' && tool.function?.name)
-        .map((tool) => ({
-            name: tool.function.name,
-            description: tool.function.description || '',
-            input_schema: tool.function.parameters || {type: 'object', properties: {}}
-        }));
-    return out.length > 0 ? out : undefined;
-}
-
-function chatToolChoiceToAnthropic(toolChoice) {
-    if (!toolChoice) return undefined;
-    if (toolChoice === 'auto' || toolChoice === 'none') return {type: toolChoice};
-    if (toolChoice === 'required') return {type: 'any'};
-    if (toolChoice.type === 'function' && toolChoice.function?.name) {
-        return {type: 'tool', name: toolChoice.function.name};
-    }
-    return undefined;
-}
-
 export function chatRequestToAnthropic(chatReq) {
-    const messages = [];
-    const systemParts = [];
     const chatMessages = cloneChatMessages(chatReq.messages || []);
     mergeConsecutiveAssistantMessages(chatMessages);
-    for (const message of chatMessages) {
-        if (!message || typeof message !== 'object') continue;
-        if (message.role === 'system' || message.role === 'developer') {
-            const text = chatContentToText(message.content);
-            if (text) systemParts.push(text);
-            continue;
-        }
-        if (message.role === 'tool') {
-            messages.push({
-                role: 'user',
-                content: [{
-                    type: 'tool_result',
-                    tool_use_id: message.tool_call_id || '',
-                    content: chatContentToText(message.content)
-                }]
-            });
-            continue;
-        }
-        if (message.role === 'assistant') {
-            const content = [];
-            if (message.reasoning_content) content.push({type: 'thinking', thinking: message.reasoning_content});
-            const text = chatContentToText(message.content);
-            if (text) content.push({type: 'text', text});
-            for (const toolCall of message.tool_calls || []) {
-                let input = {};
-                try { input = JSON.parse(toolCall.function?.arguments || '{}'); } catch { input = {}; }
-                content.push({
-                    type: 'tool_use',
-                    id: toolCall.id || `call_${createHash('sha1').update(`${Date.now()}`).digest('hex').slice(0, 12)}`,
-                    name: toolCall.function?.name || '',
-                    input
-                });
-            }
-            messages.push({role: 'assistant', content: content.length ? content : [{type: 'text', text: ''}]});
-            continue;
-        }
-        messages.push({role: 'user', content: chatContentToAnthropicBlocks(message.content)});
-    }
+    const canonical = canonicalFromChatRequest({...chatReq, messages: chatMessages});
+    const rendered = renderCanonicalToAnthropic(canonical);
 
     const payload = {
-        model: chatReq.model,
-        messages,
+        ...rendered,
         max_tokens: chatReq.max_tokens || chatReq.max_completion_tokens || 4096,
         stream: chatReq.stream,
         temperature: chatReq.temperature,
         top_p: chatReq.top_p
     };
-    if (systemParts.length > 0) payload.system = systemParts.join('\n\n');
     if (Array.isArray(chatReq.stop)) payload.stop_sequences = chatReq.stop;
     else if (typeof chatReq.stop === 'string') payload.stop_sequences = [chatReq.stop];
 
-    const tools = chatToolsToAnthropicTools(chatReq.tools);
-    if (tools) payload.tools = tools;
-    const toolChoice = chatToolChoiceToAnthropic(chatReq.tool_choice);
-    if (toolChoice) payload.tool_choice = toolChoice;
+    if (!payload.tools || payload.tools.length === 0) delete payload.tools;
+    if (!payload.tool_choice) delete payload.tool_choice;
+    return payload;
+}
+
+export function chatRequestToRelayResponses(chatReq = {}) {
+    const chatMessages = cloneChatMessages(chatReq.messages || []);
+    mergeConsecutiveAssistantMessages(chatMessages);
+    const rendered = renderCanonicalToResponses(canonicalFromChatRequest({...chatReq, messages: chatMessages}));
+    const payload = {
+        ...rendered,
+        stream: chatReq.stream,
+        temperature: chatReq.temperature,
+        top_p: chatReq.top_p
+    };
+
+    if (chatReq.max_tokens !== undefined) payload.max_output_tokens = chatReq.max_tokens;
+    if (chatReq.reasoning_effort) payload.reasoning = {effort: chatReq.reasoning_effort};
+    if (chatReq.store !== undefined) payload.store = chatReq.store;
+    if (chatReq.response_format) payload.text = {format: chatReq.response_format};
+    if (!payload.tools || payload.tools.length === 0) {
+        delete payload.tools;
+        delete payload.tool_choice;
+        delete payload.parallel_tool_calls;
+    }
     return payload;
 }
 
@@ -136,23 +94,14 @@ export function anthropicStopReasonToChat(stopReason) {
 }
 
 export function anthropicResponseToChat(anthropicResponse, modelFallback) {
-    const textParts = [];
-    const toolCalls = [];
-    const reasoningParts = [];
-    for (const block of anthropicResponse.content || []) {
-        if (block?.type === 'text') textParts.push(block.text || '');
-        if (block?.type === 'thinking') reasoningParts.push(block.thinking || '');
-        if (block?.type === 'tool_use') {
-            toolCalls.push({
-                id: block.id || `call_${Date.now()}`,
-                type: 'function',
-                function: {name: block.name || '', arguments: JSON.stringify(block.input || {})}
-            });
-        }
-    }
-    const message = {role: 'assistant', content: textParts.join('\n\n') || null};
-    if (toolCalls.length > 0) message.tool_calls = toolCalls;
-    if (reasoningParts.length > 0) message.reasoning_content = reasoningParts.join('\n\n');
+    const session = canonicalFromAnthropicResponse({
+        ...anthropicResponse,
+        model: anthropicResponse.model || modelFallback
+    });
+    const rendered = renderCanonicalToChat(session);
+    const message = [...(rendered.messages || [])].reverse().find((item) => item?.role === 'assistant')
+        || {role: 'assistant', content: null};
+
     return {
         id: anthropicResponse.id || `chatcmpl_${Date.now()}`,
         object: 'chat.completion',
@@ -163,83 +112,139 @@ export function anthropicResponseToChat(anthropicResponse, modelFallback) {
     };
 }
 
-function makeChatChunk(state, delta, finishReason = null, usage = null) {
+export function chatResponseToAnthropic(chatResponse = {}) {
+    const choice = chatResponse.choices?.[0];
+    if (!choice) {
+        return {
+            id: chatResponse.id || `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            model: chatResponse.model || 'unknown',
+            content: [{type: 'text', text: 'Empty response from upstream API'}],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: openAIUsageToAnthropicUsage(chatResponse.usage)
+        };
+    }
+
+    const session = appendChatResponseToCanonical(
+        canonicalFromChatRequest({model: chatResponse.model, messages: []}),
+        chatResponse
+    );
+    const rendered = renderCanonicalToAnthropic(session);
+    const message = [...(rendered.messages || [])].reverse().find((item) => item?.role === 'assistant');
+
     return {
-        id: state.id,
-        object: 'chat.completion.chunk',
-        created: state.created,
-        model: state.model,
-        choices: [{index: 0, delta, finish_reason: finishReason}],
-        ...(usage ? {usage} : {})
+        id: chatResponse.id,
+        type: 'message',
+        role: 'assistant',
+        model: chatResponse.model,
+        content: message?.content?.length ? message.content : [{type: 'text', text: ''}],
+        stop_reason: mapStopReason(choice.finish_reason),
+        stop_sequence: null,
+        usage: openAIUsageToAnthropicUsage(chatResponse.usage)
+    };
+}
+
+export function chatResponseToRelayResponses(chatResponse = {}) {
+    const choice = chatResponse.choices?.[0];
+    const session = appendChatResponseToCanonical(
+        canonicalFromChatRequest({model: chatResponse.model, messages: []}),
+        chatResponse
+    );
+    const rendered = renderCanonicalToResponses(session);
+    const output = [];
+    let index = 0;
+
+    for (const item of rendered.input || []) {
+        if (item?.role === 'assistant') {
+            output.push({
+                type: 'message',
+                id: `msg_${Date.now()}_${index++}`,
+                status: 'completed',
+                role: 'assistant',
+                content: item.content || []
+            });
+            continue;
+        }
+        if (item?.type === 'reasoning') {
+            output.push({
+                ...item,
+                id: item.id || `rs_${Date.now()}_${index++}`,
+                status: 'completed'
+            });
+            continue;
+        }
+        if (item?.type === 'function_call') {
+            output.push({
+                ...item,
+                id: item.id || `fc_${Date.now()}_${index++}`,
+                status: item.status || 'completed'
+            });
+        }
+    }
+
+    return {
+        id: `resp_${Date.now()}`,
+        object: 'response',
+        created_at: chatResponse.created || Math.floor(Date.now() / 1000),
+        status: chatResponse.error ? 'failed' : (choice?.finish_reason === 'length' ? 'incomplete' : 'completed'),
+        error: chatResponse.error || null,
+        incomplete_details: null,
+        instructions: null,
+        max_output_tokens: null,
+        model: chatResponse.model || 'unknown',
+        output,
+        parallel_tool_calls: true,
+        previous_response_id: null,
+        reasoning: null,
+        store: false,
+        temperature: null,
+        tool_choice: null,
+        tools: [],
+        top_p: null,
+        truncation: null,
+        usage: chatUsageToResponsesUsage(chatResponse.usage),
+        user: null,
+        metadata: {}
+    };
+}
+
+export function responsesResponseToRelayChat(response = {}) {
+    const session = canonicalFromResponsesResponse(response);
+    const rendered = renderCanonicalToChat(session);
+    const message = [...(rendered.messages || [])].reverse().find((item) => item?.role === 'assistant')
+        || {role: 'assistant', content: null};
+    const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+
+    return {
+        id: response.id || `chatcmpl_${Date.now()}`,
+        object: 'chat.completion',
+        created: response.created_at || Math.floor(Date.now() / 1000),
+        model: response.model || 'unknown',
+        choices: [{
+            index: 0,
+            message,
+            finish_reason: hasToolCalls ? 'tool_calls' : response.status === 'incomplete' ? 'length' : 'stop'
+        }],
+        usage: convertResponsesUsageToChat(response.usage)
+    };
+}
+
+function chatUsageToResponsesUsage(usage = {}) {
+    return {
+        input_tokens: usage.prompt_tokens || 0,
+        output_tokens: usage.completion_tokens || 0,
+        total_tokens: usage.total_tokens || 0,
+        input_tokens_details: {
+            cached_tokens: usage.prompt_tokens_details?.cached_tokens || 0
+        },
+        output_tokens_details: {
+            reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens || 0
+        }
     };
 }
 
 export async function* anthropicStreamToChatChunks(stream, parseSSEBlock, signal) {
-    const state = {
-        id: `chatcmpl_${Date.now()}`,
-        created: Math.floor(Date.now() / 1000),
-        model: 'unknown',
-        toolIndexes: new Map(),
-        nextToolIndex: 0,
-        inputTokens: 0,
-        cacheHitTokens: 0
-    };
-    let buffer = '';
-    for await (const chunk of stream) {
-        if (signal?.aborted) break;
-        buffer += chunk.toString('utf8');
-        const parts = buffer.split(/\r?\n\r?\n/);
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-            const {event, data} = parseSSEBlock(part);
-            if (!data || data === '[DONE]') continue;
-            let parsed;
-            try { parsed = JSON.parse(data); } catch { continue; }
-            if (event === 'message_start') {
-                const message = parsed.message || {};
-                state.id = message.id || state.id;
-                state.model = message.model || state.model;
-                state.inputTokens = message.usage?.input_tokens || 0;
-                state.cacheHitTokens = extractCacheHitTokens(message.usage);
-                yield makeChatChunk(state, {role: 'assistant'});
-                continue;
-            }
-            if (event === 'content_block_start') {
-                const block = parsed.content_block || {};
-                if (block.type === 'tool_use') {
-                    const toolIndex = state.nextToolIndex++;
-                    state.toolIndexes.set(parsed.index, toolIndex);
-                    yield makeChatChunk(state, {
-                        tool_calls: [{
-                            index: toolIndex,
-                            id: block.id || `call_${toolIndex}`,
-                            type: 'function',
-                            function: {name: block.name || '', arguments: ''}
-                        }]
-                    });
-                }
-                continue;
-            }
-            if (event === 'content_block_delta') {
-                const delta = parsed.delta || {};
-                if (delta.type === 'text_delta') yield makeChatChunk(state, {content: delta.text || ''});
-                else if (delta.type === 'thinking_delta') yield makeChatChunk(state, {reasoning_content: delta.thinking || ''});
-                else if (delta.type === 'input_json_delta') {
-                    const toolIndex = state.toolIndexes.get(parsed.index) ?? 0;
-                    yield makeChatChunk(state, {tool_calls: [{index: toolIndex, function: {arguments: delta.partial_json || ''}}]});
-                }
-                continue;
-            }
-            if (event === 'message_delta') {
-                if (parsed.usage?.input_tokens !== undefined) state.inputTokens = parsed.usage.input_tokens || 0;
-                state.cacheHitTokens = Math.max(state.cacheHitTokens || 0, extractCacheHitTokens(parsed.usage));
-                const usage = anthropicUsageToChatUsage({
-                    input_tokens: state.inputTokens,
-                    output_tokens: parsed.usage?.output_tokens || 0,
-                    cache_read_input_tokens: state.cacheHitTokens || 0
-                });
-                yield makeChatChunk(state, {}, anthropicStopReasonToChat(parsed.delta?.stop_reason), usage);
-            }
-        }
-    }
+    yield* streamAnthropicSSEToChatChunks(stream, parseSSEBlock, signal);
 }

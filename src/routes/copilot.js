@@ -11,26 +11,25 @@ import {readBody, isNetworkError} from '../utils/http-client.js';
 import {
     anthropicToOpenAI,
     anthropicToResponses,
-    openAIToAnthropic,
-    translateStreamChunk,
-    createStreamState,
-    responsesEventToAnthropicEvents
+    openAIToAnthropic
 } from '../services/copilot/anthropic-translator.js';
 import {
     responsesRequestToChat,
     chatRequestToResponses,
     chatResponseToResponses,
     responsesResponseToChat,
-    createResponsesStreamState,
-    createChatCompletionsStreamState,
-    chatChunkToResponsesEvents,
-    responsesEventToChatChunks,
-    responsesEventToResponsesEvents,
     convertResponsesUsageToChat,
     compactRequestToChat,
     chatResponseToCompact,
     sanitizeResponsesInput
 } from '../transformer/responses-translator.js';
+import {
+    createChatToAnthropicStreamBridge,
+    createChatToResponsesStreamBridge,
+    createResponsesToAnthropicStreamBridge,
+    createResponsesToChatStreamBridge,
+    createResponsesToResponsesStreamBridge
+} from '../services/relay/canonical-stream.js';
 import {
     estimateMessageTokens,
     estimateContentBlockTokens
@@ -255,7 +254,7 @@ async function handleOpenAIChatCompletions(req, res) {
                     Connection: 'keep-alive'
                 });
 
-                const chatState = createChatCompletionsStreamState();
+                const responsesToChatBridge = createResponsesToChatStreamBridge({model: openAIPayload.model});
                 let streamInputTokens = 0;
                 let streamOutputTokens = 0;
                 let streamCacheHitTokens = 0;
@@ -267,8 +266,13 @@ async function handleOpenAIChatCompletions(req, res) {
                             streamOutputTokens = chatUsage.completion_tokens || 0;
                             streamCacheHitTokens = extractCacheHitTokens(chatUsage);
                         }
-                        const chatChunks = responsesEventToChatChunks(event.type, event.data, chatState);
+                        const chatChunks = responsesToChatBridge.feed(event.type, event.data);
                         for (const chunk of chatChunks) {
+                            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                        }
+                    }
+                    if (!responsesToChatBridge.completed) {
+                        for (const chunk of responsesToChatBridge.finish()) {
                             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
                         }
                     }
@@ -511,8 +515,7 @@ async function handleAnthropicMessages(req, res) {
                     Connection: 'keep-alive'
                 });
 
-                const chatState = createChatCompletionsStreamState();
-                const anthropicState = createStreamState();
+                const responsesToAnthropicBridge = createResponsesToAnthropicStreamBridge({model: anthropicPayload.model});
                 let streamInputTokens = 0;
                 let streamOutputTokens = 0;
                 let streamCacheHitTokens = 0;
@@ -524,10 +527,15 @@ async function handleAnthropicMessages(req, res) {
                             streamOutputTokens = chatUsage.completion_tokens || 0;
                             streamCacheHitTokens = extractCacheHitTokens(chatUsage);
                         }
-                        const anthropicEvents = responsesEventToAnthropicEvents(
-                            event.type, event.data, chatState, anthropicState
-                        );
+                        const anthropicEvents = responsesToAnthropicBridge.feed(event.type, event.data);
                         for (const ev of anthropicEvents) {
+                            if (res.destroyed) break;
+                            res.write(`event: ${ev.type}\n`);
+                            res.write(`data: ${JSON.stringify(ev)}\n\n`);
+                        }
+                    }
+                    if (!responsesToAnthropicBridge.finished) {
+                        for (const ev of responsesToAnthropicBridge.finish()) {
                             if (res.destroyed) break;
                             res.write(`event: ${ev.type}\n`);
                             res.write(`data: ${JSON.stringify(ev)}\n\n`);
@@ -618,7 +626,7 @@ async function handleAnthropicMessages(req, res) {
                     Connection: 'keep-alive'
                 });
 
-                const state = createStreamState();
+                const chatToAnthropicBridge = createChatToAnthropicStreamBridge({model: anthropicPayload.model});
                 let buffer = '';
                 let streamInputTokens = 0;
                 let streamOutputTokens = 0;
@@ -637,7 +645,7 @@ async function handleAnthropicMessages(req, res) {
 
                             try {
                                 const openAIChunk = JSON.parse(data);
-                                const anthropicEvents = translateStreamChunk(openAIChunk, state);
+                                const anthropicEvents = chatToAnthropicBridge.feed(openAIChunk);
 
                                 if (openAIChunk.usage) {
                                     streamInputTokens = openAIChunk.usage.prompt_tokens || streamInputTokens;
@@ -679,6 +687,13 @@ async function handleAnthropicMessages(req, res) {
                             logger.error('Failed to process remaining buffer:', error);
                         }
                         buffer = '';
+                    }
+                    if (!chatToAnthropicBridge.finished) {
+                        for (const event of chatToAnthropicBridge.finish()) {
+                            if (res.destroyed) return;
+                            res.write(`event: ${event.type}\n`);
+                            res.write(`data: ${JSON.stringify(event)}\n\n`);
+                        }
                     }
                     if (streamInputTokens > 0 || streamOutputTokens > 0) {
                         copilotStore.incrementApiCallCount();
@@ -865,8 +880,7 @@ async function handleResponsesAPI(req, res) {
                     Connection: 'keep-alive'
                 });
 
-                const chatState = createChatCompletionsStreamState();
-                const responsesState = createResponsesStreamState();
+                const responsesToResponsesBridge = createResponsesToResponsesStreamBridge({model: responsesReq.model});
                 let streamInputTokens = 0;
                 let streamOutputTokens = 0;
                 let streamCacheHitTokens = 0;
@@ -878,8 +892,13 @@ async function handleResponsesAPI(req, res) {
                             streamOutputTokens = chatUsage.completion_tokens || 0;
                             streamCacheHitTokens = extractCacheHitTokens(chatUsage);
                         }
-                        const responseEvents = responsesEventToResponsesEvents(event.type, event.data, chatState, responsesState);
+                        const responseEvents = responsesToResponsesBridge.feed(event.type, event.data);
                         for (const ev of responseEvents) {
+                            res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+                        }
+                    }
+                    if (!responsesToResponsesBridge.finished) {
+                        for (const ev of responsesToResponsesBridge.finish()) {
                             res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                         }
                     }
@@ -961,12 +980,11 @@ async function handleResponsesAPI(req, res) {
                     Connection: 'keep-alive'
                 });
 
-                const streamState = createResponsesStreamState();
+                const chatToResponsesBridge = createChatToResponsesStreamBridge({model: responsesReq.model});
                 let buffer = Buffer.alloc(0);
                 let streamInputTokens = 0;
                 let streamOutputTokens = 0;
                 let streamCacheHitTokens = 0;
-                let streamModel = '';
 
                 response.body.on('data', (chunk) => {
                     buffer = Buffer.concat([buffer, chunk]);
@@ -988,9 +1006,7 @@ async function handleResponsesAPI(req, res) {
                             streamOutputTokens = data.usage.completion_tokens || 0;
                             streamCacheHitTokens = extractCacheHitTokens(data.usage);
                         }
-                        if (data.model) streamModel = data.model;
-
-                        const events = chatChunkToResponsesEvents(data, streamState);
+                        const events = chatToResponsesBridge.feed(data);
                         for (const ev of events) {
                             res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                         }
@@ -999,21 +1015,10 @@ async function handleResponsesAPI(req, res) {
                 });
 
                 response.body.on('end', () => {
-                    if (!streamState.started || !streamState.finished) {
-                        if (streamState.reasoningOpen) {
-                            const item = {type: 'reasoning', id: streamState.reasoningItemId, status: 'completed', summary: [{type: 'summary_text', text: streamState.reasoningText}]};
-                            res.write(`event: response.reasoning_summary_part.done\ndata: ${JSON.stringify({type: 'response.reasoning_summary_part.done', output_index: streamState.outputIndex, summary_index: 0, item_id: streamState.reasoningItemId, part: {type: 'summary_text', text: streamState.reasoningText}})}\n\n`);
-                            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
-                            streamState.output.push(item);
-                            streamState.outputIndex++;
+                    if (!chatToResponsesBridge.finished) {
+                        for (const ev of chatToResponsesBridge.finish()) {
+                            res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                         }
-                        if (streamState.messageOpen) {
-                            const item = {type: 'message', id: streamState.currentMessageId, status: 'completed', role: 'assistant', content: [{type: 'output_text', text: streamState.textBuffer, annotations: []}]};
-                            res.write(`event: response.content_part.done\ndata: ${JSON.stringify({type: 'response.content_part.done', output_index: streamState.outputIndex, content_index: 0, part: {type: 'output_text', text: streamState.textBuffer, annotations: []}})}\n\n`);
-                            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({type: 'response.output_item.done', output_index: streamState.outputIndex, item})}\n\n`);
-                            streamState.output.push(item);
-                        }
-                        res.write(`event: response.completed\ndata: ${JSON.stringify({type: 'response.completed', response: {id: streamState.responseId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', model: streamModel || 'unknown', output: streamState.output, usage: {input_tokens: streamInputTokens, output_tokens: streamOutputTokens, total_tokens: streamInputTokens + streamOutputTokens, input_tokens_details: {cached_tokens: streamCacheHitTokens}}}})}\n\n`);
                     }
                     copilotStore.incrementApiCallCount();
                     copilotStore.incrementTokenUsage(streamInputTokens, streamOutputTokens, streamCacheHitTokens);
@@ -1196,8 +1201,7 @@ function handleCopilotResponsesWSInContext(clientWs, req) {
                 }
 
                 // 将 Chat SSE 流转换为 Responses WS 事件
-                const streamState = createResponsesStreamState();
-                const chatState = createChatCompletionsStreamState();
+                const chatToResponsesBridge = createChatToResponsesStreamBridge({model: payload.model});
                 let buffer = Buffer.alloc(0);
 
                 for await (const chunk of response.body) {
@@ -1215,12 +1219,18 @@ function handleCopilotResponsesWSInContext(clientWs, req) {
                         let data;
                         try { data = JSON.parse(raw); } catch { continue; }
 
-                        const events = chatChunkToResponsesEvents(data, streamState);
+                        const events = chatToResponsesBridge.feed(data);
                         for (const ev of events) {
                             yield {type: ev.event, data: ev.data};
                         }
                     }
                     if (start > 0) buffer = buffer.subarray(start);
+                }
+
+                if (!chatToResponsesBridge.finished) {
+                    for (const ev of chatToResponsesBridge.finish()) {
+                        yield {type: ev.event, data: ev.data};
+                    }
                 }
             } catch (error) {
                 logger.error('Copilot WS: handleRequest error:', error);

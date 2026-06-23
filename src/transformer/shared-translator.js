@@ -882,7 +882,7 @@ export function openAIToAnthropic(openAIResponse) {
  * @param {ReadableStream} responseBody - 上游流
  * @param {Function} onUsage - usage 统计回调 (inputTokens, outputTokens, cacheHitTokens, credit, model)
  */
-export function rewriteOpenAIStream(res, responseBody, onUsage) {
+export function rewriteOpenAIStream(res, responseBody, onUsage, onChunk) {
     let reasoningBuffer = ''; // 缓冲 reasoning_content 片段
     let lineBuffer = '';
     let streamInputTokens = 0;
@@ -942,6 +942,7 @@ export function rewriteOpenAIStream(res, responseBody, onUsage) {
             }
 
             // 提取 usage
+            onChunk?.(data);
             if (data.usage) {
                 streamInputTokens = data.usage.prompt_tokens || 0;
                 streamOutputTokens = data.usage.completion_tokens || 0;

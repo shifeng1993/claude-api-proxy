@@ -1,4 +1,15 @@
-import {responsesRequestToChat, responsesResponseToChat} from '../../transformer/responses-translator.js';
+import {convertResponsesUsageToChat} from '../../transformer/responses-translator.js';
+import {
+    appendAnthropicResponseToCanonical,
+    appendChatResponseToCanonical,
+    appendResponsesResponseToCanonical,
+    canonicalFromChatRequest,
+    canonicalFromResponsesResponse,
+    canonicalFromResponsesRequest,
+    preserveCanonicalResponseToolMappings,
+    preserveCanonicalToolMappings,
+    renderCanonicalToChat
+} from './canonical-session.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -18,9 +29,21 @@ export class RelayStateMissingError extends Error {
 }
 
 export class RelayConversationStore {
-    constructor({ttlMs = DEFAULT_TTL_MS, cleanupIntervalMs, now = () => Date.now()} = {}) {
+    constructor({
+        ttlMs = DEFAULT_TTL_MS,
+        cleanupIntervalMs,
+        now = () => Date.now(),
+        maxStoredChatMessages = readPositiveIntegerEnv('RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES', 0),
+        maxCanonicalTurns = readPositiveIntegerEnv('RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS', 0)
+    } = {}) {
         this.ttlMs = ttlMs;
         this.now = now;
+        this.maxStoredChatMessages = Number.isFinite(maxStoredChatMessages) && maxStoredChatMessages > 0
+            ? Math.floor(maxStoredChatMessages)
+            : 0;
+        this.maxCanonicalTurns = Number.isFinite(maxCanonicalTurns) && maxCanonicalTurns > 0
+            ? Math.floor(maxCanonicalTurns)
+            : 0;
         this.conversations = new Map();
         this.responseIndex = new Map();
         this.cleanupTimer = null;
@@ -32,15 +55,26 @@ export class RelayConversationStore {
         }
     }
 
-    saveChatRequest({tenantId, conversationKey, request}) {
+    saveChatRequest({tenantId, conversationKey, request, canonicalSession, canonicalMappingSession}) {
         const key = this._conversationKey(tenantId, conversationKey);
         if (!key || !request) return null;
 
         const existing = this._getByConversationKey(tenantId, conversationKey);
+        const chatRequest = limitStoredChatRequest(request, this.maxStoredChatMessages);
         const state = {
             tenantId,
             conversationKey,
-            chatRequest: cloneChatRequest(request),
+            chatRequest: chatRequest.request,
+            chatRequestTruncated: chatRequest.truncated,
+            chatRequestMessageCount: chatRequest.messageCount,
+            ...storedCanonicalSessionFields(canonicalSessionForSave({
+                request,
+                tenantId,
+                conversationKey,
+                existing,
+                sourceCanonicalSession: canonicalSession,
+                mappingCanonicalSession: canonicalMappingSession
+            }), this.maxCanonicalTurns),
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             updatedAt: this.now()
@@ -60,13 +94,21 @@ export class RelayConversationStore {
             state = this._getByConversationKey(tenantId, conversationKey);
         }
 
-        const visibleChat = responsesRequestToChat(request || {});
-        const base = state?.chatRequest ? cloneChatRequest(state.chatRequest) : {model: request?.model, messages: []};
+        const visibleChat = responsesRequestToRelayChat(request || {}, {tenantId, conversationKey});
+        const base = chatRequestFromState(state, {model: request?.model, messages: []});
         const chatRequest = mergeChatRequests(base, visibleChat, request);
         const resolvedConversationKey = state?.conversationKey || conversationKey;
 
         if (resolvedConversationKey) {
-            this.saveChatRequest({tenantId, conversationKey: resolvedConversationKey, request: chatRequest});
+            this.saveChatRequest({
+                tenantId,
+                conversationKey: resolvedConversationKey,
+                request: chatRequest,
+                canonicalMappingSession: canonicalFromResponsesRequest(request || {}, {
+                    tenantId,
+                    conversationKey: resolvedConversationKey
+                })
+            });
         }
 
         return {conversationKey: resolvedConversationKey, chatRequest};
@@ -79,10 +121,18 @@ export class RelayConversationStore {
             : this._getByConversationKey(tenantId, conversationKey);
         const resolvedConversationKey = state?.conversationKey || conversationKey;
         if (resolvedConversationKey) {
-            const visibleChat = responsesRequestToChat(request || {});
-            const base = state?.chatRequest ? cloneChatRequest(state.chatRequest) : {model: request?.model, messages: []};
+            const visibleChat = responsesRequestToRelayChat(request || {}, {tenantId, conversationKey: resolvedConversationKey});
+            const base = chatRequestFromState(state, {model: request?.model, messages: []});
             const chatRequest = mergeChatRequests(base, visibleChat, request);
-            this.saveChatRequest({tenantId, conversationKey: resolvedConversationKey, request: chatRequest});
+            this.saveChatRequest({
+                tenantId,
+                conversationKey: resolvedConversationKey,
+                request: chatRequest,
+                canonicalMappingSession: canonicalFromResponsesRequest(request || {}, {
+                    tenantId,
+                    conversationKey: resolvedConversationKey
+                })
+            });
         }
         return {
             conversationKey: resolvedConversationKey,
@@ -91,17 +141,29 @@ export class RelayConversationStore {
         };
     }
 
-    recordResponsesResponse({tenantId, conversationKey, response}) {
+    recordResponsesResponse({tenantId, conversationKey, response, sourceCanonicalSession}) {
         if (!response || !conversationKey) return null;
 
         const key = this._conversationKey(tenantId, conversationKey);
         const existing = this._getByConversationKey(tenantId, conversationKey);
-        const chatResponse = responsesResponseToChat(response);
-        const nextRequest = appendAssistantFromChatResponse(existing?.chatRequest, chatResponse);
+        const chatResponse = responsesResponseToRelayChat(response);
+        const nextRequest = appendAssistantFromChatResponse(
+            chatRequestFromState(existing, {model: response?.model, messages: []}),
+            chatResponse
+        );
+        const baseCanonical = existing?.canonicalSession
+            || canonicalFromChatRequest(existing?.chatRequest || {model: response?.model, messages: []}, {tenantId, conversationKey});
+        const canonicalSession = sourceCanonicalSession
+            ? preserveCanonicalResponseToolMappings(
+                appendResponsesResponseToCanonical(baseCanonical, response),
+                sourceCanonicalSession
+            )
+            : appendResponsesResponseToCanonical(baseCanonical, response);
         const state = {
             tenantId,
             conversationKey,
-            chatRequest: nextRequest,
+            ...storedChatRequestFields(nextRequest, this.maxStoredChatMessages),
+            ...storedCanonicalSessionFields(canonicalSession, this.maxCanonicalTurns),
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             updatedAt: this.now()
@@ -117,11 +179,59 @@ export class RelayConversationStore {
         return cloneState(state);
     }
 
-    recordChatResponse({tenantId, conversationKey, response}) {
+    recordChatResponse({tenantId, conversationKey, response, sourceCanonicalSession}) {
         if (!response || !conversationKey) return null;
         const existing = this._getByConversationKey(tenantId, conversationKey);
-        const nextRequest = appendAssistantFromChatResponse(existing?.chatRequest, response);
-        return this.saveChatRequest({tenantId, conversationKey, request: nextRequest});
+        const nextRequest = appendAssistantFromChatResponse(
+            chatRequestFromState(existing, {model: response?.model, messages: []}),
+            response
+        );
+        const key = this._conversationKey(tenantId, conversationKey);
+        const baseCanonical = existing?.canonicalSession
+            || canonicalFromChatRequest(existing?.chatRequest || {model: response?.model, messages: []}, {tenantId, conversationKey});
+        const canonicalSession = sourceCanonicalSession
+            ? preserveCanonicalResponseToolMappings(
+                appendChatResponseToCanonical(baseCanonical, response),
+                sourceCanonicalSession
+            )
+            : appendChatResponseToCanonical(baseCanonical, response);
+        const state = {
+            tenantId,
+            conversationKey,
+            ...storedChatRequestFields(nextRequest, this.maxStoredChatMessages),
+            ...storedCanonicalSessionFields(canonicalSession, this.maxCanonicalTurns),
+            responses: new Set(existing?.responses || []),
+            lastResponseId: existing?.lastResponseId || null,
+            updatedAt: this.now()
+        };
+        this.conversations.set(key, state);
+        return cloneState(state);
+    }
+
+    recordAnthropicResponse({tenantId, conversationKey, response, chatResponse}) {
+        if (!response || !conversationKey) return null;
+        const existing = this._getByConversationKey(tenantId, conversationKey);
+        const baseRequest = chatRequestFromState(existing, {model: response?.model, messages: []});
+        const nextRequest = chatResponse
+            ? appendAssistantFromChatResponse(baseRequest, chatResponse)
+            : baseRequest;
+        const key = this._conversationKey(tenantId, conversationKey);
+        const baseCanonical = existing?.canonicalSession
+            || canonicalFromChatRequest(existing?.chatRequest || {model: response?.model, messages: []}, {tenantId, conversationKey});
+        const state = {
+            tenantId,
+            conversationKey,
+            ...storedChatRequestFields(nextRequest, this.maxStoredChatMessages),
+            ...storedCanonicalSessionFields(
+                appendAnthropicResponseToCanonical(baseCanonical, response),
+                this.maxCanonicalTurns
+            ),
+            responses: new Set(existing?.responses || []),
+            lastResponseId: existing?.lastResponseId || null,
+            updatedAt: this.now()
+        };
+        this.conversations.set(key, state);
+        return cloneState(state);
     }
 
     cleanupExpired() {
@@ -225,6 +335,50 @@ function getLatestResponseId(state) {
     return state?.lastResponseId || null;
 }
 
+function responsesRequestToRelayChat(request = {}, meta = {}) {
+    const rendered = renderCanonicalToChat(canonicalFromResponsesRequest(request, meta));
+    const chatReq = {
+        model: rendered.model,
+        messages: rendered.messages,
+        stream: request.stream,
+        temperature: request.temperature,
+        top_p: request.top_p
+    };
+
+    if (request.max_output_tokens !== undefined) chatReq.max_tokens = request.max_output_tokens;
+    if (request.reasoning?.effort) chatReq.reasoning_effort = request.reasoning.effort;
+    if (Array.isArray(rendered.tools) && rendered.tools.length > 0) {
+        chatReq.tools = rendered.tools;
+        if (rendered.tool_choice !== undefined) chatReq.tool_choice = rendered.tool_choice;
+        if (rendered.parallel_tool_calls !== undefined) chatReq.parallel_tool_calls = rendered.parallel_tool_calls;
+    }
+    if (request.previous_response_id) chatReq.previous_response_id = request.previous_response_id;
+    if (request.store !== undefined) chatReq.store = request.store;
+
+    return chatReq;
+}
+
+function responsesResponseToRelayChat(response = {}) {
+    const session = canonicalFromResponsesResponse(response);
+    const rendered = renderCanonicalToChat(session);
+    const message = [...(rendered.messages || [])].reverse().find((item) => item?.role === 'assistant')
+        || {role: 'assistant', content: null};
+    const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+
+    return {
+        id: response.id || `chatcmpl_${Date.now()}`,
+        object: 'chat.completion',
+        created: response.created_at || Math.floor(Date.now() / 1000),
+        model: response.model || 'unknown',
+        choices: [{
+            index: 0,
+            message,
+            finish_reason: hasToolCalls ? 'tool_calls' : response.status === 'incomplete' ? 'length' : 'stop'
+        }],
+        usage: convertResponsesUsageToChat(response.usage)
+    };
+}
+
 function clone(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -233,10 +387,156 @@ function cloneChatRequest(request) {
     return clone(request) || {messages: []};
 }
 
+function hasMessages(request) {
+    return Array.isArray(request?.messages) && request.messages.length > 0;
+}
+
+function chatRequestFromState(state, fallback) {
+    if (state?.chatRequestTruncated && state?.canonicalSession) {
+        const rendered = renderCanonicalToChat(state.canonicalSession);
+        if (hasMessages(rendered)) return cloneChatRequest(rendered);
+    }
+    if (hasMessages(state?.chatRequest)) return cloneChatRequest(state.chatRequest);
+    if (state?.canonicalSession) {
+        const rendered = renderCanonicalToChat(state.canonicalSession);
+        if (hasMessages(rendered)) return cloneChatRequest(rendered);
+    }
+    return cloneChatRequest(fallback || {messages: []});
+}
+
+function storedChatRequestFields(request, maxStoredChatMessages) {
+    const stored = limitStoredChatRequest(request, maxStoredChatMessages);
+    return {
+        chatRequest: stored.request,
+        chatRequestTruncated: stored.truncated,
+        chatRequestMessageCount: stored.messageCount
+    };
+}
+
+function limitStoredChatRequest(request, maxStoredChatMessages) {
+    const cloned = cloneChatRequest(request);
+    const messages = Array.isArray(cloned.messages) ? cloned.messages : [];
+    const messageCount = messages.length;
+    if (!maxStoredChatMessages || messageCount <= maxStoredChatMessages) {
+        return {request: cloned, truncated: false, messageCount};
+    }
+
+    return {
+        request: {
+            ...cloned,
+            messages: messages.slice(-maxStoredChatMessages)
+        },
+        truncated: true,
+        messageCount
+    };
+}
+
+function storedCanonicalSessionFields(session, maxCanonicalTurns) {
+    const stored = limitCanonicalSession(session, maxCanonicalTurns);
+    return {
+        canonicalSession: stored.session,
+        canonicalSessionTruncated: stored.truncated,
+        canonicalTurnCount: stored.turnCount
+    };
+}
+
+function limitCanonicalSession(session, maxCanonicalTurns) {
+    const cloned = clone(session) || {turns: [], toolMappings: []};
+    const turns = Array.isArray(cloned.turns) ? cloned.turns : [];
+    const turnCount = turns.length;
+    if (!maxCanonicalTurns || turnCount <= maxCanonicalTurns) {
+        cloned.turns = turns;
+        if (!Array.isArray(cloned.toolMappings)) cloned.toolMappings = [];
+        return {session: cloned, truncated: false, turnCount};
+    }
+
+    const leadingSystemTurns = [];
+    for (const turn of turns) {
+        if (turn?.role !== 'system') break;
+        if (leadingSystemTurns.length < maxCanonicalTurns) leadingSystemTurns.push(turn);
+    }
+
+    const remainingCapacity = Math.max(maxCanonicalTurns - leadingSystemTurns.length, 0);
+    const nonSystemTurns = turns.slice(leadingSystemTurns.length);
+    let retainedTurns = remainingCapacity > 0
+        ? [...leadingSystemTurns, ...nonSystemTurns.slice(-remainingCapacity)]
+        : leadingSystemTurns.slice(0, maxCanonicalTurns);
+    retainedTurns = removeOrphanCanonicalToolResults(retainedTurns);
+
+    const referencedToolCallIds = collectCanonicalToolCallIds(retainedTurns);
+    const originalMappings = Array.isArray(cloned.toolMappings) ? cloned.toolMappings : [];
+    cloned.turns = retainedTurns;
+    cloned.toolMappings = referencedToolCallIds.size > 0
+        ? originalMappings.filter((mapping) => referencedToolCallIds.has(mapping?.canonicalToolCallId))
+        : [];
+
+    return {
+        session: cloned,
+        truncated: retainedTurns.length !== turnCount || cloned.toolMappings.length !== originalMappings.length,
+        turnCount
+    };
+}
+
+function collectCanonicalToolCallIds(turns = []) {
+    const ids = new Set();
+    for (const turn of turns) {
+        for (const block of turn?.blocks || []) {
+            if ((block?.type === 'tool_call' || block?.type === 'tool_result') && block.canonicalToolCallId) {
+                ids.add(block.canonicalToolCallId);
+            }
+        }
+    }
+    return ids;
+}
+
+function removeOrphanCanonicalToolResults(turns = []) {
+    const toolCallIds = new Set();
+    for (const turn of turns) {
+        for (const block of turn?.blocks || []) {
+            if (block?.type === 'tool_call' && block.canonicalToolCallId) {
+                toolCallIds.add(block.canonicalToolCallId);
+            }
+        }
+    }
+
+    return turns
+        .map((turn) => {
+            const blocks = Array.isArray(turn?.blocks) ? turn.blocks : [];
+            const retainedBlocks = blocks.filter((block) =>
+                block?.type !== 'tool_result'
+                || !block.canonicalToolCallId
+                || toolCallIds.has(block.canonicalToolCallId)
+            );
+            return {...turn, blocks: retainedBlocks};
+        })
+        .filter((turn) => turn?.role === 'system' || (Array.isArray(turn?.blocks) && turn.blocks.length > 0));
+}
+
+function canonicalSessionForSave({request, tenantId, conversationKey, existing, sourceCanonicalSession, mappingCanonicalSession}) {
+    const chatCanonical = canonicalFromChatRequest(request, {tenantId, conversationKey});
+    const base = sourceCanonicalSession ? clone(sourceCanonicalSession) : chatCanonical;
+    if (base) {
+        base.tenantId = base.tenantId || tenantId;
+        base.conversationKey = base.conversationKey || conversationKey;
+    }
+    return preserveCanonicalToolMappings(
+        preserveCanonicalToolMappings(
+            preserveCanonicalToolMappings(base, chatCanonical),
+            mappingCanonicalSession
+        ),
+        existing?.canonicalSession
+    );
+}
+
 function cloneState(state) {
     return {
         ...state,
         chatRequest: cloneChatRequest(state.chatRequest),
+        chatRequestTruncated: state.chatRequestTruncated === true,
+        chatRequestMessageCount: state.chatRequestMessageCount || 0,
+        canonicalSession: clone(state.canonicalSession),
+        canonicalSessionTruncated: state.canonicalSessionTruncated === true,
+        canonicalTurnCount: state.canonicalTurnCount || 0,
         responses: new Set(state.responses || []),
         lastResponseId: state.lastResponseId || null
     };
