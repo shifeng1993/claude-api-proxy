@@ -1,7 +1,7 @@
 /**
  * OpenAI Responses API 格式转换模块
  * 实现 Responses ↔ Chat Completions 双向转换
- * @module core/protocol/responses
+ * @module protocol-engine/core/responses
  */
 
 import {generateId, isDoubaoSeedModel} from './shared.js';

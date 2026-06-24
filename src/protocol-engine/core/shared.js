@@ -1,7 +1,7 @@
 /**
  * 公共协议适配逻辑
  * 抽取自 CodeBuddy/Relay 产品适配器的重复代码
- * @module core/protocol/shared
+ * @module protocol-engine/core/shared
  */
 
 import {randomBytes, createHash} from 'crypto';

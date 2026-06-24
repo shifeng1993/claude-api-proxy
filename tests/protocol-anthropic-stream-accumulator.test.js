@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAnthropicStreamAccumulator} from '../src/core/protocol/stream/accumulators/anthropic.js';
+import {createAnthropicStreamAccumulator} from '../src/protocol-engine/core/stream/accumulators/anthropic.js';
 
 test('createAnthropicStreamAccumulator builds a final Anthropic response from streamed events', () => {
     const accumulator = createAnthropicStreamAccumulator({model: 'claude-test'});

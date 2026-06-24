@@ -7,4 +7,4 @@
  * @module protocol-engine
  */
 
-export * from '../core/protocol/index.js';
+export * from './core/index.js';

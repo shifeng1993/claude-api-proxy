@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {anthropicRequestToChat} from '../src/core/protocol/http-converters.js';
+import {anthropicRequestToChat} from '../src/protocol-engine/core/http-converters.js';
 
 test('anthropicRequestToChat preserves reasoning and orders tool results by assistant tool calls', () => {
     const converted = anthropicRequestToChat({

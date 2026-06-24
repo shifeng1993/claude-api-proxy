@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cleanJsonSchema} from '../src/core/protocol/index.js';
+import {cleanJsonSchema} from '../src/protocol-engine/core/index.js';
 
 test('cleanJsonSchema removes only schema declaration recursively', () => {
     const schema = {

@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {RelayConversationStore, relayConversationStore} from '../src/services/session/conversation-state.js';
 import {routeRelayRequest} from '../src/routes/relay.js';
-import {canonicalFromAnthropicRequest} from '../src/core/protocol/canonical/session.js';
+import {canonicalFromAnthropicRequest} from '../src/protocol-engine/core/canonical/session.js';
 import {
     analyzeChatToolClosure,
     getRelayConversationDiagnostics,
     inspectResponsesStreamState
-} from '../src/core/protocol/diagnostics/index.js';
+} from '../src/protocol-engine/core/diagnostics/index.js';
 
 test('analyzeChatToolClosure reports missing and orphan tool results', () => {
     const messages = [

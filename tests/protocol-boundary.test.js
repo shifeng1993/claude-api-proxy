@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), '..', '..');
-const protocolRoot = path.join(repoRoot, 'src', 'core', 'protocol');
+const protocolRoot = path.join(repoRoot, 'src', 'protocol-engine', 'core');
 const protocolEngineRoot = path.join(repoRoot, 'src', 'protocol-engine');
 
 async function listJsFiles(dir) {
@@ -120,6 +120,13 @@ test('protocol engine receives logging hooks instead of importing app logger', a
 test('legacy transformer directory no longer owns protocol engine files', async () => {
     await assert.rejects(
         stat(path.join(repoRoot, 'src', 'transformer')),
+        {code: 'ENOENT'}
+    );
+});
+
+test('legacy core protocol directory no longer owns protocol engine files', async () => {
+    await assert.rejects(
+        stat(path.join(repoRoot, 'src', 'core', 'protocol')),
         {code: 'ENOENT'}
     );
 });

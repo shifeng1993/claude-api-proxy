@@ -9,8 +9,8 @@ import {
     canonicalFromAnthropicRequest,
     canonicalFromAnthropicStreamChatResponse,
     renderCanonicalToChat
-} from '../src/core/protocol/canonical/session.js';
-import {anthropicResponseToChat} from '../src/core/protocol/http-converters.js';
+} from '../src/protocol-engine/core/canonical/session.js';
+import {anthropicResponseToChat} from '../src/protocol-engine/core/http-converters.js';
 
 test('default TTL keeps stable single-instance conversations for at least one day', () => {
     const store = new RelayConversationStore({cleanupIntervalMs: 0});

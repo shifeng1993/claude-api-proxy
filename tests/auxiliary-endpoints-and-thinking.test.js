@@ -6,11 +6,11 @@ import {
     openAIToAnthropic,
     sanitizeAnthropicPayload,
     sanitizeAnthropicMessages
-} from '../src/core/protocol/shared.js';
+} from '../src/protocol-engine/core/shared.js';
 import {anthropicToOpenAI as copilotAnthropicToOpenAI} from '../src/services/copilot/anthropic-adapter.js';
 import {anthropicToOpenAI as relayAnthropicToOpenAI} from '../src/services/relay/anthropic-adapter.js';
 import {anthropicToOpenAI as codebuddyAnthropicToOpenAI} from '../src/services/codebuddy/anthropic-adapter.js';
-import {createChatToAnthropicStreamBridge} from '../src/core/protocol/stream/canonical-stream.js';
+import {createChatToAnthropicStreamBridge} from '../src/protocol-engine/core/stream/canonical-stream.js';
 import {
     anthropicResponseToChat,
     chatResponseToAnthropic,
@@ -18,7 +18,7 @@ import {
     chatRequestToAnthropic,
     chatRequestToRelayResponses,
     responsesResponseToRelayChat
-} from '../src/core/protocol/http-converters.js';
+} from '../src/protocol-engine/core/http-converters.js';
 
 const root = process.cwd();
 
@@ -701,7 +701,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
 test('legacy stream state machine exports stay out of product adapters', () => {
     const cases = [
         {
-            file: 'src/core/protocol/responses.js',
+            file: 'src/protocol-engine/core/responses.js',
             absent: [
                 /export function createResponsesStreamState/,
                 /export function createChatCompletionsStreamState/,

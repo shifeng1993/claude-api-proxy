@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {stripDynamicReminders} from '../src/core/protocol/shared.js';
+import {stripDynamicReminders} from '../src/protocol-engine/core/shared.js';
 
 test('preserves Claude Code session identity and resume context', () => {
     const result = stripDynamicReminders([{

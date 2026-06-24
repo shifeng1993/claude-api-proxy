@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {injectBehaviorRules} from '../src/core/protocol/index.js';
+import {injectBehaviorRules} from '../src/protocol-engine/core/index.js';
 
 test('injectBehaviorRules uses caller-provided behavior rules', () => {
     const messages = [{role: 'user', content: 'hello'}];

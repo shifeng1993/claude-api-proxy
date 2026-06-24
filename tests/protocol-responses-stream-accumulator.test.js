@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createResponsesStreamAccumulator} from '../src/core/protocol/stream/accumulators/responses.js';
+import {createResponsesStreamAccumulator} from '../src/protocol-engine/core/stream/accumulators/responses.js';
 
 test('createResponsesStreamAccumulator rebuilds a final response from responses stream events', () => {
     const accumulator = createResponsesStreamAccumulator({model: 'gpt-test'});

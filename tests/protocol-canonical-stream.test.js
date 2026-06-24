@@ -9,7 +9,7 @@ import {
     createResponsesToChatStreamBridge,
     createResponsesCanonicalStreamState,
     responsesEventToCanonicalStreamEvents
-} from '../src/core/protocol/stream/canonical-stream.js';
+} from '../src/protocol-engine/core/stream/canonical-stream.js';
 
 test('responses stream events are normalized to canonical stream events', () => {
     const state = createResponsesCanonicalStreamState({model: 'gpt-test'});

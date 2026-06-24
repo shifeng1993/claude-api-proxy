@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mergeConsecutiveAssistantMessages, responsesRequestToChat, responsesResponseToChat} from '../src/core/protocol/responses.js';
+import {mergeConsecutiveAssistantMessages, responsesRequestToChat, responsesResponseToChat} from '../src/protocol-engine/core/responses.js';
 
 test('responsesRequestToChat merges consecutive assistant messages from output_text + function_call', () => {
     const result = responsesRequestToChat({

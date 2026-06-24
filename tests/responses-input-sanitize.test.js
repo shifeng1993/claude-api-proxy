@@ -4,7 +4,7 @@ import {
     limitResponsesInputItems,
     sanitizeResponsesInput,
     truncateResponsesInputItems
-} from '../src/core/protocol/responses.js';
+} from '../src/protocol-engine/core/responses.js';
 
 test('sanitizeResponsesInput removes previous response text part references from message content', () => {
     const sanitized = sanitizeResponsesInput(

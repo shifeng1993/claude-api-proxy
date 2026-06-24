@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizePayload} from '../src/core/protocol/shared.js';
+import {normalizePayload} from '../src/protocol-engine/core/shared.js';
 
 test('normalizePayload 按 GLM 前缀缓存要求排列 OpenAI 请求字段', () => {
     const normalized = normalizePayload({

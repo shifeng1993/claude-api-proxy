@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
     anthropicRequestToResponses,
     responsesResponseToAnthropic
-} from '../src/core/protocol/http-converters.js';
+} from '../src/protocol-engine/core/http-converters.js';
 
 test('anthropicRequestToResponses maps messages, tools, and reasoning into Responses input', () => {
     const converted = anthropicRequestToResponses({
