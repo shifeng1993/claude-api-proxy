@@ -1,15 +1,15 @@
 import {randomBytes, randomUUID} from 'crypto';
 import logger from '../utils/logger.js';
 import {unifiedTenantManager} from '../services/gateway/index.js';
-import {getCodebuddyCredentialService} from '../services/codebuddy/index.js';
 import {
     BLOCKED_DOMAINS,
     getCodebuddyBaseUrl,
     getCodebuddyCustomSiteLabel,
+    getCodebuddyCredentialService,
     getExtraBaseUrls,
     getModelsForHost,
     isPersonalHost
-} from '../services/codebuddy/config.js';
+} from '../services/codebuddy/index.js';
 
 const codebuddyCredentialService = getCodebuddyCredentialService(unifiedTenantManager);
 const authStates = new Map();

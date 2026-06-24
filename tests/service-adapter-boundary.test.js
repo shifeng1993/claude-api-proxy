@@ -174,6 +174,26 @@ test('protocol routes import product services through public boundaries', async 
     assert.deepEqual(violations, []);
 });
 
+test('dashboard routes import product services through public boundaries', async () => {
+    const checkedRoutes = [
+        'src/routes/dashboard-codebuddy.js',
+        'src/routes/dashboard-copilot.js',
+        'src/routes/dashboard-frontend.js'
+    ];
+    const privateProductImport =
+        /from\s+['"][^'"]*services\/(?:codebuddy|copilot)\/(?!index\.js['"])[^'"]+['"]/;
+    const violations = [];
+
+    for (const route of checkedRoutes) {
+        const source = await readFile(path.join(repoRoot, route), 'utf8').then((text) => text.replaceAll('\\', '/'));
+        if (privateProductImport.test(source)) {
+            violations.push(route);
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay route delegates usage and upstream context orchestration to relay services', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
     const normalized = source.replaceAll('\\', '/');

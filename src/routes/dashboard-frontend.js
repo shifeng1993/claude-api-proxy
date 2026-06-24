@@ -15,7 +15,7 @@ import {
 import {handleAdminUsers} from './dashboard-users.js';
 import {getAuthMode} from '../services/shared/auth-mode.js';
 import {getCodebuddyAdminOptions, handleCodebuddyAdminRoute} from './dashboard-codebuddy.js';
-import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/config.js';
+import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/index.js';
 import {handleCopilotAdminRoute} from './dashboard-copilot.js';
 import {sendNotFoundPage, wantsHtml} from './not-found.js';
 import {Op} from 'sequelize';

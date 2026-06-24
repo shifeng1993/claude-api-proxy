@@ -1,6 +1,5 @@
 import {models} from '../db/models/index.js';
-import {copilotCredentialManager} from '../services/copilot/credential-manager.js';
-import {DEFAULT_VSCODE_VERSION} from '../services/copilot/config.js';
+import {copilotCredentialManager, DEFAULT_VSCODE_VERSION} from '../services/copilot/index.js';
 import logger from '../utils/logger.js';
 
 const ACCOUNT_TYPES = new Set(['individual', 'business', 'enterprise']);
