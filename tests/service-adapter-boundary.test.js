@@ -420,6 +420,23 @@ test('codebuddy route delegates handler composition to codebuddy runtime service
     assert.deepEqual(violations, []);
 });
 
+test('copilot route delegates support helpers to copilot services', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
+    const normalized = source.replaceAll('\\', '/');
+    const forbiddenPatterns = [
+        /\bfunction\s+(?:sendJson|sendOpenAIError|sendAnthropicError|isResponsesProtocolError|sendResponsesProtocolError|upstreamErrorStatus)\b/,
+        /\bfunction\s+(?:extractProxyFromHeaders|getCopilotNetworkOptions|normalizeConversationKey|extractConversationKeyFromPayload|extractConversationKey)\b/,
+        /\basync\s+function\s+ensureCopilotAuth\b/,
+        /\bResponsesWebSocketError\b/,
+        /\bisNetworkError\b/
+    ];
+    const violations = forbiddenPatterns
+        .filter((pattern) => pattern.test(normalized))
+        .map((pattern) => pattern.source);
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',

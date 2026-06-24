@@ -7,7 +7,7 @@ import {ensureCopilotToken, isAuthenticated} from '../services/copilot/auth.js';
 import {createChatCompletions, createResponsesWS, releaseWSConnection, discardWSConnection, getModels} from '../services/copilot/copilot-api.js';
 import {copilotState} from '../services/copilot/state.js';
 import {copilotStore} from '../services/copilot/copilot-store.js';
-import {readBody, isNetworkError} from '../utils/http-client.js';
+import {readBody} from '../utils/http-client.js';
 import {
     anthropicToOpenAI,
     anthropicToResponses,
@@ -35,144 +35,37 @@ import {
     estimateContentBlockTokens
 } from '../utils/token-estimation.js';
 import {aggregateStreamResponse} from '../services/providers/index.js';
-import {
-    handleWSConnection,
-    ResponsesWebSocketError
-} from '../services/shared/index.js';
+import {handleWSConnection} from '../services/shared/index.js';
 import {
     currentCopilotContext,
     runCopilotTenantContext,
     runWithCopilotContext
 } from '../services/copilot/runtime.js';
+import {
+    copilotUpstreamErrorStatus as upstreamErrorStatus,
+    isCopilotResponsesProtocolError as isResponsesProtocolError,
+    sendCopilotAnthropicError as sendAnthropicError,
+    sendCopilotJsonResponse as sendJson,
+    sendCopilotOpenAIError as sendOpenAIError,
+    sendCopilotResponsesProtocolError as sendResponsesProtocolError
+} from '../services/copilot/response-writer.js';
+import {extractCopilotConversationKey as extractConversationKey} from '../services/copilot/conversation-key.js';
+import {createCopilotNetworkOptionsResolver} from '../services/copilot/network-options.js';
+import {createCopilotAuthResolver} from '../services/copilot/auth-context.js';
+import {
+    ensureCopilotResponsesWebSocketSupported as ensureResponsesWebSocketSupported,
+    supportsCopilotResponsesWebSocket
+} from '../services/copilot/model-support.js';
 import logger from '../utils/logger.js';
 
-/* ==================== 工具函数 ==================== */
+const getCopilotNetworkOptions = createCopilotNetworkOptionsResolver({store: copilotStore});
+const ensureCopilotAuth = createCopilotAuthResolver({
+    isAuthenticated,
+    ensureCopilotToken,
+    store: copilotStore
+});
 
-function extractProxyFromHeaders(req) {
-    // 优先从 store 读取代理配置
-    const storeProxy = copilotStore.getProxyUrl();
-    if (storeProxy) return storeProxy;
-
-    // 兼容：从请求头读取（仅本地请求）
-    const proxy = req.headers['x-copilot-proxy'];
-    if (!proxy) return undefined;
-    const remoteAddr = req.socket?.remoteAddress || '';
-    if (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1') {
-        return proxy;
-    }
-    return undefined;
-}
-
-function getCopilotNetworkOptions(req) {
-    return {
-        proxyUrl: extractProxyFromHeaders(req),
-        rejectUnauthorized: copilotStore.getRejectUnauthorized()
-    };
-}
-
-function normalizeConversationKey(value) {
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function extractConversationKeyFromPayload(payload) {
-    if (!payload || typeof payload !== 'object') return undefined;
-
-    const metadata = payload.metadata && typeof payload.metadata === 'object'
-        ? payload.metadata
-        : undefined;
-
-    const candidates = [
-        payload.conversation_id,
-        payload.conversationId,
-        payload.session_id,
-        payload.sessionId,
-        payload.thread_id,
-        payload.threadId,
-        metadata?.conversation_id,
-        metadata?.conversationId,
-        metadata?.session_id,
-        metadata?.sessionId,
-        metadata?.thread_id,
-        metadata?.threadId
-    ];
-
-    for (const candidate of candidates) {
-        const normalized = normalizeConversationKey(candidate);
-        if (normalized) return normalized;
-    }
-
-    return undefined;
-}
-
-function extractConversationKey(req, payload) {
-    const headerCandidates = [
-        req.headers['x-conversation-id'],
-        req.headers['x-session-id'],
-        req.headers['x-chat-id'],
-        req.headers['x-thread-id']
-    ];
-
-    for (const candidate of headerCandidates) {
-        const value = Array.isArray(candidate) ? candidate[0] : candidate;
-        const normalized = normalizeConversationKey(value);
-        if (normalized) return normalized;
-    }
-
-    return extractConversationKeyFromPayload(payload);
-}
-
-function sendJson(res, status, data) {
-    if (res.headersSent) return;
-    res.writeHead(status, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify(data));
-}
-
-function sendOpenAIError(res, status, message, type = 'api_error') {
-    sendJson(res, status, {error: {message, type, code: status}});
-}
-
-function sendAnthropicError(res, status, message) {
-    const errorType = status === 401 ? 'authentication_error' : status === 503 ? 'overloaded_error' : 'api_error';
-    sendJson(res, status, {type: 'error', error: {type: errorType, message}});
-}
-
-function isResponsesProtocolError(err) {
-    return err instanceof ResponsesWebSocketError && err?.event?.type === 'error';
-}
-
-function sendResponsesProtocolError(res, err) {
-    const event = err?.event || {
-        type: 'error',
-        status: err?.status || 400,
-        error: {
-            message: err?.message || 'Responses WebSocket request failed'
-        }
-    };
-
-    if (res.headersSent) {
-        if (!res.destroyed && !res.writableEnded) {
-            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-            res.end();
-        }
-        return;
-    }
-
-    sendJson(res, event.status || err?.status || 400, event);
-}
-
-function upstreamErrorStatus(err) {
-    return isNetworkError(err) ? 502 : 500;
-}
-
-export function supportsResponsesWebSocket(model) {
-    return typeof model === 'string' && /^gpt(?:-|$)/i.test(model.trim());
-}
-
-function ensureResponsesWebSocketSupported(model) {
-    if (!supportsResponsesWebSocket(model)) {
-        throw new Error(`Responses WebSocket is only supported for GPT-series models: ${model || 'unknown'}`);
-    }
-}
+export const supportsResponsesWebSocket = supportsCopilotResponsesWebSocket;
 
 /**
  * API Key 鉴权（已移除，统一由网关层处理）
@@ -184,27 +77,6 @@ async function parseBody(req) {
         chunks.push(chunk);
     }
     return Buffer.concat(chunks).toString('utf8');
-}
-
-/* ==================== 鉴权 ==================== */
-
-/**
- * 确保 Copilot 上游认证有效（GitHub 登录 + Copilot Token）
- * 网关层已统一完成客户端 API Key 鉴权
- */
-async function ensureCopilotAuth(networkOptions = {}) {
-    // Copilot 认证检查
-    if (!isAuthenticated()) {
-        return {error: {status: 401, message: 'Not authenticated. Open the Copilot tab in /dashboard to connect GitHub.'}};
-    }
-
-    try {
-        const proxyUrl = 'proxyUrl' in networkOptions ? networkOptions.proxyUrl : copilotStore.getProxyUrl();
-        const copilotToken = await ensureCopilotToken(proxyUrl, networkOptions);
-        return {copilotToken};
-    } catch (error) {
-        return {error: {status: 503, message: error.message}};
-    }
 }
 
 /* ==================== OpenAI 模式 ==================== */
