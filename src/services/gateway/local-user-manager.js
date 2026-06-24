@@ -1,16 +1,16 @@
 /**
  * Local account CRUD for the unified tenant account system.
  * One local account maps to one Tenant record and shared service profiles.
- * @module services/shared/local-user-manager
+ * @module services/gateway/local-user-manager
  */
 
 import {createHash, randomBytes} from 'crypto';
 import {Op} from 'sequelize';
 import logger from '../../utils/logger.js';
 import {models} from '../../db/models/index.js';
-import {hashPassword, verifyPassword} from './local-auth.js';
-import {unifiedTenantManager} from '../gateway/index.js';
-import {getAuthMode} from './auth-mode.js';
+import {hashPassword, verifyPassword} from '../shared/local-auth.js';
+import {getAuthMode} from '../shared/auth-mode.js';
+import {unifiedTenantManager} from './tenant-manager.js';
 
 const MIN_PASSWORD_LENGTH = 8;
 const USERNAME_REGEX = /^[a-zA-Z0-9._-]{2,32}$/;

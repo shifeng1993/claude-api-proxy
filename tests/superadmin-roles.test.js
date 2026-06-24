@@ -8,7 +8,7 @@ import {
     updateLocalUser,
     resetLocalUserPassword,
     deleteLocalUser
-} from '../src/services/shared/local-user-manager.js';
+} from '../src/services/gateway/index.js';
 import {ensureAdminFromEnv} from '../src/services/shared/local-auth.js';
 import {canManageDashboardTenant} from '../src/routes/dashboard-frontend.js';
 

@@ -7,7 +7,7 @@ import {
     updateManagedUser,
     deleteManagedUser,
     changeOwnLocalUserPassword
-} from '../src/services/shared/local-user-manager.js';
+} from '../src/services/gateway/index.js';
 import {models} from '../src/db/models/index.js';
 import {hashPassword, verifyPassword} from '../src/services/shared/local-auth.js';
 

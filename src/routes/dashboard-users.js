@@ -12,7 +12,7 @@ import {
     updateManagedUser,
     resetLocalUserPassword,
     deleteManagedUser
-} from '../services/shared/local-user-manager.js';
+} from '../services/gateway/index.js';
 import {unifiedTenantManager} from '../services/gateway/index.js';
 import {getAuthMode} from '../services/shared/auth-mode.js';
 

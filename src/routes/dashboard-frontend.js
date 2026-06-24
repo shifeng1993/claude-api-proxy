@@ -7,9 +7,12 @@ import {readFileSync} from 'fs';
 import {join, dirname} from 'path';
 import {fileURLToPath} from 'url';
 import logger from '../utils/logger.js';
-import {getSessionUser, unifiedTenantManager} from '../services/gateway/index.js';
+import {
+    changeOwnLocalUserPassword,
+    getSessionUser,
+    unifiedTenantManager
+} from '../services/gateway/index.js';
 import {handleAdminUsers} from './dashboard-users.js';
-import {changeOwnLocalUserPassword} from '../services/shared/local-user-manager.js';
 import {getAuthMode} from '../services/shared/auth-mode.js';
 import {getCodebuddyAdminOptions, handleCodebuddyAdminRoute} from './dashboard-codebuddy.js';
 import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/config.js';

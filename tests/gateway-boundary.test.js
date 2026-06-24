@@ -8,6 +8,7 @@ const repoRoot = path.resolve(fileURLToPath(import.meta.url), '..', '..');
 const srcRoot = path.join(repoRoot, 'src');
 const gatewayRoot = path.join(repoRoot, 'src', 'services', 'gateway');
 const codebuddyRoot = path.join(repoRoot, 'src', 'services', 'codebuddy');
+const sharedRoot = path.join(repoRoot, 'src', 'services', 'shared');
 
 async function listJsFiles(dir) {
     const entries = await readdir(dir, {withFileTypes: true});
@@ -38,6 +39,8 @@ test('gateway service exposes auth session and tenant APIs from its public bound
     assert.equal(typeof gateway.getSessionUser, 'function');
     assert.equal(typeof gateway.createSessionToken, 'function');
     assert.equal(typeof gateway.unifiedTenantManager, 'object');
+    assert.equal(typeof gateway.createLocalUser, 'function');
+    assert.equal(typeof gateway.changeOwnLocalUserPassword, 'function');
 });
 
 test('gateway imports service managers through public service boundaries', async () => {
@@ -64,6 +67,21 @@ test('gateway tenant manager does not own CodeBuddy credential managers', async 
     assert.doesNotMatch(source, /getCodebuddyCredentialManager/);
     assert.doesNotMatch(source, /listCodebuddyCredentials/);
     assert.doesNotMatch(source, /from\s+['"][^'"]*codebuddy[^'"]*['"]/);
+});
+
+test('shared services do not import gateway services', async () => {
+    const files = await listJsFiles(sharedRoot);
+    const violations = [];
+    const gatewayImport = /from\s+['"][^'"]*(?:services\/gateway|\.{1,2}\/gateway)[^'"]*['"]/;
+
+    for (const file of files) {
+        const source = await readFile(file, 'utf8');
+        if (gatewayImport.test(source.replaceAll('\\', '/'))) {
+            violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual(violations, []);
 });
 
 test('app layers import gateway through the public boundary', async () => {
