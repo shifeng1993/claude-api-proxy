@@ -456,6 +456,11 @@ test('copilot route delegates Chat Completions handler to copilot services', asy
     assert.equal(/\basync\s+function\s+handleOpenAIChatCompletions\b/.test(source), false);
 });
 
+test('copilot route delegates Responses Compact handler to copilot services', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
+    assert.equal(/\basync\s+function\s+handleResponsesCompact\b/.test(source), false);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
