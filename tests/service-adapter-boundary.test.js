@@ -65,6 +65,23 @@ test('product services receive gateway helpers through injection', async () => {
     assert.deepEqual(violations, []);
 });
 
+test('product services avoid gateway singleton naming leakage', async () => {
+    const productServiceDirs = ['relay', 'codebuddy', 'copilot'];
+    const violations = [];
+
+    for (const dir of productServiceDirs) {
+        const files = await listJsFiles(path.join(servicesRoot, dir));
+        for (const file of files) {
+            const source = await readFile(file, 'utf8');
+            if (/\bunifiedTenantManager\b/.test(source)) {
+                violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+            }
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
 test('auth route uses shared LDAP authentication instead of CodeBuddy internals', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/auth.js'), 'utf8')
         .then((text) => text.replaceAll('\\', '/'));

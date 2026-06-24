@@ -29,7 +29,7 @@ function createBaseDeps(overrides = {}) {
         isResponsesWebSocketUpstream: () => false,
         isResponsesUpstream: () => false,
         extractConversationKey: () => 'tenant:42:compact',
-        unifiedTenantManager: {
+        tenantDirectory: {
             getTenant: async () => ({name: 'Tenant', username: 'alice'})
         },
         compactRequestToChat: (request) => ({

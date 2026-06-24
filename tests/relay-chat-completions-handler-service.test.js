@@ -17,7 +17,7 @@ function createBaseDeps(overrides = {}) {
                 resolveModel: (model) => `${model}-resolved`
             }
         }),
-        unifiedTenantManager: {
+        tenantDirectory: {
             getTenant: async () => ({name: 'Tenant', username: 'alice'})
         },
         sendOpenAIError: (res, status, message, type) => res.calls.push(['openai-error', status, message, type]),

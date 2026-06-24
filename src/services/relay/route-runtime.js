@@ -165,7 +165,7 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
     });
     const handleOpenAIChatCompletions = createRelayChatCompletionsHandler({
         authenticateAndGetUpstream,
-        unifiedTenantManager: tenantManager,
+        tenantDirectory: tenantManager,
         sendOpenAIError,
         sendJson,
         sendStateMissingOpenAIError,
@@ -214,7 +214,7 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
     });
     const handleAnthropicMessages = createRelayAnthropicMessagesHandler({
         authenticateAndGetUpstream,
-        unifiedTenantManager: tenantManager,
+        tenantDirectory: tenantManager,
         sendAnthropicError,
         sendJson,
         upstreamErrorStatus,
@@ -275,7 +275,7 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
         isResponsesUpstream,
         extractConversationKey,
         relayConversationStore,
-        unifiedTenantManager: tenantManager,
+        tenantDirectory: tenantManager,
         invokeWithRelayContextCompaction,
         prepareRelayOutboundChatRequest,
         chatRequestToAnthropic,
@@ -323,7 +323,7 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
         isResponsesWebSocketUpstream,
         isResponsesUpstream,
         extractConversationKey,
-        unifiedTenantManager: tenantManager,
+        tenantDirectory: tenantManager,
         compactRequestToChat,
         injectBehaviorRules,
         stripDynamicReminders,
@@ -353,7 +353,7 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
 
     const handleRelayResponsesWS = createRelayResponsesWebSocketHandler({
         authenticateAndGetUpstream,
-        unifiedTenantManager: tenantManager,
+        tenantDirectory: tenantManager,
         handleWSConnection,
         recordUsage,
         extractConversationKey,

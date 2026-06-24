@@ -17,7 +17,7 @@ function createBaseDeps(overrides = {}) {
                 resolveModel: (model) => `${model}-resolved`
             }
         }),
-        unifiedTenantManager: {
+        tenantDirectory: {
             getTenant: async () => ({name: 'Tenant', username: 'alice'})
         },
         sendAnthropicError: (res, status, message) => res.calls.push(['anthropic-error', status, message]),

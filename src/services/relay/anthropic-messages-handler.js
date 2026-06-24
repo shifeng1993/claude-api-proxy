@@ -1,6 +1,6 @@
 export function createRelayAnthropicMessagesHandler({
     authenticateAndGetUpstream,
-    unifiedTenantManager,
+    tenantDirectory,
     sendAnthropicError,
     sendJson,
     upstreamErrorStatus,
@@ -53,7 +53,7 @@ export function createRelayAnthropicMessagesHandler({
         try {
             const authResult = await authenticateAndGetUpstream(req);
             if (!authResult.error) {
-                const tenant = await unifiedTenantManager.getTenant(authResult.tenantId);
+                const tenant = await tenantDirectory.getTenant(authResult.tenantId);
                 if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
             }
             if (authResult.error) {
@@ -64,7 +64,7 @@ export function createRelayAnthropicMessagesHandler({
             const {upstream, tenantId, upstreamManager} = authResult;
             const body = await parseBody(req);
             const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
-            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenant = await tenantDirectory.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
             const relayStatsModel = upstreamManager.resolveModel(anthropicPayload.model, upstream.index);
             const baseConversationKey = extractConversationKey(req, anthropicPayload, {tenantId});

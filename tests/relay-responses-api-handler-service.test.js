@@ -37,7 +37,7 @@ function createBaseDeps(overrides = {}) {
                 conversationKey
             })
         },
-        unifiedTenantManager: {
+        tenantDirectory: {
             getTenant: async () => ({name: 'Tenant', username: 'alice'})
         },
         invokeWithRelayContextCompaction: async ({chatRequest, invoke}) => ({

@@ -1,6 +1,6 @@
 export function createRelayResponsesWebSocketHandler({
     authenticateAndGetUpstream,
-    unifiedTenantManager,
+    tenantDirectory,
     handleWSConnection,
     recordUsage,
     extractConversationKey,
@@ -356,7 +356,7 @@ export function createRelayResponsesWebSocketHandler({
 
                 const {upstream, tenantId, upstreamManager} = upstreamContext;
 
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 req.relayResolvedModel = upstreamManager.resolveModel(payload.model, upstream.index);
 

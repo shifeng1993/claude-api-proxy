@@ -11,7 +11,7 @@ export function createRelayResponsesAPIHandler({
     isResponsesUpstream,
     extractConversationKey,
     relayConversationStore,
-    unifiedTenantManager,
+    tenantDirectory,
     invokeWithRelayContextCompaction,
     prepareRelayOutboundChatRequest,
     chatRequestToAnthropic,
@@ -69,7 +69,7 @@ export function createRelayResponsesAPIHandler({
                 });
                 let chatReq = hydrated.chatRequest;
                 chatReq.stream = responsesReq.stream;
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const stateConversationKey = hydrated.conversationKey || conversationKey;
                 const invocation = await invokeWithRelayContextCompaction({
@@ -178,7 +178,7 @@ export function createRelayResponsesAPIHandler({
             }
 
             if (isResponsesWebSocketUpstream(upstream)) {
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const wsPayload = {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, upstream.index)};
                 const conversationKey = extractConversationKey(req, wsPayload, {tenantId});
@@ -248,7 +248,7 @@ export function createRelayResponsesAPIHandler({
             }
 
             if (isResponsesUpstream(upstream)) {
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const conversationKey = extractConversationKey(req, responsesReq, {tenantId});
                 const responsesPayload = {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, upstream.index)};
@@ -359,7 +359,7 @@ export function createRelayResponsesAPIHandler({
             });
             let chatReq = hydrated.chatRequest;
 
-            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenant = await tenantDirectory.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
             const conversationKey = hydrated.conversationKey || responsesConversationKey || extractConversationKey(req, chatReq, {tenantId});
             const relayMeta = {

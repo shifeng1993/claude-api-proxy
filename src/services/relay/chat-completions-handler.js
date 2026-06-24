@@ -1,6 +1,6 @@
 export function createRelayChatCompletionsHandler({
     authenticateAndGetUpstream,
-    unifiedTenantManager,
+    tenantDirectory,
     sendOpenAIError,
     sendJson,
     sendStateMissingOpenAIError,
@@ -52,7 +52,7 @@ export function createRelayChatCompletionsHandler({
         try {
             const authResult = await authenticateAndGetUpstream(req);
             if (!authResult.error) {
-                const tenant = await unifiedTenantManager.getTenant(authResult.tenantId);
+                const tenant = await tenantDirectory.getTenant(authResult.tenantId);
                 if (tenant?.name && tenant?.username) tenantInfo = `${tenant.name}(${tenant.username})`;
             }
             if (authResult.error) {
@@ -69,7 +69,7 @@ export function createRelayChatCompletionsHandler({
             const body = await parseBody(req);
             const openAIPayload = JSON.parse(body);
 
-            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenant = await tenantDirectory.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
             const relayStatsModel = upstreamManager.resolveModel(openAIPayload.model, upstream.index);
             const baseConversationKey = extractConversationKey(req, openAIPayload, {tenantId});

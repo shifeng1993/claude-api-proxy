@@ -9,7 +9,7 @@ export function createRelayResponsesCompactHandler({
     isResponsesWebSocketUpstream,
     isResponsesUpstream,
     extractConversationKey,
-    unifiedTenantManager,
+    tenantDirectory,
     compactRequestToChat,
     injectBehaviorRules,
     stripDynamicReminders,
@@ -59,7 +59,7 @@ export function createRelayResponsesCompactHandler({
                     model: upstreamManager.resolveModel(chatReq.model, upstream.index),
                     stream: false
                 });
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const {response} = await callUpstream(upstream, (up) =>
                     createAnthropicMessages(
@@ -100,7 +100,7 @@ export function createRelayResponsesCompactHandler({
                     model: upstreamManager.resolveModel(chatReq.model, upstream.index),
                     stream: false
                 });
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const limitedRequest = limitResponsesPassthroughPayload(responsesPayload, {
                     requestType: 'ResponsesCompactWebSocket',
@@ -123,7 +123,7 @@ export function createRelayResponsesCompactHandler({
             }
 
             if (isResponsesUpstream(upstream)) {
-                const tenant = await unifiedTenantManager.getTenant(tenantId);
+                const tenant = await tenantDirectory.getTenant(tenantId);
                 const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
                 const conversationKey = extractConversationKey(req, compactReq, {tenantId});
                 const relayMeta = {
@@ -163,7 +163,7 @@ export function createRelayResponsesCompactHandler({
             chatReq.messages = stripDynamicReminders(chatReq.messages);
             mergeConsecutiveAssistantMessages(chatReq.messages);
 
-            const tenant = await unifiedTenantManager.getTenant(tenantId);
+            const tenant = await tenantDirectory.getTenant(tenantId);
             const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
             const conversationKey = extractConversationKey(req, chatReq, {tenantId});
             const relayMeta = {
