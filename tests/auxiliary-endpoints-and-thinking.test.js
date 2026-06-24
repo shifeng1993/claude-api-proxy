@@ -452,7 +452,8 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
         'src/routes/relay.js',
         'src/services/relay/chat-completions-handler.js',
         'src/services/relay/anthropic-messages-handler.js',
-        'src/services/relay/responses-api-handler.js'
+        'src/services/relay/responses-api-handler.js',
+        'src/services/relay/responses-compact-handler.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     for (const requestType of [
@@ -473,7 +474,8 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
 test('relay Responses-capable passthrough paths remember visible input before completion', () => {
     const source = [
         'src/routes/relay.js',
-        'src/services/relay/responses-api-handler.js'
+        'src/services/relay/responses-api-handler.js',
+        'src/services/relay/responses-compact-handler.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     const prepareCalls = source.match(/prepareResponsesPassthrough/g) || [];
 
@@ -481,7 +483,11 @@ test('relay Responses-capable passthrough paths remember visible input before co
 });
 
 test('relay Responses passthrough paths limit oversized input before upstream transport', () => {
-    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const source = [
+        'src/routes/relay.js',
+        'src/services/relay/responses-api-handler.js',
+        'src/services/relay/responses-compact-handler.js'
+    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     const limitCalls = source.match(/limitResponsesPassthroughPayload/g) || [];
 
     assert.equal(limitCalls.length >= 5, true);
