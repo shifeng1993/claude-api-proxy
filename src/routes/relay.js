@@ -4,7 +4,7 @@
  */
 
 import {unifiedTenantManager} from '../services/gateway/index.js';
-import {createRelayRouteRuntime} from '../services/relay/route-runtime.js';
+import {createRelayRouteRuntime} from '../services/relay/index.js';
 import logger from '../utils/logger.js';
 
 const relayRuntime = createRelayRouteRuntime({tenantManager: unifiedTenantManager, logger});

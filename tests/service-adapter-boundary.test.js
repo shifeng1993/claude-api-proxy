@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readdir} from 'node:fs/promises';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), '..', '..');
 const servicesRoot = path.join(repoRoot, 'src', 'services');
@@ -126,6 +126,36 @@ test('services import Responses WebSocket shared helpers through the shared boun
         const source = await readFile(file, 'utf8').then((text) => text.replaceAll('\\', '/'));
         if (privateSharedResponsesWsImport.test(source)) {
             violations.push(relative);
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
+test('product services expose route runtime factories from public boundaries', async () => {
+    const relay = await import(pathToFileURL(path.join(servicesRoot, 'relay', 'index.js')).href);
+    const codebuddy = await import(pathToFileURL(path.join(servicesRoot, 'codebuddy', 'index.js')).href);
+    const copilot = await import(pathToFileURL(path.join(servicesRoot, 'copilot', 'index.js')).href);
+
+    assert.equal(typeof relay.createRelayRouteRuntime, 'function');
+    assert.equal(typeof codebuddy.createCodebuddyRouteRuntime, 'function');
+    assert.equal(typeof copilot.createCopilotRouteRuntime, 'function');
+});
+
+test('protocol routes import product services through public boundaries', async () => {
+    const checkedRoutes = [
+        'src/routes/relay.js',
+        'src/routes/copilot.js',
+        'src/routes/codebuddy.js'
+    ];
+    const privateProductRuntimeImport =
+        /from\s+['"][^'"]*services\/(?:relay|copilot|codebuddy)\/route-runtime\.js['"]/;
+    const violations = [];
+
+    for (const route of checkedRoutes) {
+        const source = await readFile(path.join(repoRoot, route), 'utf8').then((text) => text.replaceAll('\\', '/'));
+        if (privateProductRuntimeImport.test(source)) {
+            violations.push(route);
         }
     }
 

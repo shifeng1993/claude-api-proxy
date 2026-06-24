@@ -3,7 +3,7 @@
  * @module routes/copilot
  */
 
-import {createCopilotRouteRuntime} from '../services/copilot/route-runtime.js';
+import {createCopilotRouteRuntime} from '../services/copilot/index.js';
 import logger from '../utils/logger.js';
 
 const copilotRuntime = createCopilotRouteRuntime({logger});
