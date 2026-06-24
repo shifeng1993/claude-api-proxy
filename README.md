@@ -291,6 +291,10 @@ src/
   templates/                控制台 HTML 模板
 ```
 
+## 架构边界
+
+协议转换核心、gateway、产品接入服务与路由层的依赖边界见 [docs/architecture-boundaries.md](docs/architecture-boundaries.md)。新增客户端、Provider 或协议通路时，优先按该文档判断代码归属。
+
 ## License
 
 MIT
