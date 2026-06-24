@@ -437,6 +437,20 @@ test('copilot route delegates support helpers to copilot services', async () => 
     assert.deepEqual(violations, []);
 });
 
+test('copilot route delegates metadata handlers to copilot services', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
+    const forbiddenPatterns = [
+        /\basync\s+function\s+handleOpenAIModels\b/,
+        /\basync\s+function\s+handleAnthropicCountTokens\b/,
+        /\basync\s+function\s+handleAnthropicModels\b/
+    ];
+    const violations = forbiddenPatterns
+        .filter((pattern) => pattern.test(source))
+        .map((pattern) => pattern.source);
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',

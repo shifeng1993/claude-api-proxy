@@ -56,6 +56,7 @@ import {
     ensureCopilotResponsesWebSocketSupported as ensureResponsesWebSocketSupported,
     supportsCopilotResponsesWebSocket
 } from '../services/copilot/model-support.js';
+import {createCopilotMetadataHandlers} from '../services/copilot/metadata-handler.js';
 import logger from '../utils/logger.js';
 
 const getCopilotNetworkOptions = createCopilotNetworkOptionsResolver({store: copilotStore});
@@ -78,6 +79,26 @@ async function parseBody(req) {
     }
     return Buffer.concat(chunks).toString('utf8');
 }
+
+const {
+    handleOpenAIModels,
+    handleAnthropicCountTokens,
+    handleAnthropicModels
+} = createCopilotMetadataHandlers({
+    getCopilotNetworkOptions,
+    ensureCopilotAuth,
+    getModels,
+    copilotState,
+    sendOpenAIError,
+    sendAnthropicError,
+    sendJson,
+    upstreamErrorStatus,
+    parseBody,
+    sanitizeAnthropicPayload,
+    estimateMessageTokens,
+    estimateContentBlockTokens,
+    logger
+});
 
 /* ==================== OpenAI 模式 ==================== */
 
@@ -306,42 +327,6 @@ async function handleOpenAIChatCompletions(req, res) {
         }
     } catch (error) {
         logger.error('Copilot: Failed to handle OpenAI chat completions:', error);
-        sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
-    }
-}
-
-/**
- * 处理 OpenAI 格式的 /copilot/v1/models 请求
- */
-async function handleOpenAIModels(req, res) {
-    try {
-        const networkOptions = getCopilotNetworkOptions(req);
-        const proxyUrl = networkOptions.proxyUrl;
-        const authResult = await ensureCopilotAuth(networkOptions);
-        if (authResult.error) {
-            sendOpenAIError(res, authResult.error.status, authResult.error.message);
-            return;
-        }
-
-        const modelsData = await getModels(
-            authResult.copilotToken,
-            copilotState.vsCodeVersion,
-            copilotState.accountType,
-            proxyUrl,
-            networkOptions
-        );
-
-        sendJson(res, 200, {
-            object: 'list',
-            data: (modelsData.data || []).map((model) => ({
-                id: model.id,
-                object: 'model',
-                created: 0,
-                owned_by: model.vendor || 'copilot'
-            }))
-        });
-    } catch (error) {
-        logger.error('Copilot: Failed to get OpenAI models:', error);
         sendOpenAIError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
@@ -616,93 +601,6 @@ async function handleAnthropicMessages(req, res) {
         }
     } catch (error) {
         logger.error('Copilot: Failed to handle Anthropic messages:', error);
-        sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
-    }
-}
-
-/**
- * 处理 Anthropic 格式的 /copilot/anthropic/v1/messages/count_tokens
- */
-async function handleAnthropicCountTokens(req, res) {
-    try {
-        const networkOptions = getCopilotNetworkOptions(req);
-        const authResult = await ensureCopilotAuth(networkOptions);
-        if (authResult.error) {
-            sendAnthropicError(res, authResult.error.status, authResult.error.message);
-            return;
-        }
-
-        const body = await parseBody(req);
-        const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
-
-        let totalTokens = 0;
-
-        if (Array.isArray(anthropicPayload.messages)) {
-            totalTokens += estimateMessageTokens(anthropicPayload.messages);
-        }
-
-        if (anthropicPayload.system) {
-            if (typeof anthropicPayload.system === 'string') {
-                totalTokens += Math.ceil(anthropicPayload.system.length / 4);
-            } else if (Array.isArray(anthropicPayload.system)) {
-                for (const block of anthropicPayload.system) {
-                    totalTokens += estimateContentBlockTokens(block);
-                }
-            }
-        }
-
-        if (Array.isArray(anthropicPayload.tools)) {
-            for (const tool of anthropicPayload.tools) {
-                totalTokens += Math.ceil((tool.name || '').length / 4);
-                totalTokens += Math.ceil((tool.description || '').length / 4);
-                if (tool.input_schema) {
-                    const schemaStr = JSON.stringify(tool.input_schema);
-                    totalTokens += Math.ceil(schemaStr.length / 2);
-                }
-            }
-        }
-
-        sendJson(res, 200, {input_tokens: totalTokens});
-    } catch (error) {
-        logger.error('Copilot: Failed to count tokens:', error);
-        sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
-    }
-}
-
-/**
- * 处理 Anthropic 格式的 /copilot/anthropic/v1/models
- */
-async function handleAnthropicModels(req, res) {
-    try {
-        const networkOptions = getCopilotNetworkOptions(req);
-        const proxyUrl = networkOptions.proxyUrl;
-        const authResult = await ensureCopilotAuth(networkOptions);
-        if (authResult.error) {
-            sendAnthropicError(res, authResult.error.status, authResult.error.message);
-            return;
-        }
-
-        const modelsData = await getModels(
-            authResult.copilotToken,
-            copilotState.vsCodeVersion,
-            copilotState.accountType,
-            proxyUrl,
-            networkOptions
-        );
-
-        sendJson(res, 200, {
-            object: 'list',
-            data: (modelsData.data || []).map((model) => ({
-                id: model.id,
-                object: 'model',
-                created: 0,
-                owned_by: model.vendor || 'copilot',
-                name: model.name,
-                capabilities: model.capabilities || {}
-            }))
-        });
-    } catch (error) {
-        logger.error('Copilot: Failed to get Anthropic models:', error);
         sendAnthropicError(res, upstreamErrorStatus(error), error.message || 'Internal server error');
     }
 }
