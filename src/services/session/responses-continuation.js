@@ -1,4 +1,4 @@
-import {limitResponsesInputItems} from '../../core/protocol/index.js';
+import {limitResponsesInputItems} from './protocol-adapter.js';
 import logger from '../../utils/logger.js';
 
 export function prepareResponsesContinuationPayload({

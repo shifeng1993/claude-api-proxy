@@ -1,4 +1,3 @@
-import {convertResponsesUsageToChat} from '../../core/protocol/index.js';
 import {
     appendAnthropicResponseToCanonical,
     appendChatResponseToCanonical,
@@ -8,8 +7,9 @@ import {
     canonicalFromResponsesRequest,
     preserveCanonicalResponseToolMappings,
     preserveCanonicalToolMappings,
+    convertResponsesUsageToChat,
     renderCanonicalToChat
-} from '../../core/protocol/index.js';
+} from './protocol-adapter.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;

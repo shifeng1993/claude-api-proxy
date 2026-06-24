@@ -50,3 +50,19 @@ test('session service does not import upper application layers', async () => {
 
     assert.deepEqual(violations, []);
 });
+
+test('session service centralizes protocol core imports in its protocol adapter', async () => {
+    const files = await listJsFiles(sessionRoot);
+    const violations = [];
+
+    for (const file of files) {
+        if (path.basename(file) === 'protocol-adapter.js') continue;
+
+        const source = await readFile(file, 'utf8');
+        if (/from\s+['"][^'"]*core\/protocol\/index\.js['"]/.test(source.replaceAll('\\', '/'))) {
+            violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
