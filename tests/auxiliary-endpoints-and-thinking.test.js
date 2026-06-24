@@ -440,7 +440,10 @@ test('chatRequestToAnthropic preserves file blocks through canonical rendering',
 });
 
 test('relay routes expose cross-protocol bridges without protocol mismatch rejects', () => {
-    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const source = [
+        'src/routes/relay.js',
+        'src/services/relay/chat-completions-handler.js'
+    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     for (const requestType of [
         'ChatCompletionsViaAnthropic',
@@ -491,9 +494,9 @@ test('relay Anthropic stream stats keep the maximum cache hit tokens across usag
 });
 
 test('relay Chat handler does not reference Anthropic payload before it is created', () => {
-    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const source = readFileSync(join(root, 'src/services/relay/chat-completions-handler.js'), 'utf8');
     const start = source.indexOf('async function handleOpenAIChatCompletions');
-    const end = source.indexOf('async function handleAnthropicMessages');
+    const end = source.indexOf("if (isResponsesWebSocketUpstream(upstream))", start);
     const handler = source.slice(start, end);
 
     const anthropicPayloadIndex = handler.indexOf('const anthropicPayload = chatRequestToAnthropic');
@@ -542,7 +545,10 @@ test('relay OpenAI passthrough stream records accumulated chat response into ses
 });
 
 test('relay Responses output streams record accumulated responses when completed is missing', () => {
-    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const source = [
+        'src/routes/relay.js',
+        'src/services/relay/chat-completions-handler.js'
+    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     assert.match(source, /createResponsesStreamAccumulator/);
     assert.match(source, /responsesAccumulator\.feed\(ev\.event,\s*ev\.data\)/);
@@ -555,7 +561,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
     const cases = [
         {
             name: 'relay Responses to Chat',
-            file: 'src/routes/relay.js',
+            file: 'src/services/relay/chat-completions-handler.js',
             present: [
                 /createResponsesToChatStreamBridge/,
                 /responsesToChatBridge\.feed\(event\.type,\s*event\.data\)/,
