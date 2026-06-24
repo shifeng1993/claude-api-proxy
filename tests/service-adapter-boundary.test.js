@@ -247,6 +247,13 @@ test('dashboard Copilot route delegates credential shaping to Copilot service', 
     );
 });
 
+test('feedback admin route delegates feedback persistence to feedback service', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/feedback-admin.js'), 'utf8')
+        .then((text) => text.replaceAll('\\', '/'));
+
+    assert.doesNotMatch(source, /db\/models|from\s+['"]sequelize['"]|\bFeedback\./);
+});
+
 test('relay route delegates usage and upstream context orchestration to relay services', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
     const normalized = source.replaceAll('\\', '/');

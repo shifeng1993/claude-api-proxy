@@ -6,9 +6,12 @@
 
 import {createReadStream, existsSync, rmSync} from 'fs';
 import {join} from 'path';
-import {Op} from 'sequelize';
-import {Feedback} from '../db/models/feedback.js';
-import {repairMojibakeFilename} from '../services/feedback.js';
+import {
+    canManageFeedback,
+    findFeedbackById,
+    listFeedbackForAdmin,
+    repairMojibakeFilename
+} from '../services/feedback.js';
 import logger from '../utils/logger.js';
 
 function sendJson(res, status, data) {
@@ -31,20 +34,6 @@ function parseBody(req) {
     });
 }
 
-function canManage(req, feedback) {
-    const user = req.sessionUser || {};
-    return user.role === 'admin' || (user.username && feedback.username === user.username);
-}
-
-function feedbackView(req, feedback) {
-    const raw = typeof feedback.toJSON === 'function' ? feedback.toJSON() : feedback;
-    return {
-        ...raw,
-        attachments: (raw.attachments || []).map(item => ({...item, name: repairMojibakeFilename(item.name)})),
-        can_manage: canManage(req, raw)
-    };
-}
-
 export async function routeFeedbackAdmin(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
@@ -64,31 +53,14 @@ export async function routeFeedbackAdmin(req, res) {
         const pageSize = parseInt(params.pageSize) || 20;
         const {status, category, keyword} = params;
 
-        const where = {};
-        if (status) where.status = status;
-        if (category) where.category = category;
-        if (keyword) {
-            where[Op.or] = [
-                {description: {[Op.like]: `%${keyword}%`}},
-                {username: {[Op.like]: `%${keyword}%`}}
-            ];
-        }
-
-        const {count, rows} = await Feedback.findAndCountAll({
-            where,
-            order: [['created_at', 'DESC']],
-            limit: pageSize,
-            offset: (page - 1) * pageSize
-        });
-
-        sendJson(res, 200, {
-            total: count,
+        sendJson(res, 200, await listFeedbackForAdmin({
             page,
             pageSize,
-            current_user: req.sessionUser?.username || '',
-            is_admin: req.sessionUser?.role === 'admin',
-            list: rows.map(row => feedbackView(req, row))
-        });
+            status,
+            category,
+            keyword,
+            sessionUser: req.sessionUser
+        }));
         return true;
     }
 
@@ -103,12 +75,12 @@ export async function routeFeedbackAdmin(req, res) {
             return true;
         }
 
-        const feedback = await Feedback.findByPk(id);
+        const feedback = await findFeedbackById(id);
         if (!feedback) {
             sendJson(res, 404, {error: '反馈不存在'});
             return true;
         }
-        if (!canManage(req, feedback)) {
+        if (!canManageFeedback(req.sessionUser, feedback)) {
             sendJson(res, 403, {error: '只能修改自己提交的反馈'});
             return true;
         }
@@ -127,12 +99,12 @@ export async function routeFeedbackAdmin(req, res) {
     if (method === 'DELETE' && pathname.match(/^\/api\/feedback\/\d+$/)) {
         const id = parseInt(pathname.split('/')[3]);
 
-        const feedback = await Feedback.findByPk(id);
+        const feedback = await findFeedbackById(id);
         if (!feedback) {
             sendJson(res, 404, {error: '反馈不存在'});
             return true;
         }
-        if (!canManage(req, feedback)) {
+        if (!canManageFeedback(req.sessionUser, feedback)) {
             sendJson(res, 403, {error: '只能删除自己提交的反馈'});
             return true;
         }
@@ -161,7 +133,7 @@ export async function routeFeedbackAdmin(req, res) {
         const id = parseInt(parts[4]);
         const filename = decodeURIComponent(parts.slice(5).join('/'));
 
-        const feedback = await Feedback.findByPk(id);
+        const feedback = await findFeedbackById(id);
         if (!feedback) {
             sendJson(res, 404, {error: '反馈不存在'});
             return true;

@@ -29,6 +29,58 @@ export function repairMojibakeFilename(filename) {
     }
 }
 
+export function canManageFeedback(sessionUser = {}, feedback) {
+    return sessionUser.role === 'admin' || (sessionUser.username && feedback?.username === sessionUser.username);
+}
+
+export function toFeedbackAdminView(sessionUser, feedback) {
+    const raw = typeof feedback.toJSON === 'function' ? feedback.toJSON() : feedback;
+    return {
+        ...raw,
+        attachments: (raw.attachments || []).map(item => ({...item, name: repairMojibakeFilename(item.name)})),
+        can_manage: canManageFeedback(sessionUser, raw)
+    };
+}
+
+export function findFeedbackById(id) {
+    return Feedback.findByPk(id);
+}
+
+export async function listFeedbackForAdmin({
+    page = 1,
+    pageSize = 20,
+    status,
+    category,
+    keyword,
+    sessionUser = {}
+} = {}) {
+    const where = {};
+    if (status) where.status = status;
+    if (category) where.category = category;
+    if (keyword) {
+        where[Op.or] = [
+            {description: {[Op.like]: `%${keyword}%`}},
+            {username: {[Op.like]: `%${keyword}%`}}
+        ];
+    }
+
+    const {count, rows} = await Feedback.findAndCountAll({
+        where,
+        order: [['created_at', 'DESC']],
+        limit: pageSize,
+        offset: (page - 1) * pageSize
+    });
+
+    return {
+        total: count,
+        page,
+        pageSize,
+        current_user: sessionUser.username || '',
+        is_admin: sessionUser.role === 'admin',
+        list: rows.map(row => toFeedbackAdminView(sessionUser, row))
+    };
+}
+
 /**
  * 获取反馈配置
  */
