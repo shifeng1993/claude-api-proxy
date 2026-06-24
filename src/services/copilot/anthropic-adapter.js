@@ -4,13 +4,14 @@
  * @module services/copilot/anthropic-adapter
  */
 
+import logger from '../../utils/logger.js';
 import {
     anthropicRequestToChat,
     anthropicRequestToResponses,
     responsesResponseToAnthropic
 } from '../../core/protocol/http-converters.js';
+import {injectBehaviorRules} from '../shared/behavior-rules.js';
 import {
-    injectBehaviorRules,
     normalizeClaudeModelAlias,
     openAIToAnthropic as sharedOpenAIToAnthropic
 } from '../../core/protocol/shared.js';
@@ -54,4 +55,6 @@ export function responsesOutputToAnthropic(responsesRes) {
     return responsesResponseToAnthropic(responsesRes);
 }
 
-export {sharedOpenAIToAnthropic as openAIToAnthropic};
+export function openAIToAnthropic(openAIResponse) {
+    return sharedOpenAIToAnthropic(openAIResponse, {logger});
+}

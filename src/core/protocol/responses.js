@@ -4,7 +4,6 @@
  * @module core/protocol/responses
  */
 
-import logger from '../../utils/logger.js';
 import {generateId, isDoubaoSeedModel} from './shared.js';
 
 /* ================= Responses Request → Chat Completions Request ================= */

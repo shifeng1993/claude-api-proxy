@@ -71,6 +71,34 @@ test('protocol engine owns protocol schema helpers instead of importing generic 
     assert.deepEqual(violations, []);
 });
 
+test('protocol engine receives behavior rules instead of importing app config', async () => {
+    const files = await listJsFiles(protocolRoot);
+    const violations = [];
+
+    for (const file of files) {
+        const source = await readFile(file, 'utf8');
+        if (/from\s+['"][^'"]*config\/system-prompts\.js['"]/.test(source.replaceAll('\\', '/'))) {
+            violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
+test('protocol engine receives logging hooks instead of importing app logger', async () => {
+    const files = await listJsFiles(protocolRoot);
+    const violations = [];
+
+    for (const file of files) {
+        const source = await readFile(file, 'utf8');
+        if (/from\s+['"][^'"]*utils\/logger\.js['"]/.test(source.replaceAll('\\', '/'))) {
+            violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
 test('legacy transformer directory no longer owns protocol engine files', async () => {
     await assert.rejects(
         stat(path.join(repoRoot, 'src', 'transformer')),

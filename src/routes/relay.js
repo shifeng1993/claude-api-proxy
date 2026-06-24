@@ -1421,17 +1421,23 @@ async function handleAnthropicMessages(req, res) {
 /** OpenAI 上游流式透传（OpenAI 端点 �?OpenAI 上游），�?reasoning_content 做缓冲合�?*/
 function _streamOpenAIPassthrough(response, res, tenantId, tenantInfo = '', model = 'unknown', conversationKey = null) {
     const chatAccumulator = createChatStreamAccumulator({model});
-    rewriteOpenAIStream(res, response.body, (inputTokens, outputTokens, cacheHitTokens) => {
-        const chatResponse = chatAccumulator.toChatResponse();
-        if (chatResponse && conversationKey) {
-            relayConversationStore.recordChatResponse({
-                tenantId,
-                conversationKey,
-                response: chatResponse
-            });
-        }
-        recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, model);
-    }, (chunk) => chatAccumulator.feed(chunk));
+    rewriteOpenAIStream(
+        res,
+        response.body,
+        (inputTokens, outputTokens, cacheHitTokens) => {
+            const chatResponse = chatAccumulator.toChatResponse();
+            if (chatResponse && conversationKey) {
+                relayConversationStore.recordChatResponse({
+                    tenantId,
+                    conversationKey,
+                    response: chatResponse
+                });
+            }
+            recordUsage(tenantId, inputTokens, outputTokens, cacheHitTokens, model);
+        },
+        (chunk) => chatAccumulator.feed(chunk),
+        {logger}
+    );
 }
 
 /* ==================== 其他端点 ==================== */

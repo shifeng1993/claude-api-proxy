@@ -6,8 +6,8 @@
 
 import logger from '../../utils/logger.js';
 import {anthropicRequestToChat} from '../../core/protocol/http-converters.js';
+import {injectBehaviorRules} from '../shared/behavior-rules.js';
 import {
-    injectBehaviorRules,
     openAIToAnthropic as sharedOpenAIToAnthropic
 } from '../../core/protocol/shared.js';
 
@@ -25,5 +25,9 @@ export function convertToolCallId(codebuddyId) {
     return codebuddyId;
 }
 
-export {injectBehaviorRules, sharedOpenAIToAnthropic as openAIToAnthropic};
+export function openAIToAnthropic(openAIResponse) {
+    return sharedOpenAIToAnthropic(openAIResponse, {logger});
+}
+
+export {injectBehaviorRules};
 export {rewriteOpenAIStream} from '../../core/protocol/shared.js';

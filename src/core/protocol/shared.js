@@ -5,8 +5,6 @@
  */
 
 import {randomBytes, createHash} from 'crypto';
-import logger from '../../utils/logger.js';
-import {getBehaviorRules} from '../../config/system-prompts.js';
 
 /**
  * 从上游 usage 中提取缓存命中 token 数
@@ -353,9 +351,11 @@ export function prependToolThinkingHint(content) {
  * @param {string} [modelId] - 保留用于兼容旧调用方，当前不参与提示词选择
  * @returns {Array} 注入后的 messages 数组
  */
-export function injectBehaviorRules(messages, modelId) {
+export function injectBehaviorRules(messages, modelId, options = {}) {
     void modelId;
-    const behaviorRules = getBehaviorRules();
+    const behaviorRules = options.behaviorRules || '';
+    if (!behaviorRules) return messages;
+
     const result = [];
 
     const systemIndex = messages.findIndex((m) => m.role === 'system');
@@ -804,7 +804,7 @@ export function normalizeResponsesPayload(payload, meta = {}) {
 /**
  * 转换 OpenAI 响应到 Anthropic 格式
  */
-export function openAIToAnthropic(openAIResponse) {
+export function openAIToAnthropic(openAIResponse, options = {}) {
     const choice = openAIResponse.choices?.[0];
     if (!choice) {
         return {
@@ -846,7 +846,7 @@ export function openAIToAnthropic(openAIResponse) {
             try {
                 parsedInput = JSON.parse(toolCall.function.arguments);
             } catch (e) {
-                logger.warn('Failed to parse tool call arguments:', toolCall.function?.arguments?.slice(0, 200));
+                options.logger?.warn?.('Failed to parse tool call arguments:', toolCall.function?.arguments?.slice(0, 200));
                 parsedInput = {};
             }
             content.push({
@@ -882,7 +882,7 @@ export function openAIToAnthropic(openAIResponse) {
  * @param {ReadableStream} responseBody - 上游流
  * @param {Function} onUsage - usage 统计回调 (inputTokens, outputTokens, cacheHitTokens, credit, model)
  */
-export function rewriteOpenAIStream(res, responseBody, onUsage, onChunk) {
+export function rewriteOpenAIStream(res, responseBody, onUsage, onChunk, options = {}) {
     let reasoningBuffer = ''; // 缓冲 reasoning_content 片段
     let lineBuffer = '';
     let streamInputTokens = 0;
@@ -996,7 +996,7 @@ export function rewriteOpenAIStream(res, responseBody, onUsage, onChunk) {
     });
 
     responseBody.on('error', (err) => {
-        logger.error('OpenAI stream rewrite error:', err);
+        options.logger?.error?.('OpenAI stream rewrite error:', err);
         flushReasoning();
         res.end();
     });

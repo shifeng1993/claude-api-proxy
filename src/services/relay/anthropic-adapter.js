@@ -6,8 +6,8 @@
 
 import logger from '../../utils/logger.js';
 import {anthropicRequestToChat} from '../../core/protocol/http-converters.js';
+import {injectBehaviorRules} from '../shared/behavior-rules.js';
 import {
-    injectBehaviorRules,
     mapStopReason,
     openAIToAnthropic as sharedOpenAIToAnthropic
 } from '../../core/protocol/shared.js';
@@ -19,4 +19,8 @@ export function anthropicToOpenAI(anthropicPayload) {
     });
 }
 
-export {injectBehaviorRules, sharedOpenAIToAnthropic as openAIToAnthropic, mapStopReason};
+export function openAIToAnthropic(openAIResponse) {
+    return sharedOpenAIToAnthropic(openAIResponse, {logger});
+}
+
+export {injectBehaviorRules, mapStopReason};

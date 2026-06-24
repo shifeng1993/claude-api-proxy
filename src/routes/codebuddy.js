@@ -5,11 +5,14 @@
 
 import {createChatCompletions, getModels} from '../services/codebuddy/api.js';
 import {aggregateStreamResponse} from '../services/providers/stream-response.js';
-import {anthropicToOpenAI, openAIToAnthropic} from '../services/codebuddy/anthropic-adapter.js';
+import {
+    anthropicToOpenAI,
+    injectBehaviorRules,
+    openAIToAnthropic
+} from '../services/codebuddy/anthropic-adapter.js';
 import {rewriteOpenAIStream} from '../core/protocol/shared.js';
 import {
     buildConversationAnchorKey,
-    injectBehaviorRules,
     stripDynamicReminders,
     sanitizeAnthropicPayload,
     extractCacheHitTokens
@@ -278,28 +281,34 @@ async function handleOpenAIChatCompletions(req, res) {
                 Connection: 'keep-alive'
             });
 
-            rewriteOpenAIStream(res, response.body, (inputTokens, outputTokens, cacheHitTokens, credit, model) => {
-                if (authResult.tenantId) {
-                    unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
-                    unifiedTenantManager.incrementTokenUsage(
-                        authResult.tenantId,
-                        'codebuddy',
-                        inputTokens,
-                        outputTokens,
-                        cacheHitTokens
-                    );
-                    unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
-                    unifiedTenantManager.recordDailyUsage(
-                        authResult.tenantId,
-                        'codebuddy',
-                        inputTokens,
-                        outputTokens,
-                        cacheHitTokens,
-                        credit,
-                        pickModelName(model, openAIPayload.model)
-                    );
-                }
-            });
+            rewriteOpenAIStream(
+                res,
+                response.body,
+                (inputTokens, outputTokens, cacheHitTokens, credit, model) => {
+                    if (authResult.tenantId) {
+                        unifiedTenantManager.incrementApiCallCount(authResult.tenantId, 'codebuddy');
+                        unifiedTenantManager.incrementTokenUsage(
+                            authResult.tenantId,
+                            'codebuddy',
+                            inputTokens,
+                            outputTokens,
+                            cacheHitTokens
+                        );
+                        unifiedTenantManager.incrementCreditUsage(authResult.tenantId, 'codebuddy', credit);
+                        unifiedTenantManager.recordDailyUsage(
+                            authResult.tenantId,
+                            'codebuddy',
+                            inputTokens,
+                            outputTokens,
+                            cacheHitTokens,
+                            credit,
+                            pickModelName(model, openAIPayload.model)
+                        );
+                    }
+                },
+                undefined,
+                {logger}
+            );
         } else {
             const aggregated = await aggregateStreamResponse(response.body);
 
