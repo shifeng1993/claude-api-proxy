@@ -634,7 +634,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'CodeBuddy Anthropic via Chat',
-            file: 'src/routes/codebuddy.js',
+            file: 'src/services/codebuddy/anthropic-messages-handler.js',
             present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(data\)/],
             absent: [/new ClaudeStreamState/, /new SSEWriter/]
         },

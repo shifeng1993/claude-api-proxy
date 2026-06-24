@@ -369,6 +369,11 @@ test('codebuddy route delegates Chat Completions handler to codebuddy services',
     assert.equal(/\basync\s+function\s+handleOpenAIChatCompletions\b/.test(source), false);
 });
 
+test('codebuddy route delegates Anthropic Messages handler to codebuddy services', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/codebuddy.js'), 'utf8');
+    assert.equal(/\basync\s+function\s+handleAnthropicMessages\b/.test(source), false);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
