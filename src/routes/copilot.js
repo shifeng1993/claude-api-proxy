@@ -14,27 +14,26 @@ import {
     openAIToAnthropic
 } from '../services/copilot/anthropic-adapter.js';
 import {
-    responsesRequestToChat,
     chatRequestToResponses,
-    chatResponseToResponses,
-    responsesResponseToChat,
-    convertResponsesUsageToChat,
-    compactRequestToChat,
     chatResponseToCompact,
-    sanitizeResponsesInput
-} from '../core/protocol/index.js';
-import {
+    chatResponseToResponses,
+    compactRequestToChat,
+    convertResponsesUsageToChat,
     createChatToAnthropicStreamBridge,
     createChatToResponsesStreamBridge,
     createResponsesToAnthropicStreamBridge,
     createResponsesToChatStreamBridge,
-    createResponsesToResponsesStreamBridge
-} from '../core/protocol/index.js';
+    createResponsesToResponsesStreamBridge,
+    extractCacheHitTokens,
+    responsesRequestToChat,
+    responsesResponseToChat,
+    sanitizeAnthropicPayload,
+    sanitizeResponsesInput
+} from '../services/copilot/protocol-adapter.js';
 import {
     estimateMessageTokens,
     estimateContentBlockTokens
 } from '../utils/token-estimation.js';
-import {sanitizeAnthropicPayload, extractCacheHitTokens} from '../core/protocol/index.js';
 import {aggregateStreamResponse} from '../services/providers/stream-response.js';
 import {ResponsesWebSocketError} from '../services/shared/responses-ws-client.js';
 import {handleWSConnection} from '../services/shared/responses-ws-server.js';

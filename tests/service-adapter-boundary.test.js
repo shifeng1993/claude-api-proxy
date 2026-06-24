@@ -63,6 +63,20 @@ test('app layers import protocol engine through the public boundary', async () =
     assert.deepEqual(violations, []);
 });
 
+test('routes use product protocol adapters instead of protocol core directly', async () => {
+    const files = await listJsFiles(routesRoot);
+    const violations = [];
+
+    for (const file of files) {
+        const source = await readFile(file, 'utf8');
+        if (/from\s+['"][^'"]*core\/protocol\/index\.js['"]/.test(source.replaceAll('\\', '/'))) {
+            violations.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',

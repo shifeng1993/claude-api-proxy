@@ -10,24 +10,20 @@ import {
     injectBehaviorRules,
     openAIToAnthropic
 } from '../services/codebuddy/anthropic-adapter.js';
-import {rewriteOpenAIStream} from '../core/protocol/index.js';
 import {
     buildConversationAnchorKey,
-    stripDynamicReminders,
-    sanitizeAnthropicPayload,
-    extractCacheHitTokens
-} from '../core/protocol/index.js';
-import {
-    responsesRequestToChat,
     chatResponseToResponses,
-    compactRequestToChat,
     chatResponseToCompact,
-    mergeConsecutiveAssistantMessages
-} from '../core/protocol/index.js';
-import {
+    compactRequestToChat,
     createChatToAnthropicStreamBridge,
-    createChatToResponsesStreamBridge
-} from '../core/protocol/index.js';
+    createChatToResponsesStreamBridge,
+    extractCacheHitTokens,
+    mergeConsecutiveAssistantMessages,
+    responsesRequestToChat,
+    rewriteOpenAIStream,
+    sanitizeAnthropicPayload,
+    stripDynamicReminders
+} from '../services/codebuddy/protocol-adapter.js';
 import {unifiedTenantManager} from '../services/gateway/tenant-manager.js';
 import {resolveCredential} from '../services/gateway/gateway-auth.js';
 import {BLOCKED_DOMAINS, getCodebuddyBaseUrl, isPersonalHost} from '../services/codebuddy/config.js';
