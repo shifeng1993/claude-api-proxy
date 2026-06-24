@@ -4,7 +4,7 @@ import {
     discard,
     shutdown,
     sendRequest
-} from '../shared/responses-ws-pool.js';
+} from '../shared/index.js';
 import {getCopilotBaseUrl, wsHeaders} from './config.js';
 
 export async function acquire(

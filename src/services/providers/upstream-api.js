@@ -16,7 +16,7 @@ import {
     release as releaseResponsesWS,
     discard as discardResponsesWS,
     sendRequest as sendResponsesWSRequest
-} from '../shared/responses-ws-pool.js';
+} from '../shared/index.js';
 import logger from '../../utils/logger.js';
 
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';

@@ -3,4 +3,4 @@ export {
     connectResponsesWebSocket as connectWebSocket,
     sendResponsesWebSocketRequest as sendRequest,
     prepareResponsesWebSocketPayload as prepareWebSocketPayload
-} from '../shared/responses-ws-client.js';
+} from '../shared/index.js';

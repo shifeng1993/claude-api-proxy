@@ -113,6 +113,25 @@ test('protocol routes use public service boundaries for providers session and sh
     assert.deepEqual(violations, []);
 });
 
+test('services import Responses WebSocket shared helpers through the shared boundary', async () => {
+    const files = await listJsFiles(servicesRoot);
+    const privateSharedResponsesWsImport =
+        /from\s+['"][^'"]*(?:services\/shared|\.{1,2}\/shared)\/responses-ws-(?:client|server|pool|mode)\.js['"]/;
+    const violations = [];
+
+    for (const file of files) {
+        const relative = path.relative(repoRoot, file).replaceAll('\\', '/');
+        if (relative.startsWith('src/services/shared/')) continue;
+
+        const source = await readFile(file, 'utf8').then((text) => text.replaceAll('\\', '/'));
+        if (privateSharedResponsesWsImport.test(source)) {
+            violations.push(relative);
+        }
+    }
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay route delegates usage and upstream context orchestration to relay services', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
     const normalized = source.replaceAll('\\', '/');

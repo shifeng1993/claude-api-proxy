@@ -17,8 +17,11 @@ import {
     discardResponsesWebSocketConnection,
     buildResponsesWebSocketUrl
 } from './upstream-api.js';
-import {discardByPoolKey, connectionPoolKey} from '../shared/responses-ws-pool.js';
-import {normalizeResponsesWebSocketMode} from '../shared/responses-ws-mode.js';
+import {
+    connectionPoolKey,
+    discardByPoolKey,
+    normalizeResponsesWebSocketMode
+} from '../shared/index.js';
 import logger from '../../utils/logger.js';
 import {models} from '../../db/models/index.js';
 
