@@ -7,8 +7,8 @@
 import {createHash, randomBytes} from 'crypto';
 import {models} from '../../db/models/index.js';
 import {TenantServiceProfile} from '../../db/models/tenant-service-profile.js';
-import {UpstreamManager} from '../providers/upstream-manager.js';
-import {TenantTokenManager} from '../codebuddy/tenant-token-manager.js';
+import {UpstreamManager} from '../providers/index.js';
+import {TenantTokenManager} from '../codebuddy/index.js';
 import {initDb} from '../../db/index.js';
 import logger from '../../utils/logger.js';
 
