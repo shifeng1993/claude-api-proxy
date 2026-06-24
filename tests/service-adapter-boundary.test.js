@@ -237,6 +237,13 @@ test('dashboard frontend route delegates usage persistence to gateway service', 
     assert.doesNotMatch(source, /db\/models|from\s+['"]sequelize['"]|\bmodels\./);
 });
 
+test('stats route delegates tenant credential lookups to gateway service', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/stats.js'), 'utf8')
+        .then((text) => text.replaceAll('\\', '/'));
+
+    assert.doesNotMatch(source, /db\/models\/index\.js|\bmodels\./);
+});
+
 test('dashboard Copilot route delegates credential persistence to Copilot service', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/dashboard-copilot.js'), 'utf8')
         .then((text) => text.replaceAll('\\', '/'));

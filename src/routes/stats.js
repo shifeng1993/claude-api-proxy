@@ -5,9 +5,12 @@
  */
 
 import {Op, fn, col} from 'sequelize';
-import {getSessionUser, unifiedTenantManager} from '../services/gateway/index.js';
+import {
+    getGatewayStatsTenantEntries,
+    getSessionUser,
+    unifiedTenantManager
+} from '../services/gateway/index.js';
 import {TenantDailyUsage} from '../db/models/tenant-daily-usage.js';
-import {models} from '../db/models/index.js';
 import {getAuthMode} from '../services/shared/auth-mode.js';
 import logger from '../utils/logger.js';
 
@@ -130,41 +133,7 @@ async function buildStatsUsageWhere(service, startDate, endDate, extra = {}) {
 }
 
 async function getStatsTenantEntries() {
-    if (unifiedTenantManager.registry?.tenants) {
-        return Object.entries(unifiedTenantManager.registry.tenants);
-    }
-
-    const tenants = unifiedTenantManager.tenantsCache instanceof Map
-        ? Array.from(unifiedTenantManager.tenantsCache.values())
-        : [];
-
-    const credentialCounts = new Map();
-    if (tenants.length > 0) {
-        const rows = await models.TenantCredential.findAll({
-            attributes: ['tenant_id', [fn('COUNT', col('id')), 'credentialCount']],
-            group: ['tenant_id'],
-            raw: true
-        });
-        for (const row of rows) {
-            credentialCounts.set(Number(row.tenant_id), parseInt(row.credentialCount, 10) || 0);
-        }
-    }
-
-    return tenants.map((tenant) => {
-        const codebuddyProfile = (tenant.serviceProfiles || []).find((profile) => profile.service_type === 'codebuddy') || {};
-        return [
-            `tenant_${tenant.id}`,
-            {
-                ...tenant,
-                credential_count: credentialCounts.get(Number(tenant.id)) || 0,
-                total_api_calls: codebuddyProfile.total_api_calls || tenant.total_api_calls || 0,
-                total_input_tokens: codebuddyProfile.total_input_tokens || tenant.total_input_tokens || 0,
-                total_output_tokens: codebuddyProfile.total_output_tokens || tenant.total_output_tokens || 0,
-                total_cache_hit_tokens: codebuddyProfile.total_cache_hit_tokens || tenant.total_cache_hit_tokens || 0,
-                total_credit: codebuddyProfile.total_credit || tenant.total_credit || 0
-            }
-        ];
-    });
+    return getGatewayStatsTenantEntries(unifiedTenantManager);
 }
 
 /**
