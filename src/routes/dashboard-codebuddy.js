@@ -1,6 +1,7 @@
 import {randomBytes, randomUUID} from 'crypto';
 import logger from '../utils/logger.js';
 import {unifiedTenantManager} from '../services/gateway/index.js';
+import {getCodebuddyCredentialService} from '../services/codebuddy/index.js';
 import {
     BLOCKED_DOMAINS,
     getCodebuddyBaseUrl,
@@ -10,6 +11,7 @@ import {
     isPersonalHost
 } from '../services/codebuddy/config.js';
 
+const codebuddyCredentialService = getCodebuddyCredentialService(unifiedTenantManager);
 const authStates = new Map();
 const AUTH_STATE_TTL = 30 * 60 * 1000;
 
@@ -90,7 +92,7 @@ async function saveCodebuddyCredential(tenantId, baseUrl, tokenData, accountInfo
 
     const payload = decodeJwtPayload(accessToken);
     const userId = payload.email || payload.preferred_username || payload.sub || 'unknown';
-    const manager = await unifiedTenantManager.getCodebuddyCredentialManager(tenantId);
+    const manager = await codebuddyCredentialService.getCredentialManager(tenantId);
     if (!manager) return null;
 
     // 兜底：accountInfo 中没有 enterpriseId 时，从 JWT 的 realm_access.roles 提取
@@ -127,7 +129,7 @@ async function saveCodebuddyCredential(tenantId, baseUrl, tokenData, accountInfo
     });
 
     if (saved) {
-        await unifiedTenantManager.refreshCodebuddyCredentials(tenantId);
+        await codebuddyCredentialService.refreshCredentials(tenantId);
     }
 
     return saved;
@@ -224,7 +226,7 @@ async function pollAuth(req, res, tenantId) {
         }
     }
 
-    const manager = await unifiedTenantManager.getCodebuddyCredentialManager(tenantId);
+    const manager = await codebuddyCredentialService.getCredentialManager(tenantId);
     if (!manager) return sendJson(res, 404, {status: 'error', message: '租户不存在'});
 
     const saved = await manager.addCredentialWithData({
@@ -250,7 +252,7 @@ async function pollAuth(req, res, tenantId) {
 
     authStates.delete(authState);
     if (saved) {
-        await unifiedTenantManager.refreshCodebuddyCredentials(tenantId);
+        await codebuddyCredentialService.refreshCredentials(tenantId);
     }
     return sendJson(res, saved ? 200 : 500, {
         status: saved ? 'success' : 'error',
@@ -288,7 +290,7 @@ export async function handleCodebuddyAdminRoute(req, res, tenantId, subPath) {
     if (!subPath.startsWith('/codebuddy/')) return false;
 
     const method = req.method;
-    const manager = await unifiedTenantManager.getCodebuddyCredentialManager(tenantId);
+    const manager = await codebuddyCredentialService.getCredentialManager(tenantId);
     if (!manager) {
         sendJson(res, 404, {error: '租户不存在'});
         return true;

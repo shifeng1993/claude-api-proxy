@@ -29,6 +29,7 @@ import {
     createCodebuddyCredentialResolver,
     createCodebuddyTenantCredentialManagerResolver
 } from './credential-context.js';
+import {getCodebuddyCredentialService} from './credential-service.js';
 import {createCodebuddyUsageRecorder} from './usage.js';
 import {mapCodebuddyModelName as mapModelName} from './model-mapping.js';
 import {createCodebuddyChatCompletionsHandler} from './chat-completions-handler.js';
@@ -53,8 +54,9 @@ export function createCodebuddyRouteRuntime({tenantManager, logger = defaultLogg
         throw new Error('createCodebuddyRouteRuntime requires a tenantManager');
     }
 
-    const authenticateAndGetCredential = createCodebuddyCredentialResolver({tenantManager});
-    const resolveTenantManager = createCodebuddyTenantCredentialManagerResolver({tenantManager});
+    const credentialService = getCodebuddyCredentialService(tenantManager);
+    const authenticateAndGetCredential = createCodebuddyCredentialResolver({credentialService});
+    const resolveTenantManager = createCodebuddyTenantCredentialManagerResolver({credentialService});
     const {recordUsage: recordCodebuddyUsage} = createCodebuddyUsageRecorder(tenantManager);
 
     const handleOpenAIChatCompletions = createCodebuddyChatCompletionsHandler({
@@ -171,7 +173,7 @@ export function createCodebuddyRouteRuntime({tenantManager, logger = defaultLogg
 
     const handleCredentials = createCodebuddyCredentialsHandler({
         resolveTenantManager,
-        tenantManager,
+        credentialService,
         sendOpenAIError,
         sendJson,
         upstreamErrorStatus,

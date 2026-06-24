@@ -1,14 +1,30 @@
 import {resolveCredential as defaultResolveCredential} from '../gateway/index.js';
 
-export async function resolveCodebuddyCredentialContext({req, tenantManager, resolveCredential = defaultResolveCredential}) {
+function listCredentialRecords(credentialService, tenantId) {
+    if (typeof credentialService.listCredentials === 'function') {
+        return credentialService.listCredentials(tenantId);
+    }
+    return {credentials: [], activeIndex: -1};
+}
+
+function getCredentialManager(credentialService, tenantId) {
+    if (typeof credentialService.getCredentialManager === 'function') {
+        return credentialService.getCredentialManager(tenantId);
+    }
+    return null;
+}
+
+export async function resolveCodebuddyCredentialContext({
+    req,
+    credentialService,
+    resolveCredential = defaultResolveCredential
+}) {
     const tenantId = req.tenantId;
     if (!tenantId) {
         return {error: {status: 503, message: 'CodeBuddy tenant system is not enabled'}};
     }
 
-    const {credentials, activeIndex} = (await tenantManager.listCodebuddyCredentials)
-        ? await tenantManager.listCodebuddyCredentials(tenantId)
-        : {credentials: [], activeIndex: -1};
+    const {credentials, activeIndex} = await listCredentialRecords(credentialService, tenantId);
 
     const credential = resolveCredential(req.headers, credentials, activeIndex);
 
@@ -19,20 +35,25 @@ export async function resolveCodebuddyCredentialContext({req, tenantManager, res
     return {credential, tenantId};
 }
 
-export function createCodebuddyCredentialResolver({tenantManager, resolveCredential = defaultResolveCredential}) {
-    return (req) => resolveCodebuddyCredentialContext({req, tenantManager, resolveCredential});
+export function createCodebuddyCredentialResolver({
+    credentialService,
+    resolveCredential = defaultResolveCredential
+}) {
+    return (req) => resolveCodebuddyCredentialContext({
+        req,
+        credentialService,
+        resolveCredential
+    });
 }
 
-export async function resolveCodebuddyTenantCredentialManager({req, tenantManager}) {
+export async function resolveCodebuddyTenantCredentialManager({req, credentialService}) {
     const tenantId = req.tenantId;
     if (!tenantId) return {error: {status: 401, message: 'Unauthorized'}};
-    const manager = (await tenantManager.getCodebuddyCredentialManager)
-        ? await tenantManager.getCodebuddyCredentialManager(tenantId)
-        : null;
+    const manager = await getCredentialManager(credentialService, tenantId);
     if (!manager) return {error: {status: 404, message: 'Tenant credential manager not available'}};
     return {manager, tenantId};
 }
 
-export function createCodebuddyTenantCredentialManagerResolver({tenantManager}) {
-    return (req) => resolveCodebuddyTenantCredentialManager({req, tenantManager});
+export function createCodebuddyTenantCredentialManagerResolver({credentialService}) {
+    return (req) => resolveCodebuddyTenantCredentialManager({req, credentialService});
 }

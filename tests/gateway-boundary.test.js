@@ -25,6 +25,7 @@ test('codebuddy service exposes credential manager from its public boundary', as
     const codebuddy = await import(pathToFileURL(path.join(codebuddyRoot, 'index.js')).href);
 
     assert.equal(typeof codebuddy.TenantTokenManager, 'function');
+    assert.equal(typeof codebuddy.getCodebuddyCredentialService, 'function');
 });
 
 test('gateway service exposes auth session and tenant APIs from its public boundary', async () => {
@@ -52,6 +53,17 @@ test('gateway imports service managers through public service boundaries', async
     }
 
     assert.deepEqual(violations, []);
+});
+
+test('gateway tenant manager does not own CodeBuddy credential managers', async () => {
+    const source = await readFile(path.join(gatewayRoot, 'tenant-manager.js'), 'utf8')
+        .then((text) => text.replaceAll('\\', '/'));
+
+    assert.doesNotMatch(source, /TenantTokenManager/);
+    assert.doesNotMatch(source, /codebuddyManagerCache/);
+    assert.doesNotMatch(source, /getCodebuddyCredentialManager/);
+    assert.doesNotMatch(source, /listCodebuddyCredentials/);
+    assert.doesNotMatch(source, /from\s+['"][^'"]*codebuddy[^'"]*['"]/);
 });
 
 test('app layers import gateway through the public boundary', async () => {

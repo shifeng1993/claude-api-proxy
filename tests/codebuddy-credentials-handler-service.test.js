@@ -19,7 +19,7 @@ function createBaseDeps(overrides = {}) {
         calls,
         manager,
         resolveTenantManager: async () => ({manager, tenantId: 'tenant-1'}),
-        tenantManager: {
+        credentialService: {
             syncCredentialCount: (tenantId) => calls.push(['syncCredentialCount', tenantId])
         },
         sendOpenAIError: (res, status, message) => res.calls.push(['openai-error', status, message]),

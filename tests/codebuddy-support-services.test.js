@@ -97,16 +97,16 @@ test('prepareCodebuddyOutboundChatRequest maps model, stream, rules, and message
 });
 
 test('CodeBuddy credential resolvers use tenant-scoped credentials and managers', async () => {
-    const tenantManager = {
-        listCodebuddyCredentials: async (tenantId) => ({
+    const credentialService = {
+        listCredentials: async (tenantId) => ({
             credentials: [{id: 'inactive'}, {id: `active-${tenantId}`}],
             activeIndex: 1
         }),
-        getCodebuddyCredentialManager: async (tenantId) => ({tenantId})
+        getCredentialManager: async (tenantId) => ({tenantId})
     };
     const resolveCredential = (headers, credentials, activeIndex) => credentials[activeIndex];
-    const resolveCredentialContext = createCodebuddyCredentialResolver({tenantManager, resolveCredential});
-    const resolveManager = createCodebuddyTenantCredentialManagerResolver({tenantManager});
+    const resolveCredentialContext = createCodebuddyCredentialResolver({credentialService, resolveCredential});
+    const resolveManager = createCodebuddyTenantCredentialManagerResolver({credentialService});
 
     assert.deepEqual(await resolveCredentialContext({tenantId: 42, headers: {}}), {
         credential: {id: 'active-42'},

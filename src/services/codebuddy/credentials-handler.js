@@ -1,6 +1,6 @@
 export function createCodebuddyCredentialsHandler({
     resolveTenantManager,
-    tenantManager,
+    credentialService,
     sendOpenAIError,
     sendJson,
     upstreamErrorStatus,
@@ -55,7 +55,7 @@ export function createCodebuddyCredentialsHandler({
                 }
                 const success = await resolved.manager.addCredentialWithData(data, data.filename);
                 if (success) {
-                    tenantManager.syncCredentialCount(resolved.tenantId);
+                    credentialService.syncCredentialCount(resolved.tenantId);
                     sendJson(res, 200, {message: 'Credential added successfully'});
                 } else {
                     sendOpenAIError(res, 500, 'Failed to save credential');
@@ -102,7 +102,7 @@ export function createCodebuddyCredentialsHandler({
                 }
                 const success = await resolved.manager.deleteCredential(data.index);
                 if (success) {
-                    tenantManager.syncCredentialCount(resolved.tenantId);
+                    credentialService.syncCredentialCount(resolved.tenantId);
                     sendJson(res, 200, {message: `Credential #${data.index + 1} deleted successfully`});
                 } else {
                     sendOpenAIError(res, 400, 'Invalid index or failed to delete credential');

@@ -8,7 +8,6 @@ import {createHash, randomBytes} from 'crypto';
 import {models} from '../../db/models/index.js';
 import {TenantServiceProfile} from '../../db/models/tenant-service-profile.js';
 import {UpstreamManager} from '../providers/index.js';
-import {TenantTokenManager} from '../codebuddy/index.js';
 import {initDb} from '../../db/index.js';
 import logger from '../../utils/logger.js';
 
@@ -25,8 +24,6 @@ class UnifiedTenantManager {
         this.usernameMap = new Map();
         /** @type {Map<number, UpstreamManager>} */
         this.upstreamManagerCache = new Map();
-        /** @type {Map<number, TenantTokenManager>} */
-        this.codebuddyManagerCache = new Map();
 
         // Delta tracking for periodic flush
         this._dirtyTenants = new Set();
@@ -227,7 +224,7 @@ class UnifiedTenantManager {
 
     /**
      * 累加租户的积分消耗（内存中累计 + 增量追踪）
-     * 供 codebuddy 路由使用，与旧 tenant-manager 接口兼容
+     * 供各服务路由记录服务维度 credit 消耗
      * @param {string|number} tenantId
      * @param {number} credit
      */
@@ -259,50 +256,6 @@ class UnifiedTenantManager {
             });
         }
         return this._deltaTenants.get(key);
-    }
-
-    async getCodebuddyCredentialManager(tenantId) {
-        const id = typeof tenantId === 'string' ? parseInt(tenantId, 10) : tenantId;
-        if (!this.tenantsCache.has(id)) return null;
-        if (this.codebuddyManagerCache.has(id)) {
-            const manager = this.codebuddyManagerCache.get(id);
-            await manager.loadAllTokens();
-            await manager.loadState();
-            return manager;
-        }
-        const manager = await TenantTokenManager.create(null, {tenantId: id});
-        this.codebuddyManagerCache.set(id, manager);
-        return manager;
-    }
-
-    async listCodebuddyCredentials(tenantId) {
-        const manager = await this.getCodebuddyCredentialManager(tenantId);
-        if (!manager) return {credentials: [], activeIndex: -1};
-        return {
-            credentials: manager.credentials.map((credential, index) => ({
-                id: credential.id,
-                index,
-                enabled: !manager.disabledIndexes.includes(index),
-                ...credential.data
-            })),
-            activeIndex: manager.currentIndex
-        };
-    }
-
-    async refreshCodebuddyCredentials(tenantId) {
-        const id = typeof tenantId === 'string' ? parseInt(tenantId, 10) : tenantId;
-        const manager = this.codebuddyManagerCache.get(id);
-        if (!manager) return;
-        await manager.loadAllTokens();
-        await manager.loadState();
-    }
-
-    syncCredentialCount(tenantId) {
-        return this.refreshCodebuddyCredentials(tenantId);
-    }
-
-    reloadCredentialCache(tenantId) {
-        return this.refreshCodebuddyCredentials(tenantId);
     }
 
     invalidateUpstreamCache(tenantId) {
