@@ -254,7 +254,10 @@ test('all service routes keep Anthropic endpoints out of OpenAI namespace', () =
 });
 
 test('OpenAI Responses stream fallback returns buffered output', () => {
-    const relaySource = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const relaySource = [
+        'src/routes/relay.js',
+        'src/services/relay/responses-api-handler.js'
+    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     assert.match(relaySource, /if \(!chatToResponsesBridge\.finished\)/);
     assert.match(relaySource, /chatToResponsesBridge\.finish\(\)/);
     assert.match(relaySource, /responsesAccumulator\.feed\(ev\.event,\s*ev\.data\)/);
@@ -448,7 +451,8 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
     const source = [
         'src/routes/relay.js',
         'src/services/relay/chat-completions-handler.js',
-        'src/services/relay/anthropic-messages-handler.js'
+        'src/services/relay/anthropic-messages-handler.js',
+        'src/services/relay/responses-api-handler.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     for (const requestType of [
@@ -467,7 +471,10 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
 });
 
 test('relay Responses-capable passthrough paths remember visible input before completion', () => {
-    const source = readFileSync(join(root, 'src/routes/relay.js'), 'utf8');
+    const source = [
+        'src/routes/relay.js',
+        'src/services/relay/responses-api-handler.js'
+    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     const prepareCalls = source.match(/prepareResponsesPassthrough/g) || [];
 
     assert.equal(prepareCalls.length >= 4, true);
