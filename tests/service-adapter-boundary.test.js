@@ -184,6 +184,20 @@ test('relay route delegates outbound chat request shaping to relay services', as
     assert.deepEqual(violations, []);
 });
 
+test('relay route delegates context compaction orchestration to relay services', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
+    const normalized = source.replaceAll('\\', '/');
+    const forbiddenPatterns = [
+        /\b(?:async\s+)?function\s+(?:generateRelayContextSummary|compactRelayChatRequest|invokeWithRelayContextCompaction)\b/,
+        /\b(?:compactChatRequestIfNeeded|isContextWindowExceededError)\b/
+    ];
+    const violations = forbiddenPatterns
+        .filter((pattern) => pattern.test(normalized))
+        .map((pattern) => pattern.source);
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
