@@ -658,13 +658,13 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'relay Anthropic to Chat',
-            file: 'src/routes/relay.js',
+            file: 'src/services/relay/chat-completions-handler.js',
             present: [/streamAnthropicSSEToChatChunks/],
             absent: [/anthropicStreamToChatChunks\(/]
         },
         {
             name: 'relay Responses to Responses',
-            file: 'src/routes/relay.js',
+            file: 'src/services/relay/responses-api-handler.js',
             present: [/createResponsesToResponsesStreamBridge/],
             absent: [/responsesEventToResponsesEvents\(/]
         }

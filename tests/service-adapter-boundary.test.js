@@ -330,6 +330,22 @@ test('relay route delegates Responses WebSocket handler to relay services', asyn
     assert.deepEqual(violations, []);
 });
 
+test('relay route delegates handler composition to relay runtime service', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
+    const normalized = source.replaceAll('\\', '/');
+    const forbiddenPatterns = [
+        /from\s+['"][^'"]*services\/providers\/index\.js['"]/,
+        /from\s+['"][^'"]*services\/session\/index\.js['"]/,
+        /from\s+['"][^'"]*services\/shared\/index\.js['"]/,
+        /from\s+['"][^'"]*services\/relay\/(?:protocol-adapter|.*-handler|metadata-endpoints|context-compaction|usage|upstream-context|response-state|stream-events|model-metadata|anthropic-(?:adapter|usage|stream)|openai-stream|outbound-chat|conversation-key)\.js['"]/
+    ];
+    const violations = forbiddenPatterns
+        .filter((pattern) => pattern.test(normalized))
+        .map((pattern) => pattern.source);
+
+    assert.deepEqual(violations, []);
+});
+
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
