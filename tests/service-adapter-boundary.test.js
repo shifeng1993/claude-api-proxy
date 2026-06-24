@@ -237,6 +237,16 @@ test('dashboard Copilot route delegates credential persistence to Copilot servic
     assert.doesNotMatch(source, /db\/models|TenantCopilotCredential/);
 });
 
+test('dashboard Copilot route delegates credential shaping to Copilot service', async () => {
+    const source = await readFile(path.join(repoRoot, 'src/routes/dashboard-copilot.js'), 'utf8')
+        .then((text) => text.replaceAll('\\', '/'));
+
+    assert.doesNotMatch(
+        source,
+        /ACCOUNT_TYPES|DEFAULT_VSCODE_VERSION|editableValues|copilot_token_expires_at|github_token|credential\.update|credential\.destroy/
+    );
+});
+
 test('relay route delegates usage and upstream context orchestration to relay services', async () => {
     const source = await readFile(path.join(repoRoot, 'src/routes/relay.js'), 'utf8');
     const normalized = source.replaceAll('\\', '/');
