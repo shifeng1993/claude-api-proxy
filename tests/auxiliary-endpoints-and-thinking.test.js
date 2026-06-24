@@ -240,7 +240,10 @@ test('all service routes keep Anthropic endpoints out of OpenAI namespace', () =
             'src/services/codebuddy/route-runtime.js',
             'src/services/codebuddy/metadata-handler.js'
         ]],
-        ['copilot', ['src/routes/copilot.js']]
+        ['copilot', [
+            'src/routes/copilot.js',
+            'src/services/copilot/anthropic-messages-handler.js'
+        ]]
     ];
 
     for (const [service, files] of routeFiles) {
@@ -636,7 +639,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'Copilot Chat to Anthropic',
-            file: 'src/routes/copilot.js',
+            file: 'src/services/copilot/anthropic-messages-handler.js',
             present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(openAIChunk\)/],
             absent: [/translateStreamChunk\(openAIChunk/]
         },
@@ -648,7 +651,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'Copilot Responses to Anthropic',
-            file: 'src/routes/copilot.js',
+            file: 'src/services/copilot/anthropic-messages-handler.js',
             present: [/createResponsesToAnthropicStreamBridge/, /responsesToAnthropicBridge\.feed\(event\.type,\s*event\.data\)/],
             absent: [/responsesEventToAnthropicEvents\(/]
         },
