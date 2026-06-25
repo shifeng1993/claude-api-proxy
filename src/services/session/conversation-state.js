@@ -13,6 +13,8 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_STORED_CHAT_MESSAGES = 200;
+const DEFAULT_MAX_CANONICAL_TURNS = 200;
 const DEFAULT_TTL_MS = readPositiveIntegerEnv('RELAY_CONVERSATION_STATE_TTL_MS', DAY_MS);
 const DEFAULT_CLEANUP_INTERVAL_MS = readPositiveIntegerEnv(
     'RELAY_CONVERSATION_STATE_CLEANUP_INTERVAL_MS',
@@ -33,8 +35,14 @@ export class RelayConversationStore {
         ttlMs = DEFAULT_TTL_MS,
         cleanupIntervalMs,
         now = () => Date.now(),
-        maxStoredChatMessages = readPositiveIntegerEnv('RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES', 0),
-        maxCanonicalTurns = readPositiveIntegerEnv('RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS', 0)
+        maxStoredChatMessages = readPositiveIntegerEnv(
+            'RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES',
+            DEFAULT_MAX_STORED_CHAT_MESSAGES
+        ),
+        maxCanonicalTurns = readPositiveIntegerEnv(
+            'RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS',
+            DEFAULT_MAX_CANONICAL_TURNS
+        )
     } = {}) {
         this.ttlMs = ttlMs;
         this.now = now;

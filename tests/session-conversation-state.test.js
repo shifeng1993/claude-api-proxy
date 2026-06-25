@@ -18,6 +18,47 @@ test('default TTL keeps stable single-instance conversations for at least one da
     assert.equal(store.ttlMs >= 24 * 60 * 60 * 1000, true);
 });
 
+test('default conversation state limits bound cached chat and canonical history', () => {
+    const previousMaxChatMessages = process.env.RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES;
+    const previousMaxCanonicalTurns = process.env.RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS;
+    delete process.env.RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES;
+    delete process.env.RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS;
+
+    try {
+        const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+        const messages = Array.from({length: 205}, (_unused, index) => ({
+            role: index % 2 === 0 ? 'user' : 'assistant',
+            content: `message ${index + 1}`
+        }));
+
+        assert.equal(store.maxStoredChatMessages, 200);
+        assert.equal(store.maxCanonicalTurns, 200);
+
+        store.saveChatRequest({
+            tenantId: 'tenant-a',
+            conversationKey: 'conv-a',
+            request: {
+                model: 'client-model',
+                messages
+            }
+        });
+
+        const state = store.conversations.get('tenant-a:conv-a');
+        assert.equal(state.chatRequest.messages.length, 200);
+        assert.equal(state.chatRequestTruncated, true);
+        assert.equal(state.chatRequestMessageCount, 205);
+        assert.equal(state.canonicalSession.turns.length, 200);
+        assert.equal(state.canonicalSessionTruncated, true);
+        assert.equal(state.canonicalTurnCount, 205);
+    } finally {
+        if (previousMaxChatMessages === undefined) delete process.env.RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES;
+        else process.env.RELAY_CONVERSATION_STATE_MAX_CHAT_MESSAGES = previousMaxChatMessages;
+
+        if (previousMaxCanonicalTurns === undefined) delete process.env.RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS;
+        else process.env.RELAY_CONVERSATION_STATE_MAX_CANONICAL_TURNS = previousMaxCanonicalTurns;
+    }
+});
+
 test('hydrateResponsesForFullHistory appends Responses input to stored chat history', () => {
     const store = new RelayConversationStore({ttlMs: 60_000});
     const tenantId = 'tenant-a';
