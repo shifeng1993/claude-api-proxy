@@ -196,7 +196,7 @@ export function createRelayResponsesWebSocketHandler({
         }
 
         if (isResponsesUpstream(upstream)) {
-            const responsesPayload = {...payload, model: resolvedModel, stream: true, store: true};
+            const responsesPayload = {...payload, model: resolvedModel, stream: true, store: payload.store ?? true};
             const prepared = relayConversationStore.prepareResponsesPassthrough({
                 tenantId,
                 conversationKey,

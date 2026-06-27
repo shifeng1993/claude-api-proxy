@@ -750,17 +750,6 @@ export function normalizeResponsesPayload(payload, meta = {}) {
             });
     }
 
-    // 清理上游不兼容的参数
-    // text.format：火山引擎等不支持 response_format（json_schema/json_object 均不支持），直接移除
-    if (ordered.text?.format) {
-        const {format, ...rest} = ordered.text;
-        if (Object.keys(rest).length > 0) {
-            ordered.text = rest;
-        } else {
-            delete ordered.text;
-        }
-    }
-
     // reasoning：火山引擎 Responses API 的 reasoning.effort 仅部分模型支持
     // （doubao-seed-2-0-lite-260428、doubao-seed-2-0-pro-260215、doubao-seed-1-8-251228、doubao-seed-1-6-251015 等）
     // codingplan 等模型不支持 reasoning 参数会报 400，需要转为 thinking 参数控制深度思考

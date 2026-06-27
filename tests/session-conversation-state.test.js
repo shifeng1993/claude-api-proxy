@@ -314,6 +314,94 @@ test('prepareResponsesPassthrough does not duplicate a visible full-history pref
     ]);
 });
 
+test('prepareResponsesPassthrough replaces stored synthetic reminder history with visible full history', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            messages: [
+                {role: 'user', content: 'first question'},
+                {role: 'user', content: '<system-reminder> transient context'},
+                {role: 'assistant', content: 'first answer'}
+            ]
+        }
+    });
+
+    store.prepareResponsesPassthrough({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            input: [
+                {role: 'user', content: [{type: 'input_text', text: 'first question'}]},
+                {role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]},
+                {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+            ]
+        }
+    });
+
+    const hydrated = store.hydrateResponsesForFullHistory({
+        tenantId,
+        conversationKey,
+        request: {model: 'client-model', input: []}
+    });
+
+    assert.deepEqual(hydrated.chatRequest.messages, [
+        {role: 'user', content: 'first question'},
+        {role: 'assistant', content: 'first answer'},
+        {role: 'user', content: 'second question'}
+    ]);
+});
+
+test('prepareResponsesPassthrough ignores leading synthetic reminders when replacing visible full history', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            messages: [
+                {role: 'user', content: '<system-reminder> transient context'},
+                {role: 'user', content: 'first question'},
+                {role: 'assistant', content: 'first answer'}
+            ]
+        }
+    });
+
+    store.prepareResponsesPassthrough({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            input: [
+                {role: 'user', content: [{type: 'input_text', text: 'first question'}]},
+                {role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]},
+                {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+            ]
+        }
+    });
+
+    const hydrated = store.hydrateResponsesForFullHistory({
+        tenantId,
+        conversationKey,
+        request: {model: 'client-model', input: []}
+    });
+
+    assert.deepEqual(hydrated.chatRequest.messages, [
+        {role: 'user', content: 'first question'},
+        {role: 'assistant', content: 'first answer'},
+        {role: 'user', content: 'second question'}
+    ]);
+});
+
 test('prepareResponsesPassthrough appends visible input to an existing conversation key', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';

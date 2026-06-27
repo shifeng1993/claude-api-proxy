@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizePayload} from '../src/protocol-engine/core/shared.js';
+import {normalizePayload, normalizeResponsesPayload} from '../src/protocol-engine/core/shared.js';
 
 test('normalizePayload 按 GLM 前缀缓存要求排列 OpenAI 请求字段', () => {
     const normalized = normalizePayload({
@@ -38,4 +38,15 @@ test('normalizePayload 按 GLM 前缀缓存要求排列 OpenAI 请求字段', ()
         'prompt_cache_key',
         'stream_options'
     ]);
+});
+
+test('normalizeResponsesPayload preserves Responses text.format per Ark Responses API', () => {
+    const normalized = normalizeResponsesPayload({
+        model: 'doubao-seed-2-1-pro-260628',
+        input: [{role: 'user', content: 'json output'}],
+        text: {format: {type: 'json_object'}},
+        stream: false
+    });
+
+    assert.deepEqual(normalized.text, {format: {type: 'json_object'}});
 });

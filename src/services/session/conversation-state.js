@@ -16,6 +16,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_STORED_CHAT_MESSAGES = 200;
 const DEFAULT_MAX_CANONICAL_TURNS = 200;
+const MAX_RESPONSE_INPUT_SNAPSHOTS = readPositiveIntegerEnv(
+    'RELAY_CONVERSATION_STATE_MAX_RESPONSE_INPUT_SNAPSHOTS',
+    16
+);
 const DEFAULT_MAX_CONVERSATIONS = readNonNegativeIntegerEnv('RELAY_CONVERSATION_STATE_MAX_CONVERSATIONS', 0);
 const DEFAULT_MAX_CONVERSATIONS_PER_TENANT = readNonNegativeIntegerEnv(
     'RELAY_CONVERSATION_STATE_MAX_CONVERSATIONS_PER_TENANT',
@@ -115,6 +119,7 @@ export class RelayConversationStore {
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             lastResponseInput: cloneResponsesInput(existing?.lastResponseInput),
+            responseInputs: cloneResponseInputSnapshots(existing?.responseInputs),
             updatedAt: this.now()
         };
         return this._returnState(this._storeState(key, state));
@@ -175,7 +180,8 @@ export class RelayConversationStore {
             conversationKey: resolvedConversationKey,
             request: {...request},
             lastResponseId: getLatestResponseId(state),
-            lastResponseInput: cloneResponsesInput(state?.lastResponseInput)
+            lastResponseInput: cloneResponsesInput(state?.lastResponseInput),
+            responseInputSnapshots: listResponseInputSnapshots(state)
         };
     }
 
@@ -205,13 +211,16 @@ export class RelayConversationStore {
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             lastResponseInput: cloneResponsesInput(existing?.lastResponseInput),
+            responseInputs: cloneResponseInputSnapshots(existing?.responseInputs),
             updatedAt: this.now()
         };
 
         if (response.id) {
+            const responseInput = cloneResponsesInput(renderCanonicalToResponses(canonicalSession).input);
             state.responses.add(response.id);
             state.lastResponseId = response.id;
-            state.lastResponseInput = cloneResponsesInput(renderCanonicalToResponses(canonicalSession).input);
+            state.lastResponseInput = responseInput;
+            state.responseInputs = addResponseInputSnapshot(state.responseInputs, response.id, responseInput);
             this.responseIndex.set(this._responseKey(tenantId, response.id), key);
         }
 
@@ -242,6 +251,7 @@ export class RelayConversationStore {
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             lastResponseInput: cloneResponsesInput(existing?.lastResponseInput),
+            responseInputs: cloneResponseInputSnapshots(existing?.responseInputs),
             updatedAt: this.now()
         };
         return this._returnState(this._storeState(key, state));
@@ -268,6 +278,7 @@ export class RelayConversationStore {
             responses: new Set(existing?.responses || []),
             lastResponseId: existing?.lastResponseId || null,
             lastResponseInput: cloneResponsesInput(existing?.lastResponseInput),
+            responseInputs: cloneResponseInputSnapshots(existing?.responseInputs),
             updatedAt: this.now()
         };
         return this._returnState(this._storeState(key, state));
@@ -589,8 +600,28 @@ function estimateConversationStateBytes(state) {
     return safeJsonByteLength(state.chatRequest)
         + safeJsonByteLength(state.canonicalSession)
         + safeJsonByteLength(state.lastResponseInput)
+        + estimateResponseInputSnapshotsBytes(state)
         + responseBytes
         + 256;
+}
+
+function estimateResponseInputSnapshotsBytes(state) {
+    if (!state) return 0;
+    let total = 0;
+    const snapshots = state.responseInputs;
+    if (snapshots instanceof Map) {
+        for (const input of snapshots.values()) {
+            total += safeJsonByteLength(input);
+        }
+    }
+    if (
+        state.lastResponseId
+        && Array.isArray(state.lastResponseInput)
+        && !(snapshots instanceof Map && snapshots.has(state.lastResponseId))
+    ) {
+        total += safeJsonByteLength(state.lastResponseInput);
+    }
+    return total;
 }
 
 function safeJsonByteLength(value) {
@@ -741,7 +772,8 @@ function cloneState(state) {
         canonicalTurnCount: state.canonicalTurnCount || 0,
         responses: new Set(state.responses || []),
         lastResponseId: state.lastResponseId || null,
-        lastResponseInput: cloneResponsesInput(state.lastResponseInput)
+        lastResponseInput: cloneResponsesInput(state.lastResponseInput),
+        responseInputs: cloneResponseInputSnapshots(state.responseInputs)
     };
 }
 
@@ -749,11 +781,52 @@ function cloneResponsesInput(input) {
     return Array.isArray(input) ? clone(input) : null;
 }
 
+function cloneResponseInputSnapshots(snapshots) {
+    const cloned = new Map();
+    if (!(snapshots instanceof Map)) return cloned;
+
+    for (const [responseId, input] of snapshots.entries()) {
+        if (!responseId || !Array.isArray(input)) continue;
+        cloned.set(responseId, cloneResponsesInput(input));
+    }
+    return cloned;
+}
+
+function addResponseInputSnapshot(existing, responseId, input) {
+    const snapshots = cloneResponseInputSnapshots(existing);
+    if (!responseId || !Array.isArray(input)) return snapshots;
+
+    snapshots.delete(responseId);
+    snapshots.set(responseId, cloneResponsesInput(input));
+    while (snapshots.size > MAX_RESPONSE_INPUT_SNAPSHOTS) {
+        const oldestResponseId = snapshots.keys().next().value;
+        snapshots.delete(oldestResponseId);
+    }
+    return snapshots;
+}
+
+function listResponseInputSnapshots(state) {
+    const snapshots = cloneResponseInputSnapshots(state?.responseInputs);
+    if (
+        state?.lastResponseId
+        && Array.isArray(state?.lastResponseInput)
+        && !snapshots.has(state.lastResponseId)
+    ) {
+        snapshots.set(state.lastResponseId, cloneResponsesInput(state.lastResponseInput));
+    }
+
+    return [...snapshots.entries()]
+        .reverse()
+        .map(([responseId, input]) => ({responseId, input: cloneResponsesInput(input)}));
+}
+
 function mergeChatRequests(base, visibleChat, originalResponsesRequest) {
     const baseMessages = base.messages || [];
     const visibleMessages = visibleChat.messages || [];
     const duplicatePrefixLength = getDuplicatePrefixLength(baseMessages, visibleMessages);
-    const messages = [...baseMessages, ...visibleMessages.slice(duplicatePrefixLength)];
+    const messages = shouldReplaceWithVisibleHistory(baseMessages, visibleMessages)
+        ? visibleMessages
+        : [...baseMessages, ...visibleMessages.slice(duplicatePrefixLength)];
     return {
         ...base,
         ...visibleChat,
@@ -763,17 +836,31 @@ function mergeChatRequests(base, visibleChat, originalResponsesRequest) {
     };
 }
 
+function shouldReplaceWithVisibleHistory(baseMessages, visibleMessages) {
+    const {baseOffset, visibleOffset} = getComparablePrefixOffsets(baseMessages, visibleMessages, {
+        skipSystem: false
+    });
+    const baseAnchor = baseMessages[baseOffset];
+    const visibleAnchor = visibleMessages[visibleOffset];
+    const visibleComparableLength = visibleMessages.length - visibleOffset;
+
+    if (!baseAnchor || !visibleAnchor || visibleComparableLength <= 1) return false;
+    if (!messagesEqual(baseAnchor, visibleAnchor)) return false;
+
+    // Same conversation anchor plus later assistant/tool history means the visible
+    // payload is full history. Prefer it over stored synthetic reminders that may
+    // be absent from this request and would break ordinary prefix matching.
+    return visibleMessages.slice(visibleOffset + 1).some(isHistoryBearingMessage);
+}
+
+function isHistoryBearingMessage(message) {
+    return message?.role === 'assistant' || message?.role === 'tool';
+}
+
 function getDuplicatePrefixLength(baseMessages, visibleMessages) {
     // 处理 system 消息偏移：base 可能有 relay 注入的 system 消息而 visible 没有，
     // 或反之。跳过单侧的 system 前缀后再做前缀匹配。
-    let baseOffset = 0;
-    let visibleOffset = 0;
-
-    if (baseMessages[0]?.role === 'system' && visibleMessages[0]?.role !== 'system') {
-        baseOffset = 1;
-    } else if (visibleMessages[0]?.role === 'system' && baseMessages[0]?.role !== 'system') {
-        visibleOffset = 1;
-    }
+    const {baseOffset, visibleOffset} = getComparablePrefixOffsets(baseMessages, visibleMessages);
 
     let commonPrefixLength = 0;
     const maxBase = baseMessages.length - baseOffset;
@@ -789,6 +876,37 @@ function getDuplicatePrefixLength(baseMessages, visibleMessages) {
     if (commonPrefixLength === 0) return 0;
     // 返回 visible 中已被 base 覆盖的消息数量
     return visibleOffset + commonPrefixLength;
+}
+
+function getComparablePrefixOffsets(baseMessages, visibleMessages, {skipSystem = true} = {}) {
+    let baseOffset = 0;
+    let visibleOffset = 0;
+
+    while (isIgnorablePrefixMessage(baseMessages[baseOffset], {skipSystem})) baseOffset++;
+    while (isIgnorablePrefixMessage(visibleMessages[visibleOffset], {skipSystem})) visibleOffset++;
+
+    return {baseOffset, visibleOffset};
+}
+
+function isIgnorablePrefixMessage(message, {skipSystem = true} = {}) {
+    if (!message || typeof message !== 'object') return false;
+    if (skipSystem && message.role === 'system') return true;
+    if (message.role !== 'user') return false;
+    return extractChatMessageText(message.content).trim().startsWith('<system-reminder>');
+}
+
+function extractChatMessageText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map((part) => {
+            if (typeof part === 'string') return part;
+            if (!part || typeof part !== 'object') return '';
+            if (typeof part.text === 'string') return part.text;
+            if (typeof part.content === 'string') return part.content;
+            return '';
+        }).filter(Boolean).join(' ');
+    }
+    return '';
 }
 
 function messagesEqual(left, right) {

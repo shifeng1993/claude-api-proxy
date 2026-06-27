@@ -1033,19 +1033,48 @@ function findCoveredResponsesInputLength(input, previousInput) {
         }
     }
 
-    return findCoveredResponsesInputPrefixLength(input, normalizedInput, normalizedPrevious);
+    return findCoveredResponsesInputPrefixLength(input, normalizedInput, normalizedPrevious, previousInput);
 }
 
-function findCoveredResponsesInputPrefixLength(input, normalizedInput, normalizedPrevious) {
-    let coveredInputLength = 0;
-    for (const previousItem of normalizedPrevious) {
+function findCoveredResponsesInputPrefixLength(input, normalizedInput, normalizedPrevious, previousInput) {
+    let coveredInputLength = countLeadingIgnorableResponsesInputItems(input);
+    let matchedInputLength = 0;
+    for (
+        let previousIndex = countLeadingIgnorableResponsesInputItems(previousInput);
+        previousIndex < normalizedPrevious.length;
+        previousIndex++
+    ) {
         if (coveredInputLength >= normalizedInput.length) break;
-        if (normalizedInput[coveredInputLength] === previousItem) coveredInputLength++;
+        if (normalizedInput[coveredInputLength] === normalizedPrevious[previousIndex]) {
+            coveredInputLength++;
+            matchedInputLength++;
+            continue;
+        }
+        if (isSkippableCoveredResponsesOutput(previousInput[previousIndex])) continue;
+        return 0;
     }
 
-    if (coveredInputLength <= 0) return 0;
+    if (matchedInputLength <= 0) return 0;
     if (coveredInputLength >= normalizedInput.length) return coveredInputLength;
     return isFreshResponsesContinuationItem(input[coveredInputLength]) ? coveredInputLength : 0;
+}
+
+function countLeadingIgnorableResponsesInputItems(input) {
+    let count = 0;
+    while (isIgnorableLeadingResponsesInputItem(input[count])) count++;
+    return count;
+}
+
+function isIgnorableLeadingResponsesInputItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (item.role !== 'user') return false;
+    return extractTextContent(item.content).trim().startsWith('<system-reminder>');
+}
+
+function isSkippableCoveredResponsesOutput(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (item.role === 'assistant') return true;
+    return item.type === 'reasoning' || item.type === 'function_call';
 }
 
 function isFreshResponsesContinuationItem(item) {
@@ -1062,12 +1091,27 @@ function stripResponsesInputReferenceFields(value) {
     if (Array.isArray(value)) return value.map(stripResponsesInputReferenceFields);
     if (!value || typeof value !== 'object') return value;
 
+    const volatileUserText = normalizeVolatileUserInputText(value);
+    if (volatileUserText !== null) {
+        return {
+            role: value.role,
+            content: volatileUserText
+        };
+    }
+
     const result = {};
     for (const key of Object.keys(value).sort()) {
         if (key === 'id' || key === 'status' || key === 'annotations' || key === 'partial') continue;
         result[key] = stripResponsesInputReferenceFields(value[key]);
     }
     return result;
+}
+
+function normalizeVolatileUserInputText(item) {
+    if (item?.role !== 'user') return null;
+    const text = extractTextContent(item.content).replace(/\s+/g, ' ').trim();
+    if (!text.startsWith('[Request interrupted by user]')) return null;
+    return text;
 }
 
 function stableResponsesInputStringify(value) {
