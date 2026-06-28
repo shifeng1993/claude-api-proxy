@@ -430,6 +430,7 @@ test('prepareResponsesContinuationPayload disables websocket auto-link when stor
     assert.equal(result.autoLink, false);
     assert.equal('previous_response_id' in result.request, false);
     assert.match(logs.join('\n'), /delta input mismatch; websocket auto-link disabled/);
+    assert.match(logs.join('\n'), /upstream input items=1/);
 });
 
 test('prepareResponsesContinuationPayload tolerates clients omitting already-covered assistant output', () => {

@@ -553,6 +553,61 @@ test('recordResponsesResponse preserves upstream Anthropic tool_use_id mapping',
     assert.equal(state.canonicalSession.toolMappings[0].anthropicToolUseId, 'toolu_resp_1');
 });
 
+test('hydrateResponsesForFullHistory matches tool results by Responses call_id after canonical recovery', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {model: 'client-model', messages: [{role: 'user', content: 'read README'}]}
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_1',
+            model: 'client-model',
+            output: [{
+                type: 'function_call',
+                id: 'fc_1',
+                call_id: 'call_resp_1',
+                name: 'read_file',
+                arguments: '{"path":"README.md"}'
+            }]
+        },
+        sourceCanonicalSession: canonicalFromAnthropicResponse({
+            model: 'claude-test',
+            content: [{
+                type: 'tool_use',
+                id: 'toolu_resp_1',
+                name: 'read_file',
+                input: {path: 'README.md'}
+            }]
+        }, {tenantId, conversationKey})
+    });
+
+    const state = store.conversations.get(`${tenantId}:${conversationKey}`);
+    state.chatRequest = {model: 'client-model', messages: []};
+    state.chatRequestTruncated = true;
+
+    const hydrated = store.hydrateResponsesForFullHistory({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            previous_response_id: 'resp_1',
+            input: [{type: 'function_call_output', call_id: 'call_resp_1', output: 'README text'}]
+        }
+    });
+
+    const assistant = hydrated.chatRequest.messages.find((message) => message.role === 'assistant');
+    const tool = hydrated.chatRequest.messages.find((message) => message.role === 'tool');
+    assert.equal(assistant.tool_calls[0].id, 'call_resp_1');
+    assert.equal(tool.tool_call_id, 'call_resp_1');
+});
+
 test('recordResponsesResponse appends file output through canonical chat rendering', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';

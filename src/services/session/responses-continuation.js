@@ -46,6 +46,15 @@ export function prepareResponsesContinuationPayload({
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
             + ` previous_response_id=${delta.previousResponseId}`
         );
+        log.info(
+            `Responses continuation: upstream input items=${countResponsesInputItems(limited.payload?.input)}`
+            + ` source_input_items=${countResponsesInputItems(prepared.request?.input)}`
+            + ` retained_input_items=${limited.retainedLength}`
+            + `${requestType ? ` requestType=${requestType}` : ''}`
+            + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
+            + ` previous_response_id=${normalizeResponseId(limited.payload?.previous_response_id) || 'none'}`
+            + ` autoLink=true`
+        );
     } else if (delta.emptyDelta) {
         log.info(
             `Responses continuation: delta input empty; websocket auto-link disabled`
@@ -56,21 +65,18 @@ export function prepareResponsesContinuationPayload({
     } else if (delta.deltaAttempted) {
         log.info(
             `Responses continuation: delta input mismatch; websocket auto-link disabled`
+            + ` upstream input items=${countResponsesInputItems(limited.payload?.input)}`
+            + ` source_input_items=${countResponsesInputItems(prepared.request?.input)}`
+            + ` retained_input_items=${limited.retainedLength}`
             + `${requestType ? ` requestType=${requestType}` : ''}`
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
             + ` previous_response_id=${delta.previousResponseId || prepared.lastResponseId}`
+            + ` upstream_previous_response_id=${normalizeResponseId(limited.payload?.previous_response_id) || 'none'}`
+            + ` autoLink=false`
         );
     }
     const autoLink = !(delta.deltaAttempted && !delta.deltaApplied);
-    log.info(
-        `Responses continuation: upstream input items=${countResponsesInputItems(limited.payload?.input)}`
-        + ` source_input_items=${countResponsesInputItems(prepared.request?.input)}`
-        + ` retained_input_items=${limited.retainedLength}`
-        + `${requestType ? ` requestType=${requestType}` : ''}`
-        + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
-        + ` previous_response_id=${normalizeResponseId(limited.payload?.previous_response_id) || 'none'}`
-        + ` autoLink=${autoLink}`
-    );
+
     writeContinuationDiagnostic({
         tenantId,
         conversationKey: stateConversationKey,

@@ -159,7 +159,7 @@ function ensureToolMapping(session, ids = {}, name = '') {
 function toolTargetId(mapping, target) {
     if (!mapping) return null;
     if (target === 'chat') {
-        return mapping.openAIChatToolCallId || mapping.anthropicToolUseId || mapping.responsesCallId || mapping.canonicalToolCallId;
+        return mapping.openAIChatToolCallId || mapping.responsesCallId || mapping.anthropicToolUseId || mapping.canonicalToolCallId;
     }
     if (target === 'responses') {
         return mapping.responsesCallId || mapping.openAIChatToolCallId || mapping.anthropicToolUseId || mapping.canonicalToolCallId;
