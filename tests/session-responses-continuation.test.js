@@ -178,6 +178,64 @@ test('prepareResponsesContinuationPayload sends full input when continuation is 
     );
 });
 
+test('prepareResponsesContinuationPayload preserves oversized input when continuation is disabled', () => {
+    const store = new RelayConversationStore({
+        ttlMs: 60_000,
+        cleanupIntervalMs: 0,
+        maxStoredChatMessages: 1300,
+        maxCanonicalTurns: 1300
+    });
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            messages: [{role: 'user', content: 'first question'}]
+        }
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_1',
+            model: 'client-model',
+            output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{type: 'output_text', text: 'first answer'}]
+            }]
+        }
+    });
+
+    const input = [
+        {role: 'user', content: [{type: 'input_text', text: 'first question'}]},
+        {role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]},
+        ...Array.from({length: 1200}, (_, i) => ({role: 'user', content: `message ${i}`}))
+    ];
+    const result = prepareResponsesContinuationPayload({
+        conversationStore: store,
+        tenantId,
+        conversationKey,
+        request: {model: 'glm-5.2', previous_response_id: 'resp_1', input},
+        requestType: 'AnthropicViaResponsesWebSocket',
+        disableContinuation: true,
+        logger: {info() {}}
+    });
+
+    assert.equal(result.request.previous_response_id, undefined);
+    assert.equal(result.request.input.length, input.length);
+    assert.equal(result.request.input[0].content[0].text, 'first question');
+    assert.equal(result.request.input.at(-1).content, 'message 1199');
+    assert.equal(result.truncated, false);
+    assert.equal(result.originalLength, input.length);
+    assert.equal(result.retainedLength, input.length);
+    assert.equal(result.skipInputItemLimit, true);
+    assert.equal(result.autoLink, false);
+});
+
 test('prepareResponsesContinuationPayload sends delta directly for long matched history', () => {
     const store = new RelayConversationStore({
         ttlMs: 60_000,

@@ -70,7 +70,7 @@ export function isResponsesWebSocketProtocolError(error) {
 }
 
 export function prepareResponsesWebSocketPayload(payload) {
-    const {stream, background, _autoLink, ...rest} = payload || {};
+    const {stream, background, _autoLink, _skipInputItemLimit, ...rest} = payload || {};
     return rest;
 }
 
@@ -143,6 +143,7 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
     let closeReason = '';
 
     const autoLinkEnabled = payload?._autoLink !== false;
+    const skipInputItemLimit = payload?._skipInputItemLimit === true;
     const explicitPreviousResponseId =
         typeof payload.previous_response_id === 'string' && payload.previous_response_id.trim()
             ? payload.previous_response_id.trim()
@@ -154,13 +155,15 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
 
     if (Array.isArray(payload.input)) {
         payload = {...payload, input: sanitizeResponsesInput(payload.input, payload.model)};
-        const limited = limitResponsesInputItems(payload, {previousResponseId: referencedPreviousResponseId});
-        if (limited.truncated) {
-            logger.info(
-                `Responses WS: truncated input items ${limited.originalLength}->${limited.retainedLength} `
-                + `with previous_response_id=${limited.previousResponseId}`
-            );
-            payload = limited.payload;
+        if (!skipInputItemLimit) {
+            const limited = limitResponsesInputItems(payload, {previousResponseId: referencedPreviousResponseId});
+            if (limited.truncated) {
+                logger.info(
+                    `Responses WS: truncated input items ${limited.originalLength}->${limited.retainedLength} `
+                    + `with previous_response_id=${limited.previousResponseId}`
+                );
+                payload = limited.payload;
+            }
         }
     }
 

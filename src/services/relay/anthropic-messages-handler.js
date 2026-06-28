@@ -207,6 +207,7 @@ export function createRelayAnthropicMessagesHandler({
                     contextKey: stateConversationKey,
                     sessionId: stateConversationKey,
                     autoLink: continuation.autoLink,
+                    skipInputItemLimit: upstream.disable_responses_continuation === true || continuation.skipInputItemLimit === true,
                     rejectUnauthorized: !upstream.skip_tls_verify,
                     ...tenantMeta
                 });

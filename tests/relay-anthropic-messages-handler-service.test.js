@@ -195,5 +195,6 @@ test('handleAnthropicMessages disables Responses WS continuation when upstream o
 
     assert.equal(capturedContinuationOptions.disableContinuation, true);
     assert.equal(capturedMeta.autoLink, false);
+    assert.equal(capturedMeta.skipInputItemLimit, true);
     assert.deepEqual(res.calls, [['json', 200, {type: 'message', source: 'chat_from_resp_1'}]]);
 });

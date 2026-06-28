@@ -227,5 +227,6 @@ test('handleOpenAIChatCompletions disables Responses WS continuation when upstre
 
     assert.equal(capturedContinuationOptions.disableContinuation, true);
     assert.equal(capturedMeta.autoLink, false);
+    assert.equal(capturedMeta.skipInputItemLimit, true);
     assert.deepEqual(res.calls, [['json', 200, {id: 'chat_from_resp_1'}]]);
 });

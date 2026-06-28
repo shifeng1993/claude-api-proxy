@@ -26,9 +26,18 @@ export function prepareResponsesContinuationPayload({
     const stateConversationKey = prepared.conversationKey || conversationKey;
     if (disableContinuation === true) {
         const fullRequest = stripResponsesContinuationFields(prepared.request);
-        const limited = limitResponsesInputItems(fullRequest, {previousResponseId: null});
+        const inputLength = countResponsesInputItems(fullRequest?.input);
+        const limited = {
+            payload: fullRequest,
+            input: fullRequest?.input,
+            truncated: false,
+            originalLength: inputLength,
+            retainedLength: inputLength,
+            droppedCount: 0,
+            previousResponseId: null
+        };
         log.info(
-            `Responses continuation: disabled; sending full input items=${countResponsesInputItems(limited.payload?.input)}`
+            `Responses continuation: disabled; sending full input items=${inputLength}`
             + `${requestType ? ` requestType=${requestType}` : ''}`
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
         );
@@ -38,8 +47,8 @@ export function prepareResponsesContinuationPayload({
             deltaApplied: false,
             emptyDelta: false,
             candidates: [],
-            originalLength: countResponsesInputItems(fullRequest?.input),
-            retainedLength: countResponsesInputItems(limited.payload?.input),
+            originalLength: inputLength,
+            retainedLength: inputLength,
             coveredLength: 0,
             previousResponseId: null
         };
@@ -54,10 +63,11 @@ export function prepareResponsesContinuationPayload({
             logger: log
         });
         return {
-            request: limited.payload,
+            request: fullRequest,
             conversationKey: stateConversationKey,
             lastResponseId: prepared.lastResponseId,
             autoLink: false,
+            skipInputItemLimit: true,
             deltaApplied: false,
             deltaAttempted: false,
             emptyDelta: false,
@@ -139,6 +149,7 @@ export function prepareResponsesContinuationPayload({
         conversationKey: stateConversationKey,
         lastResponseId: prepared.lastResponseId,
         autoLink,
+        skipInputItemLimit: false,
         deltaApplied: delta.deltaApplied,
         deltaAttempted: delta.deltaAttempted,
         emptyDelta: delta.emptyDelta === true,

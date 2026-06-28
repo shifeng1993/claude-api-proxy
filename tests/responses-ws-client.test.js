@@ -51,6 +51,7 @@ test('prepareResponsesWebSocketPayload removes only transport fields unsupported
         truncation: 'auto',
         user: 'user-1',
         generate: false,
+        _skipInputItemLimit: true,
         input: 'hello'
     });
 
@@ -156,6 +157,27 @@ test('sendResponsesWebSocketRequest honors disabled auto-linking', async () => {
 
     assert.equal('previous_response_id' in socket.sent[0], false);
     assert.equal('_autoLink' in socket.sent[0], false);
+});
+
+test('sendResponsesWebSocketRequest can preserve oversized input when item limit is skipped', async () => {
+    const socket = new FakeWebSocket([{type: 'response.completed', response: {id: 'resp_2'}}]);
+    const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: 'resp_1'};
+    const input = Array.from({length: 600}, (_, i) => ({role: 'user', content: `message ${i}`}));
+
+    for await (const _event of sendResponsesWebSocketRequest(connection, {
+        model: 'gpt-5.4',
+        input,
+        _autoLink: false,
+        _skipInputItemLimit: true
+    })) {
+    }
+
+    assert.equal('previous_response_id' in socket.sent[0], false);
+    assert.equal('_autoLink' in socket.sent[0], false);
+    assert.equal('_skipInputItemLimit' in socket.sent[0], false);
+    assert.equal(socket.sent[0].input.length, 600);
+    assert.equal(socket.sent[0].input[0].content, 'message 0');
+    assert.equal(socket.sent[0].input.at(-1).content, 'message 599');
 });
 
 test('sendResponsesWebSocketRequest surfaces upstream error events', async () => {
