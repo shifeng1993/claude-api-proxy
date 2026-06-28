@@ -298,8 +298,13 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /id="upEnableResponsesIncremental"/);
     assert.match(adminHtml, /开启 Responses 增量消息/);
     assert.match(adminHtml, /disable_responses_continuation:upProtocol\.value==='responses_ws'\?!upEnableResponsesIncremental\.checked:false/);
-    assert.match(adminHtml, /Responses API\/Responses WebSocket 支持 previous_response_id/);
-    assert.match(adminHtml, /OpenAI Chat Completions 和 Anthropic Messages API 是无状态接口/);
+    assert.match(adminHtml, /请按链路最终调用的上游协议选择/);
+    assert.match(adminHtml, /最终调用的是 Responses API\/Responses WebSocket/);
+    assert.match(adminHtml, /当前 responses_ws 上游只是中间桥接层/);
+    assert.match(adminHtml, /最终调用会落到 OpenAI Chat Completions/);
+    assert.match(adminHtml, /桥接层再做协议转换、裁剪或还原/);
+    assert.match(adminHtml, /桥接完整 input/);
+    assert.match(adminHtml, /Responses 增量 input/);
     assert.doesNotMatch(adminHtml, /关闭 Responses WS 续传优化/);
     assert.match(upstreamManager, /disable_responses_continuation/);
     assert.match(upstreamModel, /disable_responses_continuation/);
