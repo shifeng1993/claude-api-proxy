@@ -514,9 +514,6 @@ function responsesRequestToRelayChat(request = {}, meta = {}) {
         if (rendered.tool_choice !== undefined) chatReq.tool_choice = rendered.tool_choice;
         if (rendered.parallel_tool_calls !== undefined) chatReq.parallel_tool_calls = rendered.parallel_tool_calls;
     }
-    if (request.previous_response_id) chatReq.previous_response_id = request.previous_response_id;
-    if (request.store !== undefined) chatReq.store = request.store;
-
     return chatReq;
 }
 

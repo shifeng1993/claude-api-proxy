@@ -22,6 +22,18 @@ test('responsesRequestToChat merges consecutive assistant messages from output_t
     ]);
 });
 
+test('responsesRequestToChat does not leak Responses continuation controls into Chat payloads', () => {
+    const result = responsesRequestToChat({
+        model: 'deepseek-chat',
+        input: 'continue',
+        previous_response_id: 'resp_123',
+        store: false
+    });
+
+    assert.equal('previous_response_id' in result, false);
+    assert.equal('store' in result, false);
+});
+
 test('responsesRequestToChat merges multiple function_calls into single assistant message', () => {
     const result = responsesRequestToChat({
         model: 'deepseek-chat',

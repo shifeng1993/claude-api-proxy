@@ -76,16 +76,6 @@ export function responsesRequestToChat(responsesReq) {
         }
     }
 
-    // previous_response_id 保留在扩展字段中（不影响 Chat Completions）
-    if (responsesReq.previous_response_id) {
-        chatReq.previous_response_id = responsesReq.previous_response_id;
-    }
-
-    // store
-    if (responsesReq.store !== undefined) {
-        chatReq.store = responsesReq.store;
-    }
-
     // text.format → response_format
     // 火山引擎等上游不支持 response_format（json_schema/json_object 均会 400），直接移除
     // 如果上游支持 response_format，可按需调整此处

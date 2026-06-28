@@ -217,6 +217,7 @@ test('hydrateResponsesForFullHistory appends Responses input to stored chat hist
             model: 'client-model',
             previous_response_id: 'resp_1',
             input: [{role: 'user', content: [{type: 'input_text', text: 'second question'}]}],
+            store: false,
             stream: false
         }
     });
@@ -232,6 +233,8 @@ test('hydrateResponsesForFullHistory appends Responses input to stored chat hist
         {type: 'function', function: {name: 'read_file', parameters: {type: 'object'}}}
     ]);
     assert.equal(hydrated.chatRequest.tool_choice, 'auto');
+    assert.equal('previous_response_id' in hydrated.chatRequest, false);
+    assert.equal('store' in hydrated.chatRequest, false);
 });
 
 test('hydrateResponsesForFullHistory does not duplicate a visible full-history prefix', () => {

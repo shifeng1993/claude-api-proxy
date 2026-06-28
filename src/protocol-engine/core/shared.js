@@ -617,7 +617,6 @@ const FIELD_ORDER = [
     'top_p',
     'thinking',
     'metadata',
-    'previous_response_id',
     'tools',
     'tool_choice',
     'reasoning_effort'
@@ -631,6 +630,7 @@ export function normalizePayload(payload, meta = {}) {
     for (const key of Object.keys(payload)) {
         if (!(key in ordered)) ordered[key] = payload[key];
     }
+    delete ordered.previous_response_id;
 
     // 空字符串 '' 表示用户明确关闭 thinking，不注入默认值，也不发送给上游
     if (ordered.reasoning_effort === '') {

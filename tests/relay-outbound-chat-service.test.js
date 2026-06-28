@@ -74,3 +74,24 @@ test('prepareRelayOutboundChatRequest preserves stream when no override is suppl
     assert.equal(outbound.model, 'gpt-5');
     assert.equal(outbound.stream, false);
 });
+
+test('prepareRelayOutboundChatRequest strips Responses continuation controls before Chat upstream', () => {
+    const outbound = prepareRelayOutboundChatRequest(
+        {
+            model: 'gpt-5',
+            stream: true,
+            previous_response_id: 'resp_123',
+            store: false,
+            messages: [{role: 'user', content: 'hello'}]
+        },
+        {
+            injectBehaviorRules: (messages) => messages,
+            stripDynamicReminders: (messages) => messages,
+            mergeConsecutiveAssistantMessages: () => {}
+        }
+    );
+
+    assert.equal('previous_response_id' in outbound, false);
+    assert.equal('store' in outbound, false);
+    assert.deepEqual(outbound.messages, [{role: 'user', content: 'hello'}]);
+});

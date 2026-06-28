@@ -31,7 +31,6 @@ test('normalizePayload 按 GLM 前缀缓存要求排列 OpenAI 请求字段', ()
         'top_p',
         'thinking',
         'metadata',
-        'previous_response_id',
         'tools',
         'tool_choice',
         'reasoning_effort',
@@ -49,4 +48,14 @@ test('normalizeResponsesPayload preserves Responses text.format per Ark Response
     });
 
     assert.deepEqual(normalized.text, {format: {type: 'json_object'}});
+});
+
+test('normalizePayload strips Responses previous_response_id before Chat upstream', () => {
+    const normalized = normalizePayload({
+        model: 'glm-latest',
+        messages: [{role: 'user', content: 'hello'}],
+        previous_response_id: 'resp_123'
+    });
+
+    assert.equal('previous_response_id' in normalized, false);
 });
