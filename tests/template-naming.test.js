@@ -295,10 +295,12 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /function fetchWithTimeout\(/);
     assert.match(adminHtml, /timeoutMs:35000/);
     assert.match(adminHtml, /AbortController/);
-    assert.match(adminHtml, /id="upDisableResponsesContinuation"/);
-    assert.match(adminHtml, /disable_responses_continuation:upDisableResponsesContinuation\.checked/);
-    assert.match(adminHtml, /云站 relay/);
-    assert.match(adminHtml, /原生 Responses WebSocket/);
+    assert.match(adminHtml, /id="upEnableResponsesIncremental"/);
+    assert.match(adminHtml, /开启 Responses 增量消息/);
+    assert.match(adminHtml, /disable_responses_continuation:upProtocol\.value==='responses_ws'\?!upEnableResponsesIncremental\.checked:false/);
+    assert.match(adminHtml, /Responses API\/Responses WebSocket 支持 previous_response_id/);
+    assert.match(adminHtml, /OpenAI Chat Completions 和 Anthropic Messages API 是无状态接口/);
+    assert.doesNotMatch(adminHtml, /关闭 Responses WS 续传优化/);
     assert.match(upstreamManager, /disable_responses_continuation/);
     assert.match(upstreamModel, /disable_responses_continuation/);
     assert.match(loginHtml, /id="forgotPasswordModal"/);
