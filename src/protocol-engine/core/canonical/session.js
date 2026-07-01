@@ -907,6 +907,17 @@ function blocksToAnthropicContent(blocks) {
 export function renderCanonicalToAnthropic(session = {}) {
     const messages = [];
     const systemParts = [];
+    let pendingToolResults = [];
+    let lastAssistantToolUseOrder = [];
+
+    const flushToolResults = () => {
+        if (pendingToolResults.length === 0) return;
+        messages.push({
+            role: 'user',
+            content: orderAnthropicToolResults(pendingToolResults, lastAssistantToolUseOrder)
+        });
+        pendingToolResults = [];
+    };
 
     for (const turn of session.turns || []) {
         if (turn.role === 'system') {
@@ -917,24 +928,15 @@ export function renderCanonicalToAnthropic(session = {}) {
 
         if (turn.role === 'tool') {
             for (const block of turn.blocks || []) {
-                if (block.type !== 'tool_result') continue;
-                const mapping = findToolMapping(session, {canonicalToolCallId: block.canonicalToolCallId});
-                messages.push({
-                    role: 'user',
-                    content: [{
-                        type: 'tool_result',
-                        tool_use_id: toolTargetId(mapping, 'anthropic'),
-                        content: block.anthropicContent !== undefined
-                            ? clone(block.anthropicContent)
-                            : typeof block.content === 'string' ? block.content : JSON.stringify(block.content || ''),
-                        ...(block.isError ? {is_error: true} : {}),
-                        ...(block.anthropic ? clone(block.anthropic) : {})
-                    }]
-                });
+                const rendered = block.type === 'tool_result'
+                    ? anthropicToolResultBlock(session, block)
+                    : null;
+                if (rendered) pendingToolResults.push(rendered);
             }
             continue;
         }
 
+        flushToolResults();
         const content = [];
         for (const block of turn.blocks || []) {
             if (block.type === 'tool_call') {
@@ -950,13 +952,48 @@ export function renderCanonicalToAnthropic(session = {}) {
             }
         }
         messages.push({role: turn.role, content: content.length > 0 ? content : [{type: 'text', text: ''}]});
+        lastAssistantToolUseOrder = turn.role === 'assistant'
+            ? content.filter((block) => block.type === 'tool_use').map((block) => block.id)
+            : [];
     }
 
+    flushToolResults();
     return {
         model: session.model,
         ...(systemParts.length > 0 ? {system: systemParts.join('\n\n')} : {}),
         messages,
         tools: toolsForAnthropic(session.tools),
         tool_choice: toolChoiceForAnthropic(session.toolChoice)
+    };
+}
+
+function orderAnthropicToolResults(results, toolUseOrder = []) {
+    if (!Array.isArray(results) || results.length <= 1 || !Array.isArray(toolUseOrder) || toolUseOrder.length === 0) {
+        return results;
+    }
+    const order = new Map();
+    toolUseOrder.forEach((id, index) => {
+        if (id && !order.has(id)) order.set(id, index);
+    });
+    return results
+        .map((block, index) => ({
+            block,
+            index,
+            order: order.has(block.tool_use_id) ? order.get(block.tool_use_id) : Number.MAX_SAFE_INTEGER
+        }))
+        .sort((left, right) => left.order - right.order || left.index - right.index)
+        .map(({block}) => block);
+}
+
+function anthropicToolResultBlock(session, block) {
+    const mapping = findToolMapping(session, {canonicalToolCallId: block.canonicalToolCallId});
+    return {
+        type: 'tool_result',
+        tool_use_id: toolTargetId(mapping, 'anthropic'),
+        content: block.anthropicContent !== undefined
+            ? clone(block.anthropicContent)
+            : typeof block.content === 'string' ? block.content : JSON.stringify(block.content || ''),
+        ...(block.isError ? {is_error: true} : {}),
+        ...(block.anthropic ? clone(block.anthropic) : {})
     };
 }

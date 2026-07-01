@@ -96,6 +96,32 @@ test('canonical session restores relay Anthropic thinking signatures from Respon
     assert.equal(anthropic.messages[2].content[0].tool_use_id, 'toolu_1');
 });
 
+test('canonical session groups parallel Responses tool outputs into one Anthropic user message', () => {
+    const session = canonicalFromResponsesRequest({
+        model: 'gpt-test',
+        input: [
+            {role: 'user', content: [{type: 'input_text', text: 'Run checks'}]},
+            {type: 'function_call', call_id: 'toolu_a', name: 'Bash', arguments: '{"command":"git status"}'},
+            {type: 'function_call', call_id: 'toolu_b', name: 'Bash', arguments: '{"command":"npm test"}'},
+            {type: 'function_call', call_id: 'toolu_c', name: 'Bash', arguments: '{"command":"node -v"}'},
+            {type: 'function_call_output', call_id: 'toolu_c', output: 'v22.0.0'},
+            {type: 'function_call_output', call_id: 'toolu_b', output: 'pass'},
+            {type: 'function_call_output', call_id: 'toolu_a', output: 'clean'}
+        ]
+    }, {tenantId: 'tenant-a', conversationKey: 'conv-a'});
+
+    const anthropic = renderCanonicalToAnthropic(session);
+
+    assert.deepEqual(
+        anthropic.messages.map((message) => message.role),
+        ['user', 'assistant', 'user']
+    );
+    assert.deepEqual(
+        anthropic.messages[2].content.map((block) => block.tool_use_id),
+        ['toolu_a', 'toolu_b', 'toolu_c']
+    );
+});
+
 test('canonical session omits unsigned Responses reasoning when rendering Anthropic messages', () => {
     const session = canonicalFromResponsesRequest({
         model: 'gpt-test',
