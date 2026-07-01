@@ -1105,7 +1105,7 @@ function stripResponsesInputReferenceFields(value) {
     const result = {};
     for (const key of Object.keys(value).sort()) {
         if (RESPONSES_DELTA_REFERENCE_FIELDS.has(key)) continue;
-        if (key.startsWith('x_relay_')) continue;
+        if (shouldIgnoreResponsesRelayPrivateFieldForDelta(value, key)) continue;
         result[key] = stripResponsesInputReferenceFields(value[key]);
     }
     return result;
@@ -1124,7 +1124,7 @@ function normalizeResponsesMessageItemForDelta(item) {
     const result = {};
     for (const key of Object.keys(item).sort()) {
         if (RESPONSES_DELTA_REFERENCE_FIELDS.has(key)) continue;
-        if (key.startsWith('x_relay_')) continue;
+        if (shouldIgnoreResponsesRelayPrivateFieldForDelta(item, key)) continue;
         if (key === 'type' && item.type === 'message') continue;
         result[key] = key === 'content'
             ? normalizeResponsesMessageContentForDelta(item.content)
@@ -1176,6 +1176,86 @@ function normalizeResponsesContentPartForDelta(part) {
     }
 
     return stripResponsesInputReferenceFields(part);
+}
+
+function shouldIgnoreResponsesRelayPrivateFieldForDelta(owner, key) {
+    if (!key.startsWith('x_relay_')) return false;
+    if (key === 'x_relay_anthropic_content') {
+        return isRelayAnthropicContentRedundantForDelta(owner?.[key], owner?.content);
+    }
+    if (key === 'x_relay_anthropic_tool_result') {
+        return isRelayAnthropicToolResultRedundantForDelta(owner?.[key], owner);
+    }
+    return false;
+}
+
+function isRelayAnthropicContentRedundantForDelta(relayContent, responsesContent) {
+    const normalizedRelay = normalizeRelayAnthropicContentForDelta(relayContent);
+    if (!normalizedRelay) return false;
+    const normalizedResponses = normalizeResponsesMessageContentForDelta(responsesContent);
+    return stableResponsesInputStringify(normalizedRelay) === stableResponsesInputStringify(normalizedResponses);
+}
+
+function normalizeRelayAnthropicContentForDelta(relayContent) {
+    if (!Array.isArray(relayContent)) return null;
+    const normalized = [];
+    for (const block of relayContent) {
+        const normalizedBlock = normalizeRelayAnthropicContentBlockForDelta(block);
+        if (!normalizedBlock) return null;
+        normalized.push(normalizedBlock);
+    }
+    return normalized;
+}
+
+function normalizeRelayAnthropicContentBlockForDelta(block) {
+    if (!block || typeof block !== 'object') return null;
+    if (block.type === 'text' || block.type === 'input_text' || block.type === 'output_text') {
+        if (!hasOnlyDeltaRedundantFields(block, ['type', 'text', 'cache_control'])) return null;
+        return normalizeResponsesTextPartForDelta(String(block.text ?? ''));
+    }
+    if (block.type === 'image') {
+        if (!hasOnlyDeltaRedundantFields(block, ['type', 'source', 'cache_control'])) return null;
+        const imageUrl = normalizeRelayAnthropicImageUrlForDelta(block.source);
+        if (!imageUrl) return null;
+        return sortResponsesDeltaObject({type: 'image', image_url: imageUrl});
+    }
+    return null;
+}
+
+function normalizeRelayAnthropicImageUrlForDelta(source) {
+    if (!source || typeof source !== 'object') return null;
+    if (source.type === 'base64') {
+        if (!hasOnlyDeltaRedundantFields(source, ['type', 'media_type', 'data'])) return null;
+        return source.data ? `data:${source.media_type || ''};base64,${source.data}` : null;
+    }
+    if (source.type === 'url' || source.url) {
+        if (!hasOnlyDeltaRedundantFields(source, ['type', 'url'])) return null;
+        return source.url || null;
+    }
+    return null;
+}
+
+function isRelayAnthropicToolResultRedundantForDelta(relayToolResult, owner) {
+    if (!relayToolResult || typeof relayToolResult !== 'object' || relayToolResult.type !== 'tool_result') {
+        return false;
+    }
+    if (!hasOnlyDeltaRedundantFields(relayToolResult, ['type', 'tool_use_id', 'content', 'cache_control'])) {
+        return false;
+    }
+    if (
+        relayToolResult.tool_use_id !== undefined
+        && owner?.call_id !== undefined
+        && String(relayToolResult.tool_use_id) !== String(owner.call_id)
+    ) {
+        return false;
+    }
+    return typeof relayToolResult.content === 'string'
+        && relayToolResult.content === String(owner?.output ?? '');
+}
+
+function hasOnlyDeltaRedundantFields(value, allowedFields) {
+    const allowed = new Set(allowedFields);
+    return Object.keys(value || {}).every((key) => allowed.has(key));
 }
 
 function normalizeResponsesTextPartForDelta(text) {

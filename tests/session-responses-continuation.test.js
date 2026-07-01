@@ -180,6 +180,63 @@ test('prepareResponsesContinuationPayload ignores relay private fields when matc
     assert.equal(result.autoLink, true);
 });
 
+test('prepareResponsesContinuationPayload preserves semantic relay private fields when matching covered history', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            messages: [{role: 'user', content: 'Read this'}]
+        }
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_1',
+            model: 'client-model',
+            output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{type: 'output_text', text: 'first answer'}]
+            }]
+        }
+    });
+
+    const fullHistoryInput = [
+        {
+            role: 'user',
+            content: [{type: 'input_text', text: 'Read this'}],
+            x_relay_anthropic_content: [
+                {type: 'text', text: 'Read this'},
+                {type: 'document', source: {type: 'base64', media_type: 'application/pdf', data: 'PDFDATA'}}
+            ]
+        },
+        {role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]},
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ];
+    const result = prepareResponsesContinuationPayload({
+        conversationStore: store,
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'glm-5.2',
+            input: fullHistoryInput
+        },
+        requestType: 'AnthropicViaResponsesWebSocket',
+        logger: {info() {}}
+    });
+
+    assert.equal(result.request.previous_response_id, undefined);
+    assert.deepEqual(result.request.input, fullHistoryInput);
+    assert.equal(result.deltaApplied, false);
+    assert.equal(result.autoLink, false);
+});
+
 test('prepareResponsesContinuationPayload sends full input when continuation is disabled', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';
