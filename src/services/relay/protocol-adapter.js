@@ -19,6 +19,7 @@ export {
     chatResponseToRelayResponses,
     compactRequestToChat,
     createAnthropicStreamAccumulator,
+    createAnthropicToResponsesStreamBridge,
     createChatStreamAccumulator,
     createChatToAnthropicStreamBridge,
     createChatToResponsesStreamBridge,

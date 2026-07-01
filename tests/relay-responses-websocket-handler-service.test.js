@@ -7,6 +7,7 @@ import {
 } from '../src/services/session/conversation-state.js';
 import {prepareResponsesContinuationPayload} from '../src/services/session/responses-continuation.js';
 import {renderCanonicalToAnthropic} from '../src/protocol-engine/core/canonical/session.js';
+import {createAnthropicToResponsesStreamBridge} from '../src/protocol-engine/core/stream/canonical-stream.js';
 
 async function collect(iterable) {
     const events = [];
@@ -526,6 +527,78 @@ test('handleRelayResponsesWS preserves signed thinking in Anthropic fallback pay
     } finally {
         store.dispose();
     }
+});
+
+test('handleRelayResponsesWS preserves Anthropic stream thinking signatures in Responses output', async () => {
+    let capturedAnthropicPayload = null;
+    const parseSSEBlock = (part) => {
+        const lines = part.split(/\r?\n/);
+        const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+        const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+        return {event, data};
+    };
+    const deps = createBaseDeps({
+        isAnthropicUpstream: () => true,
+        chatRequestToAnthropic: (payload) => ({
+            messages: payload.messages,
+            stream: payload.stream
+        }),
+        createAnthropicMessages: (payload, upstream, meta) => {
+            capturedAnthropicPayload = payload;
+            return {payload, upstream, meta};
+        },
+        getAnthropicRequestHeaders: () => ({}),
+        createAnthropicToResponsesStreamBridge,
+        parseSSEBlock,
+        callUpstream: async (upstream, invoke) => {
+            deps.calls.push(['callUpstream', invoke(upstream)]);
+            return {
+                response: {
+                    body: chunks(
+                        'event: message_start\n'
+                        + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":7,"cache_read_input_tokens":3}}}\n\n',
+                        'event: content_block_start\n'
+                        + 'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+                        'event: content_block_delta\n'
+                        + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Need file."}}\n\n',
+                        'event: content_block_delta\n'
+                        + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_real"}}\n\n',
+                        'event: content_block_stop\n'
+                        + 'data: {"type":"content_block_stop","index":0}\n\n',
+                        'event: message_delta\n'
+                        + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
+                        'event: message_stop\n'
+                        + 'data: {"type":"message_stop"}\n\n'
+                    )
+                }
+            };
+        }
+    });
+    const handleRelayResponsesWS = createRelayResponsesWebSocketHandler(deps);
+    const req = {tenantId: 42};
+
+    await handleRelayResponsesWS({id: 'client'}, req);
+    const events = await collect(deps.capturedOptions.handleRequest({
+        model: 'gpt-test',
+        input: [{role: 'user', content: [{type: 'input_text', text: 'hello'}]}]
+    }, null, {signal: {aborted: false}}));
+
+    const reasoningDone = events.find((event) =>
+        event.type === 'response.output_item.done'
+        && event.data.item.type === 'reasoning'
+    );
+    assert.deepEqual(reasoningDone.data.item.x_relay_anthropic_thinking, [{
+        type: 'thinking',
+        thinking: 'Need file.',
+        signature: 'sig_real'
+    }]);
+    const recordedResponse = deps.calls.find((call) => call[0] === 'recordCompletedResponseState')?.[1]?.[2];
+    assert.deepEqual(recordedResponse.output[0].x_relay_anthropic_thinking, [{
+        type: 'thinking',
+        thinking: 'Need file.',
+        signature: 'sig_real'
+    }]);
+    assert.equal(capturedAnthropicPayload.stream, true);
 });
 
 test('handleRelayResponsesWS rejects empty Chat fallback without calling upstream', async () => {

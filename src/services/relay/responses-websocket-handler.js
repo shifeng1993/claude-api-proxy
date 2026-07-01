@@ -16,6 +16,7 @@ export function createRelayResponsesWebSocketHandler({
     callUpstream,
     createAnthropicMessages,
     getAnthropicRequestHeaders,
+    createAnthropicToResponsesStreamBridge,
     createChatToResponsesStreamBridge,
     createChatStreamAccumulator,
     createResponsesStreamAccumulator,
@@ -126,6 +127,33 @@ export function createRelayResponsesWebSocketHandler({
             });
             chatReq = invocation.chatRequest;
             const {response} = invocation.result;
+
+            if (createAnthropicToResponsesStreamBridge) {
+                const anthropicToResponsesBridge = createAnthropicToResponsesStreamBridge({model: payload.model});
+                const responsesAccumulator = createResponsesStreamAccumulator({model: payload.model});
+                let completedResponse = null;
+                for await (const event of streamAnthropicSSEToResponsesWSEvents({
+                    stream: response.body,
+                    parseSSEBlock,
+                    bridge: anthropicToResponsesBridge,
+                    signal
+                })) {
+                    responsesAccumulator.feed(event.type, event.data);
+                    if (event.type === 'response.completed') {
+                        completedResponse = event.data?.response || completedResponse;
+                        recordCompletedResponseState(tenantId, stateConversationKey, completedResponse);
+                    }
+                    yield event;
+                }
+                if (!completedResponse) {
+                    recordCompletedResponseState(
+                        tenantId,
+                        stateConversationKey,
+                        responsesAccumulator.toResponsesResponse()
+                    );
+                }
+                return;
+            }
 
             const chatToResponsesBridge = createChatToResponsesStreamBridge({model: payload.model});
             const sourceChatAccumulator = createChatStreamAccumulator({model: payload.model});
@@ -433,6 +461,36 @@ function canonicalSessionHasRelayAnthropicThinking(session) {
             || (block?.type === 'reasoning' && block.signature)
         )
     );
+}
+
+async function* streamAnthropicSSEToResponsesWSEvents({
+    stream,
+    parseSSEBlock,
+    bridge,
+    signal
+}) {
+    let buffer = '';
+    for await (const chunk of stream) {
+        if (signal?.aborted) break;
+        buffer += chunk.toString('utf8');
+        const parts = buffer.split(/\r?\n\r?\n/);
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+            const {event, data} = parseSSEBlock(part);
+            if (!data || data === '[DONE]') continue;
+            let parsed;
+            try { parsed = JSON.parse(data); } catch { continue; }
+            const eventName = event || parsed?.type;
+            for (const rendered of bridge.feed(eventName, parsed)) {
+                yield {type: rendered.event, data: rendered.data};
+            }
+        }
+    }
+
+    for (const rendered of bridge.finish?.() || []) {
+        yield {type: rendered.event, data: rendered.data};
+    }
 }
 
 function canonicalSessionToAnthropicPayload({

@@ -670,10 +670,7 @@ export function appendResponsesResponseToCanonical(session = {}, responsesRespon
     for (const item of responsesResponse.output || []) {
         if (!item || typeof item !== 'object') continue;
         if (item.type === 'reasoning') {
-            const text = Array.isArray(item.summary)
-                ? item.summary.map((part) => part.text || '').filter(Boolean).join('\n')
-                : '';
-            blocks.push(reasoningBlock(text, {responsesItemId: item.id}));
+            blocks.push(...responsesReasoningItemToBlocks(item));
         } else if (item.type === 'message') {
             blocks.push(...contentToBlocks(item.content));
         } else if (item.type === 'function_call') {

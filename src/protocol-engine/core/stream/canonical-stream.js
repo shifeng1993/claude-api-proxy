@@ -126,6 +126,36 @@ export function createChatToResponsesStreamBridge({model = 'unknown'} = {}) {
     };
 }
 
+export function createAnthropicToResponsesStreamBridge({model = 'unknown'} = {}) {
+    const anthropicState = createAnthropicCanonicalStreamState({model});
+    const responsesState = createCanonicalToResponsesStreamState({model});
+
+    return {
+        feed(eventName, eventData) {
+            const canonicalEvents = anthropicEventToCanonicalStreamEvents(eventName, eventData, anthropicState);
+            return renderCanonicalStreamEventsToResponsesEvents(canonicalEvents, responsesState);
+        },
+
+        finish() {
+            if (responsesState.finished) return [];
+            return renderCanonicalStreamEventsToResponsesEvents([{
+                type: 'completed',
+                finishReason: responsesState.toolCalls.size > 0 ? 'tool_calls' : 'stop',
+                usage: anthropicUsageToResponsesUsage({
+                    input_tokens: anthropicState.inputTokens,
+                    cache_read_input_tokens: anthropicState.cacheHitTokens,
+                    output_tokens: 0
+                }),
+                model: anthropicState.model
+            }], responsesState);
+        },
+
+        get finished() {
+            return responsesState.finished;
+        }
+    };
+}
+
 export function createChatToAnthropicStreamBridge({model = 'unknown'} = {}) {
     const chatState = createChatCanonicalStreamState({model});
     const anthropicState = createCanonicalToAnthropicStreamState({model});
@@ -238,6 +268,10 @@ export function responsesEventToCanonicalStreamEvents(eventName, eventData = {},
         return [];
     }
 
+    if (eventName === 'response.output_item.done' && eventData.item?.type === 'reasoning') {
+        return responsesReasoningSignatureEvents(eventData.item);
+    }
+
     if (eventName === 'response.reasoning_summary_text.delta') {
         return [{type: 'reasoning_delta', text: eventData.delta || ''}];
     }
@@ -315,6 +349,9 @@ export function anthropicEventToCanonicalStreamEvents(eventName, eventData = {},
         const delta = eventData.delta || {};
         if (delta.type === 'text_delta') return [{type: 'text_delta', text: delta.text || ''}];
         if (delta.type === 'thinking_delta') return [{type: 'reasoning_delta', text: delta.thinking || ''}];
+        if (delta.type === 'signature_delta' && delta.signature) {
+            return [{type: 'reasoning_signature', signature: delta.signature}];
+        }
         if (delta.type === 'input_json_delta') {
             const toolCall = ensureAnthropicToolCall(state, eventData.index);
             const argumentsDelta = delta.partial_json || '';
@@ -355,6 +392,15 @@ export function anthropicEventToCanonicalStreamEvents(eventName, eventData = {},
     }
 
     return [];
+}
+
+function responsesReasoningSignatureEvents(item = {}) {
+    if (!Array.isArray(item.x_relay_anthropic_thinking)) return [];
+    return item.x_relay_anthropic_thinking
+        .map((block) => block?.type === 'thinking' && block.signature
+            ? {type: 'reasoning_signature', signature: block.signature}
+            : null)
+        .filter(Boolean);
 }
 
 export function renderCanonicalStreamEventsToChatChunks(canonicalEvents = [], state = createCanonicalToChatStreamState()) {
@@ -508,6 +554,7 @@ export function createCanonicalToResponsesStreamState({model = 'unknown'} = {}) 
         reasoningOpen: false,
         reasoningItemId: null,
         reasoningText: '',
+        reasoningSignature: null,
         messageOpen: false,
         currentMessageId: null,
         textBuffer: '',
@@ -624,7 +671,14 @@ export function renderCanonicalStreamEventsToResponsesEvents(canonicalEvents = [
             type: 'reasoning',
             id: state.reasoningItemId,
             status: 'completed',
-            summary: [{type: 'summary_text', text: state.reasoningText}]
+            summary: [{type: 'summary_text', text: state.reasoningText}],
+            ...(state.reasoningSignature ? {
+                x_relay_anthropic_thinking: [{
+                    type: 'thinking',
+                    thinking: state.reasoningText,
+                    signature: state.reasoningSignature
+                }]
+            } : {})
         };
         push('response.output_item.done', {
             type: 'response.output_item.done',
@@ -636,6 +690,7 @@ export function renderCanonicalStreamEventsToResponsesEvents(canonicalEvents = [
         state.reasoningOpen = false;
         state.reasoningItemId = null;
         state.reasoningText = '';
+        state.reasoningSignature = null;
     };
 
     const closeMessage = () => {
@@ -671,6 +726,7 @@ export function renderCanonicalStreamEventsToResponsesEvents(canonicalEvents = [
         state.reasoningOpen = true;
         state.reasoningItemId = `rs_${generateId()}`;
         state.reasoningText = '';
+        state.reasoningSignature = null;
         push('response.output_item.added', {
             type: 'response.output_item.added',
             output_index: state.outputIndex,
@@ -805,6 +861,14 @@ export function renderCanonicalStreamEventsToResponsesEvents(canonicalEvents = [
             continue;
         }
 
+        if (event.type === 'reasoning_signature') {
+            if (event.signature) {
+                ensureReasoning();
+                state.reasoningSignature = event.signature;
+            }
+            continue;
+        }
+
         if (event.type === 'text_delta') {
             ensureMessage();
             state.textBuffer += event.text || '';
@@ -892,13 +956,6 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
 
     const closeCurrentBlock = () => {
         if (!state.contentBlockOpen) return;
-        if (state.currentBlockType === 'thinking') {
-            events.push({
-                type: 'content_block_delta',
-                index: state.contentBlockIndex,
-                delta: {type: 'signature_delta', signature: Date.now().toString()}
-            });
-        }
         events.push({type: 'content_block_stop', index: state.contentBlockIndex});
         state.contentBlockIndex++;
         state.contentBlockOpen = false;
@@ -968,6 +1025,18 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
                 index: state.contentBlockIndex,
                 delta: {type: 'thinking_delta', thinking: event.text || ''}
             });
+            continue;
+        }
+
+        if (event.type === 'reasoning_signature') {
+            if (event.signature) {
+                ensureBlock('thinking', {type: 'thinking', thinking: ''});
+                events.push({
+                    type: 'content_block_delta',
+                    index: state.contentBlockIndex,
+                    delta: {type: 'signature_delta', signature: event.signature}
+                });
+            }
             continue;
         }
 
