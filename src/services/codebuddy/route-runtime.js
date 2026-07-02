@@ -15,7 +15,7 @@ import {
     rewriteOpenAIStream,
     sanitizeAnthropicPayload
 } from './protocol-adapter.js';
-import {BLOCKED_DOMAINS, getCodebuddyBaseUrl, isPersonalHost} from './config.js';
+import {BLOCKED_DOMAINS, getCodebuddyBaseUrl, isPersonalHost, isCodebuddyHost} from './config.js';
 import {handleWSConnection} from '../shared/index.js';
 import {
     codebuddyUpstreamErrorStatus as upstreamErrorStatus,
@@ -39,6 +39,8 @@ import {createCodebuddyResponsesAPIHandler} from './responses-api-handler.js';
 import {createCodebuddyResponsesWebSocketHandler} from './responses-websocket-handler.js';
 import {createCodebuddyMetadataHandlers} from './metadata-handler.js';
 import {createCodebuddyCredentialsHandler} from './credentials-handler.js';
+import {createCodebuddyTelemetryHandlers} from './telemetry-forwarder.js';
+import {request as httpRequest, readBody as httpReadBody} from '../../utils/http-client.js';
 import defaultLogger from '../../utils/logger.js';
 
 export async function readCodebuddyRequestBody(req) {
@@ -189,6 +191,27 @@ export function createCodebuddyRouteRuntime({tenantManager, resolveCredential, l
         logger
     });
 
+    const {
+        handleTelemetryReport,
+        handleRelayTelemetryReport,
+        handleSourceCheck,
+        handleRelaySourceCheck
+    } = createCodebuddyTelemetryHandlers({
+        tenantManager,
+        credentialService,
+        resolveCredential,
+        getCodebuddyBaseUrl,
+        isPersonalHost,
+        isCodebuddyHost,
+        sendJson,
+        sendOpenAIError,
+        upstreamErrorStatus,
+        parseBody: readCodebuddyRequestBody,
+        request: httpRequest,
+        readBody: httpReadBody,
+        logger
+    });
+
     function handleRoot(req, res) {
         const tenantCount = tenantManager.listTenants().length;
         sendJson(res, 200, {
@@ -208,7 +231,8 @@ export function createCodebuddyRouteRuntime({tenantManager, resolveCredential, l
                     countTokens: 'POST /codebuddy/anthropic/v1/messages/count_tokens',
                     models: 'GET /codebuddy/anthropic/v1/models - Claude format models'
                 },
-                credentials: 'GET/POST /codebuddy/v1/credentials - Manage credentials'
+                credentials: 'GET/POST /codebuddy/v1/credentials - Manage credentials',
+                telemetry: 'POST /codebuddy/v1/telemetry/report - Forward code stats to codebuddy /v2/report; GET /codebuddy/v1/telemetry/source-check - Check if active upstream is codebuddy enterprise'
             }
         });
     }
@@ -220,6 +244,15 @@ export function createCodebuddyRouteRuntime({tenantManager, resolveCredential, l
 
         if (pathname.startsWith('/codebuddy/v1/credentials')) {
             return handleCredentials(req, res, method, pathname.replace('/codebuddy', ''));
+        }
+
+        // ========== 代码统计转发端点 ==========
+        if (pathname === '/codebuddy/v1/telemetry/report' && method === 'POST') {
+            return handleTelemetryReport(req, res);
+        }
+
+        if (pathname === '/codebuddy/v1/telemetry/source-check' && method === 'GET') {
+            return handleSourceCheck(req, res);
         }
 
         if (pathname.startsWith('/codebuddy/anthropic')) {
@@ -296,6 +329,10 @@ export function createCodebuddyRouteRuntime({tenantManager, resolveCredential, l
         handleResponsesCompact,
         handleResponsesAPI,
         handleCodebuddyResponsesWS,
+        handleTelemetryReport,
+        handleRelayTelemetryReport,
+        handleSourceCheck,
+        handleRelaySourceCheck,
         routeCodebuddyRequest
     };
 }

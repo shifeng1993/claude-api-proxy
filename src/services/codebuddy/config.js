@@ -156,6 +156,26 @@ export function isPersonalHost(host) {
     return PERSONAL_HOSTS.includes(host);
 }
 
+// CodeBuddy 域名特征 — 用于判断某上游是否指向 codebuddy 后端
+// 个人站：copilot.tencent.com / www.codebuddy.ai
+// 企业站：*.copilot.qq.com（如 dahuatech.copilot.qq.com）等
+const CODEBUDDY_HOST_PATTERNS = [
+    'copilot.tencent.com',
+    'www.codebuddy.ai',
+    'codebuddy.ai'
+];
+
+/**
+ * 判断某域名是否为 codebuddy 后端域名（含个人站与企业站）
+ * @param {string} host - 域名（不含端口和协议）
+ * @returns {boolean}
+ */
+export function isCodebuddyHost(host) {
+    if (!host) return false;
+    if (CODEBUDDY_HOST_PATTERNS.includes(host)) return true;
+    return host.endsWith('.copilot.qq.com') || host.endsWith('.codebuddy.ai');
+}
+
 /**
  * 规范化架构名称（与 CLI OpenAI SDK 逻辑一致）
  * x64 -> amd64, arm -> arm32, ppc -> ppc32

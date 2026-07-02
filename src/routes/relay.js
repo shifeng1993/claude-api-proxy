@@ -20,7 +20,9 @@ const {
     handleOpenAIChatCompletions,
     handleAnthropicMessages,
     handleResponsesAPI,
-    handleResponsesCompact
+    handleResponsesCompact,
+    handleRelayTelemetryReport,
+    handleRelaySourceCheck
 } = relayRuntime;
 
 export const {handleRelayResponsesWS} = relayRuntime;
@@ -92,6 +94,8 @@ export async function routeRelayRequest(req, res) {
     if (pathname === '/relay/v1/responses/compact' && method === 'POST') return handleResponsesCompact(req, res);
     if (pathname === '/relay/v1/responses' && method === 'POST') return handleResponsesAPI(req, res);
     if (pathname === '/relay/v1/models' && method === 'GET') return handleOpenAIModels(req, res);
+    if (pathname === '/relay/v1/telemetry/report' && method === 'POST') return handleRelayTelemetryReport(req, res);
+    if (pathname === '/relay/v1/telemetry/source-check' && method === 'GET') return handleRelaySourceCheck(req, res);
 
     sendOpenAIError(res, 404, 'Endpoint not found');
 }
