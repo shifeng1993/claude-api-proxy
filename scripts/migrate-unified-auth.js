@@ -43,8 +43,7 @@ const RELATED_TABLES = [
     'tenant_states',
     'feedbacks',
     'api_samples',
-    'ai_assessments',
-    'tenant_copilot_credentials'
+    'ai_assessments'
 ];
 
 /**
@@ -104,20 +103,6 @@ async function migrate() {
         created_at DATETIME,
         updated_at DATETIME,
         UNIQUE KEY unique_tenant_service (tenant_id, service_type)
-    )`);
-    await db.query(`CREATE TABLE IF NOT EXISTS tenant_copilot_credentials (
-        id INTEGER PRIMARY KEY AUTO_INCREMENT,
-        tenant_id INTEGER NOT NULL,
-        name VARCHAR(255),
-        github_token TEXT,
-        copilot_token TEXT,
-        copilot_token_expires_at DATETIME,
-        github_user VARCHAR(255),
-        enabled TINYINT(1) DEFAULT 1,
-        created_at DATETIME,
-        updated_at DATETIME,
-        INDEX idx_tenant_id (tenant_id),
-        INDEX idx_tenant_enabled (tenant_id, enabled)
     )`);
 
     // Step 0.5: Backup
@@ -180,7 +165,6 @@ async function migrate() {
             if (!dryRun) {
                 await ensureServiceProfiles(db, keeper.id, 'relay', keeper);
                 await ensureServiceProfiles(db, keeper.id, 'codebuddy', keeper);
-                await ensureDisabledProfile(db, keeper.id, 'copilot');
             }
             continue;
         }
@@ -247,9 +231,6 @@ async function migrate() {
         if (relay && !codebuddy) {
             await ensureDisabledProfile(db, keeper.id, 'codebuddy');
         }
-
-        // Create copilot profile (disabled by default) for every tenant
-        await ensureDisabledProfile(db, keeper.id, 'copilot');
     }
 
     // Step: Drop old service_type and stats columns from tenants table

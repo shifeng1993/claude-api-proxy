@@ -10,8 +10,8 @@ import logger from '../../utils/logger.js';
 // 默认上游 URL（支持区域切换：cn/intl 对应不同默认上游）
 export const DEFAULT_BASE_URL = ''; // 占位，实际值通过 getCodebuddyBaseUrl() 获取
 const DEFAULT_CUSTOM_SITE_LABEL = '\u81ea\u5b9a\u4e49\u7ad9';
-const LEGACY_CODEBUDDY_PERSONAL_HOST = ['co', 'pilot.tencent.com'].join('');
-const LEGACY_CODEBUDDY_QQ_SUFFIX = ['.co', 'pilot.qq.com'].join('');
+const LEGACY_CODEBUDDY_PERSONAL_HOST = 'copilot.tencent.com';
+const LEGACY_CODEBUDDY_QQ_SUFFIX = '.copilot.qq.com';
 
 // 额外 CodeBuddy 上游 URL 列表（逗号分隔，会追加到管理面板的上游下拉列表中）
 // 延迟读取环境变量，因为 ESM import 在 .env 加载前执行

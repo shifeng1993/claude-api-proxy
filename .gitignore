@@ -21,6 +21,4 @@ backups/
 claude-api-proxy-main
 
 .debug-payloads/
-# Copilot/Gateway token 存储目录
-.copilot/
 .gateway/

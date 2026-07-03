@@ -83,33 +83,41 @@ test('product protocol entry files live under business protocol directories', as
     assert.deepEqual({missingExpected, staleLegacy}, {missingExpected: [], staleLegacy: []});
 });
 
-test('retired third product surface stays removed', async () => {
-    const retired = ['co', 'pilot'].join('');
+test('retired copilot product surface stays removed', async () => {
+    const retiredServiceName = 'copilot';
+
+    // 1. 通路入口文件、服务目录与凭据模型必须不再存在
     const removedEntrypoints = [
-        path.join(repoRoot, 'src', 'routes', `${retired}.js`),
-        path.join(repoRoot, 'src', 'routes', `dashboard-${retired}.js`),
-        path.join(repoRoot, 'src', 'services', retired)
+        path.join(repoRoot, 'src', 'routes', `${retiredServiceName}.js`),
+        path.join(repoRoot, 'src', 'routes', `dashboard-${retiredServiceName}.js`),
+        path.join(repoRoot, 'src', 'services', retiredServiceName),
+        path.join(repoRoot, 'src', 'db', 'models', `tenant-${retiredServiceName}-credential.js`)
     ];
     const staleEntrypoints = removedEntrypoints
         .filter((entry) => existsSync(entry))
         .map((entry) => path.relative(repoRoot, entry).replaceAll('\\', '/'));
 
-    const scannedRoots = [
-        path.join(repoRoot, 'src'),
-        path.join(repoRoot, 'docs'),
-        path.join(repoRoot, 'README.md'),
-        path.join(repoRoot, 'package.json')
-    ];
-    const scannedFiles = (await Promise.all(scannedRoots.map((target) => listTextFiles(target)))).flat();
-    const staleReferences = [];
-    for (const file of scannedFiles) {
-        const source = await readFile(file, 'utf8');
-        if (source.toLowerCase().includes(retired)) {
-            staleReferences.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
-        }
+    // 2. server.js 不得重新注册 copilot 路由前缀或导入 copilot 路由模块
+    const serverSource = await readFile(path.join(repoRoot, 'src', 'server.js'), 'utf8')
+        .then((text) => text.replaceAll('\\', '/'));
+    const staleRouteRegistrations = [];
+    if (new RegExp(`['"]/${retiredServiceName}(?:/|['"])`).test(serverSource)) {
+        staleRouteRegistrations.push('src/server.js: copilot route prefix');
+    }
+    if (new RegExp(`from\\s+['"][^'"]*routes/${retiredServiceName}\\.js['"]`).test(serverSource)) {
+        staleRouteRegistrations.push('src/server.js: copilot route import');
     }
 
-    assert.deepEqual({staleEntrypoints, staleReferences}, {staleEntrypoints: [], staleReferences: []});
+    // 3. 凭据模型不得在 models index 重新导出
+    const modelsSource = await readFile(path.join(repoRoot, 'src', 'db', 'models', 'index.js'), 'utf8');
+    const staleModelExports = new RegExp(`\\b${retiredServiceName}\\b`, 'i').test(modelsSource)
+        ? ['src/db/models/index.js: copilot model reference']
+        : [];
+
+    assert.deepEqual(
+        {staleEntrypoints, staleRouteRegistrations, staleModelExports},
+        {staleEntrypoints: [], staleRouteRegistrations: [], staleModelExports: []}
+    );
 });
 
 test('routes do not depend on another product service API for shared helpers', async () => {

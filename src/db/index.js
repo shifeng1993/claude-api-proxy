@@ -6,7 +6,7 @@ const DB_PORT = parseInt(process.env.DB_PORT || '3306', 10);
 const DB_USER = process.env.DB_USER || 'root';
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_NAME = process.env.DB_NAME || 'claude_api_proxy';
-const RETIRED_SERVICE_NAMES = [['co', 'pilot'].join('')];
+const RETIRED_SERVICE_NAMES = ['copilot'];
 
 const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
     dialect: DB_DIALECT,
