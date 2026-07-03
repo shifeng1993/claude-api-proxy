@@ -3,7 +3,11 @@
  * @module routes/relay
  */
 
-import {unifiedTenantManager} from '../services/gateway/index.js';
+import {
+    resolveCredential,
+    unifiedTenantManager
+} from '../services/gateway/index.js';
+import {createCodebuddyRelayTelemetryHandlers} from '../services/codebuddy/index.js';
 import {createRelayRouteRuntime} from '../services/relay/index.js';
 import logger from '../utils/logger.js';
 
@@ -20,10 +24,18 @@ const {
     handleOpenAIChatCompletions,
     handleAnthropicMessages,
     handleResponsesAPI,
-    handleResponsesCompact,
+    handleResponsesCompact
+} = relayRuntime;
+const {
     handleRelayTelemetryReport,
     handleRelaySourceCheck
-} = relayRuntime;
+} = createCodebuddyRelayTelemetryHandlers({
+    tenantManager: unifiedTenantManager,
+    resolveCredential,
+    sendJson,
+    sendOpenAIError,
+    logger
+});
 
 export const {handleRelayResponsesWS} = relayRuntime;
 

@@ -13,4 +13,5 @@ export {
     createCodebuddyCredentialService,
     getCodebuddyCredentialService
 } from './credential-service.js';
+export {createCodebuddyRelayTelemetryHandlers} from './telemetry-forwarder.js';
 export {createCodebuddyRouteRuntime} from './route-runtime.js';

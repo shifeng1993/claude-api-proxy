@@ -28,6 +28,7 @@ test('codebuddy service exposes credential manager from its public boundary', as
 
     assert.equal(typeof codebuddy.TenantTokenManager, 'function');
     assert.equal(typeof codebuddy.getCodebuddyCredentialService, 'function');
+    assert.equal(typeof codebuddy.createCodebuddyRelayTelemetryHandlers, 'function');
 });
 
 test('gateway service exposes auth session and tenant APIs from its public boundary', async () => {

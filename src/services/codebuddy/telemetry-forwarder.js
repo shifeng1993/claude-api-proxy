@@ -7,14 +7,22 @@
  * - /codebuddy/v1/telemetry/* —— codebuddy 直连用户，已由 requireApiAuth 注入 req.tenantId
  * - /relay/v1/telemetry/*    —— relay 用户，req.tenantId 同样指向同一统一租户
  *
- * 当前项目统一租户模型（unifiedTenantManager）：一个租户一条记录，通过
+ * 当前项目统一租户模型：一个租户一条记录，通过
  * TenantServiceProfile 同时持有 relay 上游与 codebuddy 凭证。因此 relay 用户上报时
  * 直接用其 req.tenantId 取该租户的 codebuddy 凭证即可，无需跨体系按工号关联。
  * 鉴权由 server.js 的 requireApiAuth 中间件统一完成，handler 仅读 req.tenantId。
  * @module services/codebuddy/telemetry-forwarder
  */
 
-import {codebuddyHeaders} from './config.js';
+import {request as defaultRequest, readBody as defaultReadBody} from '../../utils/http-client.js';
+import {
+    codebuddyHeaders,
+    getCodebuddyBaseUrl,
+    isCodebuddyHost,
+    isPersonalHost
+} from './config.js';
+import {getCodebuddyCredentialService} from './credential-service.js';
+import {codebuddyUpstreamErrorStatus as defaultUpstreamErrorStatus} from './response-writer.js';
 
 const REPORT_PATH = '/v2/report';
 // codebuddy 后端对单个事件字段的最小校验（对齐反编译 buildCodeChangeEvent 的 assert）
@@ -67,7 +75,7 @@ async function readAndValidateEvents(req, parseBody) {
  * 创建 codebuddy 代码统计转发 handler 集合。
  *
  * @param {Object} deps
- * @param {Object} deps.tenantManager - unifiedTenantManager，relay source-check 用其取活跃上游
+ * @param {Object} deps.tenantManager - tenant manager，relay source-check 用其取活跃上游
  * @param {Object} deps.credentialService - CodebuddyCredentialService，取租户 codebuddy 凭证列表
  * @param {Function} deps.resolveCredential - (headers, credentials, activeIndex) => credential|null
  * @param {Function} deps.getCodebuddyBaseUrl
@@ -308,6 +316,51 @@ export function createCodebuddyTelemetryHandlers({
         handleTelemetryReport,
         handleRelayTelemetryReport,
         handleSourceCheck,
+        handleRelaySourceCheck
+    };
+}
+
+async function readTelemetryRequestBody(req) {
+    const chunks = [];
+    for await (const chunk of req) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+}
+
+export function createCodebuddyRelayTelemetryHandlers({
+    tenantManager,
+    resolveCredential,
+    sendJson,
+    sendOpenAIError,
+    upstreamErrorStatus = defaultUpstreamErrorStatus,
+    parseBody = readTelemetryRequestBody,
+    request = defaultRequest,
+    readBody = defaultReadBody,
+    logger = console
+}) {
+    const credentialService = getCodebuddyCredentialService(tenantManager);
+    const {
+        handleRelayTelemetryReport,
+        handleRelaySourceCheck
+    } = createCodebuddyTelemetryHandlers({
+        tenantManager,
+        credentialService,
+        resolveCredential,
+        getCodebuddyBaseUrl,
+        isPersonalHost,
+        isCodebuddyHost,
+        sendJson,
+        sendOpenAIError,
+        upstreamErrorStatus,
+        parseBody,
+        request,
+        readBody,
+        logger
+    });
+
+    return {
+        handleRelayTelemetryReport,
         handleRelaySourceCheck
     };
 }

@@ -104,11 +104,6 @@ import {
     relayConversationStore,
     prepareResponsesContinuationPayload
 } from '../session/index.js';
-import {resolveCredential} from '../gateway/gateway-auth.js';
-import {getCodebuddyCredentialService} from '../codebuddy/credential-service.js';
-import {getCodebuddyBaseUrl, isPersonalHost, isCodebuddyHost} from '../codebuddy/config.js';
-import {createCodebuddyTelemetryHandlers} from '../codebuddy/telemetry-forwarder.js';
-import {request as httpRequest, readBody as httpReadBody} from '../../utils/http-client.js';
 import defaultLogger from '../../utils/logger.js';
 
 export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} = {}) {
@@ -396,29 +391,6 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
         createChatCompletions
     });
 
-    // ========== 代码统计转发端点（relay 链路）==========
-    // 统一租户模型下，relay 用户的 req.tenantId 即持有 codebuddy 凭证的同一租户，
-    // 复用 codebuddy telemetry 转发逻辑，仅替换为 relay 的响应写入器与请求体读取器。
-    const codebuddyCredentialService = getCodebuddyCredentialService(tenantManager);
-    const {
-        handleRelayTelemetryReport,
-        handleRelaySourceCheck
-    } = createCodebuddyTelemetryHandlers({
-        tenantManager,
-        credentialService: codebuddyCredentialService,
-        resolveCredential,
-        getCodebuddyBaseUrl,
-        isPersonalHost,
-        isCodebuddyHost,
-        sendJson,
-        sendOpenAIError,
-        upstreamErrorStatus,
-        parseBody,
-        request: httpRequest,
-        readBody: httpReadBody,
-        logger
-    });
-
     return {
         sendJson,
         sendOpenAIError,
@@ -432,8 +404,6 @@ export function createRelayRouteRuntime({tenantManager, logger = defaultLogger} 
         handleAnthropicMessages,
         handleResponsesAPI,
         handleResponsesCompact,
-        handleRelayResponsesWS,
-        handleRelayTelemetryReport,
-        handleRelaySourceCheck
+        handleRelayResponsesWS
     };
 }
