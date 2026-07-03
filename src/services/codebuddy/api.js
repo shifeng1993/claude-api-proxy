@@ -119,7 +119,6 @@ export async function createChatCompletions(payload, options = {}) {
     const domain = credential.domain;
 
     // 兜底：enterprise_id 为空时，从 JWT bearer token 的 realm_access.roles 中提取
-    // roles 格式如 ["ent-member:dahuatech", "ent-plugin-enabled:dahuatech", ...]
     const upstreamHost = new URL(baseUrl).host;
     if (!enterpriseId && !isPersonalHost(upstreamHost)) {
         try {

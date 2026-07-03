@@ -24,7 +24,7 @@ export function getExtraBaseUrls() {
 }
 
 // 禁止使用的上游域名（这些域名已废弃，不可再添加新凭证）
-export const BLOCKED_DOMAINS = [`dhcode2025${LEGACY_CODEBUDDY_QQ_SUFFIX}`];
+export const BLOCKED_DOMAINS = [];
 
 /**
  * 获取 CodeBuddy 基础 URL
