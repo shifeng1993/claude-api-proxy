@@ -4,7 +4,7 @@ import {getAuthMode} from '../shared/auth-mode.js';
 import logger from '../../utils/logger.js';
 import {getGatewayStatsTenantEntries} from './stats-tenants.js';
 
-const STATS_SERVICE_TYPES = new Set(['relay', 'codebuddy', 'copilot']);
+const STATS_SERVICE_TYPES = new Set(['relay', 'codebuddy']);
 
 function normalizeStatsService(serviceType) {
     return STATS_SERVICE_TYPES.has(serviceType) ? serviceType : 'codebuddy';

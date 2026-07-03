@@ -11,7 +11,6 @@ import {WebSocketServer} from 'ws';
 import logger from './utils/logger.js';
 import {routeCodebuddyRequest, handleCodebuddyResponsesWS} from './routes/codebuddy.js';
 import {routeRelayRequest, handleRelayResponsesWS} from './routes/relay.js';
-import {routeCopilotRequest, handleCopilotResponsesWS} from './routes/copilot.js';
 import {routeAdminFrontend} from './routes/dashboard-frontend.js';
 import {DASHBOARD_ENTRY_PATH, routeAuthRequest} from './routes/auth.js';
 import {routeStatsRequest} from './routes/stats.js';
@@ -31,7 +30,7 @@ const publicDir = join(__dirname, '..', 'public');
 const CODING_PROTOCOL_PREFIX = '/coding';
 const API_PREFIX = '/api';
 const API_CODING_PROTOCOL_PREFIX = '/api/coding';
-const PROTOCOL_ROUTE_PREFIXES = ['/relay', '/codebuddy', '/copilot'];
+const PROTOCOL_ROUTE_PREFIXES = ['/relay', '/codebuddy'];
 
 const MIME_TYPES = {
     '.js': 'application/javascript',
@@ -269,7 +268,7 @@ export function createServer() {
         }
 
         // 旧管理面板路径重定向
-        if (req.url.startsWith('/relayFE') || req.url.startsWith('/codebuddyFE') || req.url.startsWith('/copilotFE')) {
+        if (req.url.startsWith('/relayFE') || req.url.startsWith('/codebuddyFE')) {
             res.writeHead(301, {'Location': '/dashboard'});
             res.end();
             return;
@@ -326,20 +325,6 @@ export function createServer() {
                 return;
             }
         }
-
-        // Copilot 路由
-        if (req.url.startsWith('/copilot')) {
-            try {
-                if (!requireApiAuth(req, res, unifiedTenantManager, 'copilot')) return;
-                await routeCopilotRequest(req, res);
-                return;
-            } catch (err) {
-                logger.error('Copilot route error:', err);
-                sendError(res, 500, 'Internal server error');
-                return;
-            }
-        }
-
         // CodeBuddy 路由
         if (req.url.startsWith('/codebuddy')) {
             try {
@@ -385,8 +370,7 @@ export function createServer() {
 
         const wsRoutes = {
             '/relay/v1/responses': handleRelayResponsesWS,
-            '/codebuddy/v1/responses': handleCodebuddyResponsesWS,
-            '/copilot/v1/responses': handleCopilotResponsesWS
+            '/codebuddy/v1/responses': handleCodebuddyResponsesWS
         };
 
         const handler = wsRoutes[pathname];

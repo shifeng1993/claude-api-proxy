@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCodebuddyChatCompletionsHandler} from '../src/services/codebuddy/chat-completions-handler.js';
+import {createCodebuddyChatCompletionsHandler} from '../src/services/codebuddy/protocols/chat/completions.js';
 import {mapCodebuddyModelName} from '../src/services/codebuddy/model-mapping.js';
 
 function createResponse() {

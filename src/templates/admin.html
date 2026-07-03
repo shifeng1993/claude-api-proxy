@@ -338,7 +338,6 @@
         <div class="brand"><div class="logo">C</div><div><strong>Claude API Proxy</strong><span>统一管理面板</span></div></div>
         <button class="nav-btn active" id="nav-relay" onclick="showConsole('relay')">Relay</button>
         <button class="nav-btn" id="nav-codebuddy" onclick="showConsole('codebuddy')">CodeBuddy</button>
-        <button class="nav-btn" id="nav-copilot" onclick="showConsole('copilot')">Copilot</button>
         <button class="nav-btn" id="nav-stats" onclick="showStats()">使用统计</button>
         <button class="nav-btn" id="nav-users" style="display:none" onclick="showUsers()">用户管理</button>
         <button class="nav-btn" id="nav-feedback" onclick="showFeedback()">问题反馈</button>
@@ -418,34 +417,6 @@
     <div class="dialog-foot"><button class="btn" onclick="closeModal('changeOwnPasswordModal')">取消</button><button class="btn btn-primary" onclick="changeOwnPassword()">保存</button></div>
 </div></div>
 
-<div class="modal" id="copilotCredentialModal"><div class="dialog">
-    <div class="card-head"><div><h2 id="copilotCredentialTitle">新增 Copilot 凭据</h2><div class="muted">网络配置仅作用于当前租户的这条 GitHub 凭据。</div></div><button class="btn btn-ghost" onclick="closeModal('copilotCredentialModal')">关闭</button></div>
-    <div class="grid grid-2">
-        <div class="field"><label>名称</label><input id="copilotName" autocomplete="off" placeholder="例如：个人 Copilot"></div>
-        <div class="field"><label>账户类型</label><div class="select-control"><select id="copilotAccount" autocomplete="off"><option value="individual">Individual</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></div></div>
-    </div>
-    <div class="grid grid-2">
-        <div class="field"><label>VS Code 版本</label><input id="copilotVsCode" autocomplete="off" value="1.109.2"></div>
-        <div class="field"><label>代理地址（可选）</label><input id="copilotProxy" autocomplete="off" placeholder="http://127.0.0.1:7890"></div>
-    </div>
-    <div class="actions">
-        <label><input id="copilotEnabled" type="checkbox" autocomplete="off" style="width:auto" checked> 启用凭据</label>
-        <label><input id="copilotTls" type="checkbox" autocomplete="off" style="width:auto"> 跳过 TLS 证书验证</label>
-    </div>
-    <div class="dialog-foot"><button class="btn" onclick="closeModal('copilotCredentialModal')">取消</button><button class="btn btn-primary" onclick="saveCopilotCredential()">保存</button></div>
-</div></div>
-
-<div class="modal" id="copilotAuthModal"><div class="dialog">
-    <div class="card-head"><div><h2>连接 GitHub Copilot</h2><div class="muted">在 GitHub 页面输入设备码，授权成功后这里会自动完成配置。</div></div><button class="btn btn-ghost" onclick="closeCopilotAuth()">关闭</button></div>
-    <div id="copilotAuthLoading" class="empty">正在获取设备码...</div>
-    <div id="copilotAuthPending" style="display:none">
-        <div class="muted">设备码</div>
-        <div class="metric" id="copilotUserCode" style="letter-spacing:.12em"></div>
-        <a class="oauth-link" id="copilotAuthLink" target="_blank" rel="noopener">打开 GitHub 设备授权页面</a>
-        <div class="badge on">等待 GitHub 授权</div>
-    </div>
-</div></div>
-
 <div class="modal" id="feedbackModal"><div class="dialog">
     <div class="card-head"><div><h2>提交问题反馈</h2><div class="muted">请描述复现过程和期望结果，可附带截图或日志。</div></div><button class="btn btn-ghost" onclick="closeModal('feedbackModal')">关闭</button></div>
     <div class="field"><label>类型</label><div class="select-control"><select id="feedbackCategory" autocomplete="off"><option value="BUG">BUG</option><option value="功能建议">功能建议</option><option value="其他">其他</option></select></div></div>
@@ -466,10 +437,10 @@
 
 <div class="toast" id="toast"></div>
 <script>
-const S={me:null,tenants:[],tenant:null,tab:'relay',statsTab:'relay',statsPage:'monthly',adminStats:null,adminStatsPageSize:20,adminStatsMonth:'',adminModelStartDate:'',adminModelEndDate:'',adminModelPageNo:1,adminModelCache:[],upstreams:[],credentials:[],currentCredential:0,codebuddyOptions:null,codebuddyCustomSiteLabels:{},editingUpstream:null,oauthState:null,oauthTimer:null,passwordUser:null,editingUser:null,copilotCredentials:[],editingCopilot:null,copilotAuthId:null,copilotDeviceCode:null,copilotAuthTimer:null,feedbackItems:[],feedbackPage:1,feedbackPageSize:10,feedbackTotal:0,relayTestResults:{},relayTesting:false,relaySingleTesting:null};
-const HASH_ROUTES=['#/relay','#/codebuddy','#/copilot','#/stats/relay/monthly','#/stats/relay/model-cache','#/stats/codebuddy/monthly','#/stats/codebuddy/model-cache','#/stats/copilot/monthly','#/stats/copilot/model-cache'];
+const S={me:null,tenants:[],tenant:null,tab:'relay',statsTab:'relay',statsPage:'monthly',adminStats:null,adminStatsPageSize:20,adminStatsMonth:'',adminModelStartDate:'',adminModelEndDate:'',adminModelPageNo:1,adminModelCache:[],upstreams:[],credentials:[],currentCredential:0,codebuddyOptions:null,codebuddyCustomSiteLabels:{},editingUpstream:null,oauthState:null,oauthTimer:null,passwordUser:null,editingUser:null,feedbackItems:[],feedbackPage:1,feedbackPageSize:10,feedbackTotal:0,relayTestResults:{},relayTesting:false,relaySingleTesting:null};
+const HASH_ROUTES=['#/relay','#/codebuddy','#/stats/relay/monthly','#/stats/relay/model-cache','#/stats/codebuddy/monthly','#/stats/codebuddy/model-cache'];
 const ADMIN_STATS_TABS=[['monthly','月度统计'],['model-cache','模型分析']];
-const ADMIN_STATS_SERVICES=[['relay','Relay'],['codebuddy','CodeBuddy'],['copilot','Copilot']];
+const ADMIN_STATS_SERVICES=[['relay','Relay'],['codebuddy','CodeBuddy']];
 // Legacy service stats tab marker kept for template compatibility: class="tab ${S.statsTab===type?'active':''}"
 const adminStatsCharts={};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -477,7 +448,7 @@ const jsArg=v=>esc(JSON.stringify(String(v??'')));
 const profile=(t,type)=>(t.serviceProfiles||[]).find(p=>p.service_type===type)||{service_type:type,enabled:false};
 const fmt=n=>new Intl.NumberFormat('zh-CN',{notation:Number(n)>=10000?'compact':'standard',maximumFractionDigits:1}).format(Number(n)||0);
 const pct=(hit,input)=>Number(input)>0?Math.round(Number(hit||0)/Number(input||0)*1000)/10:0;
-const SERVICE_META={relay:['relay','Relay','配置 OpenAI、Responses 或 Anthropic 兼容上游。','#7c9cff'],codebuddy:['codebuddy','CodeBuddy','通过 OAuth 添加腾讯 CodeBuddy 账号凭证。','#53d7c4'],copilot:['copilot','Copilot','通过 GitHub 设备授权接入 Chat、Responses 与 Anthropic 兼容端点。','#f59e0b']};
+const SERVICE_META={relay:['relay','Relay','配置 OpenAI、Responses 或 Anthropic 兼容上游。','#7c9cff'],codebuddy:['codebuddy','CodeBuddy','通过 OAuth 添加腾讯 CodeBuddy 账号凭证。','#53d7c4']};
 function canUseService(type){return S.me?.isAdmin||profile(S.tenant,type).enabled===true;}
 function enabledServices(){return Object.values(SERVICE_META).filter(([type])=>canUseService(type));}
 function toast(message,type='success'){const el=document.getElementById('toast');el.textContent=message;el.className='toast show '+(type==='error'?'error':'');clearTimeout(el._t);el._t=setTimeout(()=>el.className='toast',3500);}
@@ -548,7 +519,7 @@ function routeFromHash(){
     if(route.view==='stats'){S.statsTab=ADMIN_STATS_SERVICES.some(([id])=>id===route.service)?route.service:'relay';return showStats(route.detail||'users',{skipHash:true});}
     if(route.view==='feedback')return showFeedback({skipHash:true});
     if(route.view==='users')return S.me.isAdmin?showUsers({skipHash:true}):showConsole('relay',{skipHash:true});
-    return showConsole(['relay','codebuddy','copilot'].includes(route.view)?route.view:'relay',{skipHash:true});
+    return showConsole(['relay','codebuddy'].includes(route.view)?route.view:'relay',{skipHash:true});
 }
 window.addEventListener('hashchange',routeFromHash);
 async function init(){
@@ -566,7 +537,7 @@ async function init(){
 }
 async function logout(){try{await api('/logout',{method:'POST'});}finally{location.href='/login';}}
 function setNav(active){
-    ['relay','codebuddy','copilot','feedback','stats','users'].forEach(id=>document.getElementById('nav-'+id)?.classList.toggle('active',id===active));
+    ['relay','codebuddy','feedback','stats','users'].forEach(id=>document.getElementById('nav-'+id)?.classList.toggle('active',id===active));
 }
 async function loadMyTenant(){
     const options=arguments[0]||{};
@@ -578,20 +549,20 @@ async function loadMyTenant(){
         if(!options.deferRoute)renderTenant();
     }catch(e){toast(e.message,'error');}
 }
-function showConsole(){let tab=arguments[0]||S.tab||'relay';const options=arguments[1]||{};if(!['relay','codebuddy','copilot'].includes(tab))tab='relay';if(S.tenant){if(!options.skipHash)syncHashRoute(tab);setNav(tab);const consoleTitle={relay:'Relay',codebuddy:'CodeBuddy',copilot:'Copilot'}[tab]||'服务管理';document.getElementById('pageTitle').textContent=consoleTitle;document.getElementById('pageSubtitle').textContent='@'+(S.tenant.username||S.me.username||'-');switchTab(tab,{skipHash:true});}}
-function switchTab(tab){const options=arguments[1]||{};if(!['relay','codebuddy','copilot'].includes(tab))tab='relay';S.tab=tab;if(['relay','codebuddy','copilot'].includes(tab)){setNav(tab);if(!options.skipHash)syncHashRoute(tab);}renderTenant();if(tab==='relay')loadRelay();if(tab==='codebuddy')loadCodebuddy();if(tab==='copilot')loadCopilot();}
+function showConsole(){let tab=arguments[0]||S.tab||'relay';const options=arguments[1]||{};if(!['relay','codebuddy'].includes(tab))tab='relay';if(S.tenant){if(!options.skipHash)syncHashRoute(tab);setNav(tab);const consoleTitle={relay:'Relay',codebuddy:'CodeBuddy'}[tab]||'服务管理';document.getElementById('pageTitle').textContent=consoleTitle;document.getElementById('pageSubtitle').textContent='@'+(S.tenant.username||S.me.username||'-');switchTab(tab,{skipHash:true});}}
+function switchTab(tab){const options=arguments[1]||{};if(!['relay','codebuddy'].includes(tab))tab='relay';S.tab=tab;if(['relay','codebuddy'].includes(tab)){setNav(tab);if(!options.skipHash)syncHashRoute(tab);}renderTenant();if(tab==='relay')loadRelay();if(tab==='codebuddy')loadCodebuddy();}
 function renderTenant(){
     const t=S.tenant;if(!t)return;
-    if(!['relay','codebuddy','copilot'].includes(S.tab))S.tab='relay';
+    if(!['relay','codebuddy'].includes(S.tab))S.tab='relay';
     document.getElementById('main').innerHTML='<div id="tabBody"></div>';
-    if(S.tab==='relay')renderRelay();else if(S.tab==='codebuddy')renderCodebuddy();else if(S.tab==='copilot')renderCopilot();
+    if(S.tab==='relay')renderRelay();else if(S.tab==='codebuddy')renderCodebuddy();
 }
 function serviceCard(type,title,desc,color){
     const p=profile(S.tenant,type);return `<div class="card service" style="--glow:${color}"><span class="badge service-status ${p.enabled?'on':'off'}">${p.enabled?'已启用':'已停用'}</span><div class="card-head"><div><h2>${title}</h2><p class="muted">${desc}</p></div></div><div class="actions"><span class="muted">${fmt(p.total_api_calls)} 次调用</span><span class="muted">输入 ${fmt(p.total_input_tokens)} / 输出 ${fmt(p.total_output_tokens)}</span></div></div>`;
 }
 function renderApiKeyCard(){
     const t=S.tenant;
-    return `<div class="card" style="margin-top:16px"><div class="card-head"><div><h2>统一 API Key</h2><div class="muted">同一个 Key 可访问已启用的 Relay、CodeBuddy 和 Copilot 端点。</div></div><button class="btn btn-danger btn-sm" onclick="regenerateKey()">重新生成</button></div>
+    return `<div class="card" style="margin-top:16px"><div class="card-head"><div><h2>统一 API Key</h2><div class="muted">同一个 Key 可访问已启用的 Relay 和 CodeBuddy 端点。</div></div><button class="btn btn-danger btn-sm" onclick="regenerateKey()">重新生成</button></div>
         <div class="key-box"><code id="apiKey">${esc(t.api_key_plain||t.api_key_prefix||'不可用')}</code><button class="btn btn-sm" onclick="copyKey()">复制</button></div>
     </div>`;
 }
@@ -704,9 +675,6 @@ async function startOAuth(){try{const baseUrl=oauthBase.value;if(useBrowserCodeb
 async function pollCodebuddyOAuth(){if(!S.oauthState)return;if(S.oauthMode==='browser')return pollBrowserOAuth();return pollOAuth();}
 async function pollOAuth(){if(!S.oauthState)return;try{const d=await api(`/dashboard/tenants/${S.tenant.id}/codebuddy/auth/poll`,{method:'POST',body:JSON.stringify({auth_state:S.oauthState})});if(d.status==='success'){closeOAuth();await loadCodebuddy();toast('CodeBuddy 凭证添加成功');}else if(d.status==='error'){closeOAuth();toast(d.message||'授权失败','error');}}catch(e){closeOAuth();toast(e.message,'error');}}
 function closeOAuth(){clearInterval(S.oauthTimer);S.oauthTimer=null;S.oauthState=null;S.oauthMode=null;S.oauthBaseUrl=null;closeModal('oauthModal');}
-function renderCopilot(){
-    document.getElementById('tabBody').innerHTML=`<div class="content-with-anchor">${renderAnchorNav([['section-copilot-list','凭证配置列表'],['section-guide','使用指南'],['section-custom-stats','自定义统计面板']])}<div id="section-copilot-list" class="card"><div class="card-head"><div><h2>GitHub Copilot 凭据</h2><div class="muted">每个租户独立授权，API 请求只会使用当前租户已启用的凭据。</div></div><div class="actions"><span class="badge ${profile(S.tenant,'copilot').enabled?'on':'off'}">${profile(S.tenant,'copilot').enabled?'服务已启用':'服务已停用'}</span><button class="btn btn-primary" onclick="openCopilotCredential()">新增凭据</button></div></div><div class="list" id="copilotCredentialList"><div class="empty">正在加载...</div></div></div>${serviceInsights('copilot')}</div>`;
-}
 function scrollToSection(id){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});}
 function renderAnchorNav(items){return `<nav class="anchor-nav">${items.map(([id,label])=>`<button type="button" onclick="scrollToSection(${jsArg(id)})">${label}</button>`).join('')}</nav>`;}
 function protocolBaseUrl(){
@@ -717,7 +685,7 @@ function serviceInsights(type){
     const key=esc(S.tenant.api_key_plain||S.tenant.api_key_prefix||'');
     const defaults=type==='codebuddy'?{haiku:'glm-5.1',sonnet:'glm-5.1',opus:'glm-5.0'}:{haiku:'haiku',sonnet:'sonnet',opus:'opus'};
     const guideConfig=`{\n  "env": {\n    "ANTHROPIC_AUTH_TOKEN": "${key}",\n    "ANTHROPIC_BASE_URL": "${base}/${type}/anthropic",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${defaults.haiku}",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${defaults.sonnet}",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${defaults.opus}"\n  }\n}`;
-    const firstStep={relay:['添加上游','先添加至少一个上游，填写 Base URL、API Key 和协议；模型名默认原样透传，必要时再配置映射。'],codebuddy:['添加凭证','点击“添加凭证”选择上游 CodeBuddy 服务地址，开始 OAuth2 认证流程，完成后凭证会保存到当前用户。'],copilot:['完成 GitHub 认证','新增 Copilot 凭据后点击“连接 GitHub”，使用设备码完成 GitHub OAuth 授权，获取 Copilot Token。']}[type];
+    const firstStep={relay:['添加上游','先添加至少一个上游，填写 Base URL、API Key 和协议；模型名默认原样透传，必要时再配置映射。'],codebuddy:['添加凭证','点击“添加凭证”选择上游 CodeBuddy 服务地址，开始 OAuth2 认证流程，完成后凭证会保存到当前用户。']}[type];
     const customMetricCards=`<div class="stats-grid stats-grid-${type==='codebuddy'?'6':'5'}"><div class="stat-item"><div class="stat-value" id="${type}CustomApiCalls">${fmt(p.total_api_calls)}</div><div class="stat-label">API 调用次数</div></div><div class="stat-item"><div class="stat-value" id="${type}CustomInputTokens">${fmt(p.total_input_tokens)}</div><div class="stat-label">输入 Tokens</div></div><div class="stat-item"><div class="stat-value" id="${type}CustomOutputTokens">${fmt(p.total_output_tokens)}</div><div class="stat-label">输出 Tokens</div></div><div class="stat-item"><div class="stat-value" id="${type}CustomCacheTokens">${fmt(p.total_cache_hit_tokens)}</div><div class="stat-label">缓存命中 Tokens</div></div><div class="stat-item"><div class="stat-value" id="${type}CustomCacheRate">${pct(p.total_cache_hit_tokens,p.total_input_tokens)}%</div><div class="stat-label">缓存命中率</div></div>${type==='codebuddy'?`<div class="stat-item"><div class="stat-value" id="${type}CustomCredit">${Number(p.total_credit||0).toFixed(2)}</div><div class="stat-label">CodeBuddy 积分</div></div>`:''}</div>`;
     return `${renderApiKeyCard()}${type==='codebuddy'?renderCodebuddyModelCard():''}<div id="section-guide" class="card" style="margin-top:16px"><div class="card-head"><div><h2>使用指南</h2><div class="muted">按原页面方式配置客户端，API Key 使用当前用户的统一 Key。</div></div></div><div class="guide-steps"><div class="guide-step"><div class="guide-step-num">1</div><div><div class="guide-step-title">${firstStep[0]}</div><div class="guide-step-desc">${firstStep[1]}</div></div></div><div class="guide-step"><div class="guide-step-num">2</div><div><div class="guide-step-title">兼容 Anthropic 接口协议工具</div><div class="guide-step-desc">如 Claude Code、Claude Desktop，编辑 <code>~/.claude/settings.json</code>。推荐使用 <code>ANTHROPIC_AUTH_TOKEN</code>，也兼容 <code>ANTHROPIC_API_KEY</code>；模型名会原样透传给上游，包括 <code>sonnet[1m]</code>、<code>opus[1m]</code>、<code>deepseek-v4-pro[1m]</code>。</div><div class="guide-code-block"><button class="btn btn-sm guide-copy-btn" onclick="copyGuideConfig('${type}')">复制</button><pre id="${type}GuideConfig">${esc(guideConfig)}</pre></div></div></div><div class="guide-step"><div class="guide-step-num">3</div><div><div class="guide-step-title">兼容 OpenAI 接口协议工具</div><div class="guide-step-desc">如 Cursor、Continue、Cline，将 Base URL 设置为：</div><div class="guide-code-block"><button class="btn btn-sm guide-copy-btn" onclick="copyGuideOpenAIUrl('${type}')">复制</button><pre id="${type}GuideOpenAIUrl">${base}/${type}/v1</pre></div><div class="guide-step-desc" style="margin-top:6px">API Key 使用上方显示的 Key</div></div></div><div class="guide-step"><div class="guide-step-num">4</div><div><div class="guide-step-title">兼容 OpenAI Responses API 工具</div><div class="guide-step-desc">如 Codex，将 Base URL 设置为：</div><div class="guide-code-block"><button class="btn btn-sm guide-copy-btn" onclick="copyGuideResponsesUrl('${type}')">复制</button><pre id="${type}GuideResponsesUrl">${base}/${type}/v1</pre></div><div class="guide-step-desc" style="margin-top:6px">API Key 使用上方显示的 Key，需在工具中选择 <code>Responses API</code> 模式</div></div></div></div></div><div id="section-custom-stats" class="card" style="margin-top:16px"><div class="card-head"><div><h2>自定义统计</h2><div class="muted">从上次重置起累计，仅影响 ${type}，适合测试上游缓存与成本。</div></div><div class="actions"><button class="btn btn-sm" onclick="refreshServiceStats('${type}')">刷新</button><button class="btn btn-danger btn-sm" onclick="resetServiceStats('${type}')">重置</button></div></div>${customMetricCards}</div>`;
 }
@@ -771,43 +739,11 @@ async function refreshServiceStats(type){
         toast('自定义统计已刷新');
     }catch(e){toast(e.message,'error');}
 }
-async function resetServiceStats(type){if(!confirm(`确认重置 ${type} 的自定义累计统计？月度历史不会删除。`))return;try{const d=await api(`/dashboard/tenants/${S.tenant.id}/stats/reset`,{method:'POST',body:JSON.stringify({service:type})});S.tenant=d.tenant;renderTenant();if(type==='relay')loadRelay();if(type==='codebuddy')loadCodebuddy();if(type==='copilot')loadCopilot();toast('自定义统计已重置');}catch(e){toast(e.message,'error');}}
+async function resetServiceStats(type){if(!confirm(`确认重置 ${type} 的自定义累计统计？月度历史不会删除。`))return;try{const d=await api(`/dashboard/tenants/${S.tenant.id}/stats/reset`,{method:'POST',body:JSON.stringify({service:type})});S.tenant=d.tenant;renderTenant();if(type==='relay')loadRelay();if(type==='codebuddy')loadCodebuddy();toast('自定义统计已重置');}catch(e){toast(e.message,'error');}}
 function copyGuideConfig(type){copyTextFromElement(type+'GuideConfig');}
 function copyGuideOpenAIUrl(type){copyTextFromElement(type+'GuideOpenAIUrl');}
 function copyGuideResponsesUrl(type){copyTextFromElement(type+'GuideResponsesUrl');}
 async function copyTextFromElement(id){const el=document.getElementById(id);if(!el)return;const text=el.textContent;try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);}else{const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;left:-9999px;opacity:0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);}toast('已复制');}catch{toast('复制失败','error');}}
-async function loadCopilot(){try{const d=await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials`);S.copilotCredentials=d.credentials||[];renderCopilotCredentials();}catch(e){const el=document.getElementById('copilotCredentialList');if(el)el.innerHTML='<div class="empty">'+esc(e.message)+'</div>';}}
-function renderCopilotCredentials(){
-    const el=document.getElementById('copilotCredentialList');if(!el)return;
-    if(!S.copilotCredentials.length){el.innerHTML='<div class="empty">还没有 Copilot 凭据。新增后点击“连接 GitHub”完成设备授权。</div>';return;}
-    el.innerHTML=S.copilotCredentials.map((c,i)=>`<div class="item ${c.enabled&&c.is_active?'active':''}"><div><h3>${esc(c.name||('Copilot #'+c.id))} ${c.is_active&&c.enabled?'<span class="badge on">活跃</span>':''} ${c.enabled?'':'<span class="badge off">已禁用</span>'} ${c.authenticated?'<span class="badge on">已认证</span>':'<span class="badge off">未认证</span>'}</h3><p>${c.github_user?'GitHub @'+esc(c.github_user):'尚未连接 GitHub'} · ${esc(c.account_type)} · VS Code ${esc(c.vscode_version)}</p><p>${c.proxy?'代理 '+esc(c.proxy):'直连'}${c.has_copilot_token?` · Token ${c.token_expired?'已过期':'可用'}`:''}${c.token_expires_at?' · '+new Date(c.token_expires_at).toLocaleString():''}</p></div><div class="actions">${c.enabled&&c.authenticated&&!c.is_active?`<button class="btn btn-sm" onclick="setCopilotActive(${c.id})">设为活跃</button>`:''}${!c.authenticated?`<button class="btn btn-primary btn-sm" onclick="startCopilotAuth(${c.id})">连接 GitHub</button>`:`<button class="btn btn-sm" onclick="refreshCopilot(${c.id})">刷新 Token</button><button class="btn btn-sm" onclick="clearCopilotAuth(${c.id})">解除认证</button>`}<button class="btn btn-sm" ${i===0?'disabled':''} onclick="moveCopilotCredential(${c.id},'up')">上移</button><button class="btn btn-sm" ${i===S.copilotCredentials.length-1?'disabled':''} onclick="moveCopilotCredential(${c.id},'down')">下移</button><button class="btn btn-sm" onclick="toggleCopilotCredential(${c.id})">${c.enabled?'禁用':'启用'}</button><button class="btn btn-sm" onclick="openCopilotCredential(${c.id})">编辑</button><button class="btn btn-danger btn-sm" onclick="deleteCopilotCredential(${c.id})">删除</button></div></div>`).join('');
-}
-function openCopilotCredential(id=null){
-    S.editingCopilot=id;const c=id===null?{}:S.copilotCredentials.find(x=>x.id===id)||{};
-    copilotCredentialTitle.textContent=id===null?'新增 Copilot 凭据':'编辑 Copilot 凭据';
-    copilotName.value=c.name||'';copilotAccount.value=c.account_type||'individual';copilotVsCode.value=c.vscode_version||'1.109.2';copilotProxy.value=c.proxy||'';copilotEnabled.checked=id===null?true:c.enabled===true;copilotTls.checked=c.skip_tls_verify===true;
-    document.getElementById('copilotCredentialModal').classList.add('show');
-}
-async function saveCopilotCredential(){
-    const body={name:copilotName.value.trim(),account_type:copilotAccount.value,vscode_version:copilotVsCode.value.trim(),proxy:copilotProxy.value.trim(),enabled:copilotEnabled.checked,skip_tls_verify:copilotTls.checked};
-    if(!body.name)return toast('请填写凭据名称','error');
-    try{const suffix=S.editingCopilot===null?'':`/${S.editingCopilot}`;await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials${suffix}`,{method:S.editingCopilot===null?'POST':'PUT',body:JSON.stringify(body)});closeModal('copilotCredentialModal');await loadCopilot();toast('Copilot 凭据已保存');}catch(e){toast(e.message,'error');}
-}
-async function deleteCopilotCredential(id){if(!confirm('确认删除这条 Copilot 凭据？'))return;try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}`,{method:'DELETE'});await loadCopilot();toast('Copilot 凭据已删除');}catch(e){toast(e.message,'error');}}
-async function setCopilotActive(id){try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/active`,{method:'POST'});await loadCopilot();toast('Copilot 活跃凭据已切换');}catch(e){toast(e.message,'error');}}
-async function toggleCopilotCredential(id){try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/toggle`,{method:'POST'});await loadCopilot();toast('Copilot 凭据状态已更新');}catch(e){toast(e.message,'error');}}
-async function moveCopilotCredential(id,direction){try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/move-${direction}`,{method:'POST'});await loadCopilot();toast('Copilot 凭据顺序已更新');}catch(e){toast(e.message,'error');}}
-async function startCopilotAuth(id){
-    S.copilotAuthId=id;copilotAuthLoading.style.display='';copilotAuthPending.style.display='none';document.getElementById('copilotAuthModal').classList.add('show');
-    try{const d=await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/auth/start`,{method:'POST'});S.copilotDeviceCode=d.device_code;copilotUserCode.textContent=d.user_code;copilotAuthLink.href=d.verification_uri;copilotAuthLoading.style.display='none';copilotAuthPending.style.display='';window.open(d.verification_uri,'_blank','noopener');const interval=Math.max(5,Number(d.interval)||5)*1000;S.copilotAuthTimer=setTimeout(pollCopilotAuth,interval);}catch(e){closeCopilotAuth();toast(e.message,'error');}
-}
-async function pollCopilotAuth(){
-    if(!S.copilotAuthId||!S.copilotDeviceCode)return;
-    try{const d=await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${S.copilotAuthId}/auth/poll`,{method:'POST',body:JSON.stringify({device_code:S.copilotDeviceCode})});if(d.status==='success'){closeCopilotAuth();await loadCopilot();toast('GitHub Copilot 认证成功');return;}if(d.status==='expired_token'||d.status==='access_denied'){closeCopilotAuth();toast(d.message||'GitHub 授权未完成','error');return;}const wait=d.status==='slow_down'?10000:5000;S.copilotAuthTimer=setTimeout(pollCopilotAuth,wait);}catch(e){closeCopilotAuth();toast(e.message,'error');}
-}
-function closeCopilotAuth(){clearTimeout(S.copilotAuthTimer);S.copilotAuthTimer=null;S.copilotAuthId=null;S.copilotDeviceCode=null;closeModal('copilotAuthModal');}
-async function clearCopilotAuth(id){if(!confirm('确认解除这条凭据的 GitHub 认证？'))return;try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/auth/clear`,{method:'POST'});await loadCopilot();toast('认证已解除');}catch(e){toast(e.message,'error');}}
-async function refreshCopilot(id){try{await api(`/dashboard/tenants/${S.tenant.id}/copilot-credentials/${id}/refresh`,{method:'POST'});await loadCopilot();toast('Copilot Token 已刷新');}catch(e){toast(e.message,'error');}}
 function renderStatsDashboard(el,type,data){el.className='';el.innerHTML=`<pre style="white-space:pre-wrap;overflow:auto">${esc(JSON.stringify(data,null,2))}</pre>`;}
 function renderStatsTrendChart(id,title,labels,rows,type){const el=document.getElementById(id);if(!el||!window.echarts)return;const chart=echarts.init(el);chart.setOption({title:{text:title},xAxis:{type:'category',data:labels},yAxis:{type:'value'},series:[{type:'line',data:rows.map(r=>r.apiCalls||0)}]});}
 function renderModelCacheChart(id,models){const el=document.getElementById(id);if(!el||!window.echarts)return;const chart=echarts.init(el);chart.setOption({xAxis:{type:'value'},yAxis:{type:'category',data:models.map(m=>m.model)},series:[{type:'bar',data:models.map(m=>m.cacheHitRate||0)}]});}
@@ -905,7 +841,7 @@ async function submitFeedback(){
 async function showUsers(){
     const options=arguments[0]||{};if(!options.skipHash)syncHashRoute('users');
     setNav('users');document.getElementById('pageTitle').textContent='用户管理';document.getElementById('pageSubtitle').textContent='管理本地登录账号与用户端点';
-    const serviceLabels={relay:'Relay',codebuddy:'CodeBuddy',copilot:'Copilot'};
+    const serviceLabels={relay:'Relay',codebuddy:'CodeBuddy'};
     const serviceToggles=(u,canManage)=>u.tenant?Object.entries(serviceLabels).map(([type,label])=>{const p=profile(u.tenant,type);return `<label class="actions" style="gap:6px;margin-right:10px"><input class="toggle user-service-toggle" type="checkbox" autocomplete="off" ${p.enabled?'checked':''} ${canManage?`onchange="toggleUserService(${u.tenant.id},'${type}',this.checked)"`:'disabled'}><span>${label}</span></label>`;}).join(''):'<span class="muted">未绑定配置</span>';
     try{const d=await api('/dashboard/users');const isLdap=d.authMode==='ldap';const canCreate=d.capabilities?.canCreate!==false;const canResetPassword=d.capabilities?.canResetPassword!==false;const createButton=canCreate?'<button class="btn btn-primary" onclick="openCreateUser()">创建用户</button>':'';document.getElementById('main').innerHTML=`<div class="card"><div class="card-head"><div><h2>${isLdap?'LDAP 用户':'本地用户'}</h2><div class="muted">${isLdap?'LDAP 模式下展示已登录过的 LDAP 用户，可编辑角色和显示名，也可删除用户记录。':'超级管理员账号不会出现在列表中；管理员可查看同级管理员和普通用户，但只能操作普通用户。'}</div></div>${createButton}</div><div class="table-wrap"><table><thead><tr><th>用户名</th><th>显示名</th><th>角色</th><th>服务端点</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${(d.users||[]).map(u=>{const canManage=S.me.role==='superadmin'||u.role!=='admin';return `<tr><td>${esc(u.username)}</td><td>${esc(u.displayName||'-')}</td><td>${esc(u.role)}</td><td><div class="actions">${serviceToggles(u,canManage)}</div></td><td>${u.createdAt?new Date(u.createdAt*1000).toLocaleString():'-'}</td><td><div class="actions">${canManage?`<button class="btn btn-sm" onclick="openUserEdit(${jsArg(u.username)},${jsArg(u.displayName||'')},${jsArg(u.role||'user')})">编辑</button>${canResetPassword?`<button class="btn btn-sm" onclick="openPassword(${jsArg(u.username)})">重置密码</button>`:''}<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(u.username)})">删除</button>`:'-'}</div></td></tr>`;}).join('')}</tbody></table></div></div>`;}catch(e){toast(e.message,'error');}
 }
@@ -997,8 +933,6 @@ Object.assign(window,{
     openUpstream,saveUpstream,setActive,testUpstream,testAllUpstreams,cloneUpstream,moveUpstream,deleteUpstream,toggleApiKeyVisibility,
     openOAuth,startOAuth,closeOAuth,credentialAction,moveCodebuddyCredential,resetServiceStats,refreshServiceStats,loadServiceStats,
     copyGuideConfig,copyGuideOpenAIUrl,copyGuideResponsesUrl,copyTextFromElement,
-    openCopilotCredential,saveCopilotCredential,setCopilotActive,toggleCopilotCredential,deleteCopilotCredential,
-    startCopilotAuth,closeCopilotAuth,clearCopilotAuth,refreshCopilot,moveCopilotCredential,
     renderStatsTabs,renderStatsServiceTabs,switchStatsTab,switchStatsPage,switchAdminStatsService,loadStatsPage,refreshAdminStats,renderAdminStatsMonthly,renderAdminStatsModelCache,applyAdminStatsMonth,applyAdminModelDateRange,changeAdminModelPage,queryAdminModelCache,openAdminModelCacheDaily,submitInlineFeedback,loadInlineFeedback,resetFeedbackSearch,renderFeedbackPagination,changeFeedbackPage,changeFeedbackPageSize,jumpFeedbackPage,inlineFeedbackStatus,inlineFeedbackDelete,
     openInlineFeedbackSubmit,openFeedbackDetail,openFeedback,submitFeedback,toggleUserService,openCreateUser,createUser,openUserEdit,saveUserEdit,openPassword,resetUserPassword,deleteUser,closeModal
 });

@@ -15,7 +15,7 @@ function sendJson(res, status, data) {
     res.end(JSON.stringify(data));
 }
 
-const STATS_SERVICE_TYPES = new Set(['relay', 'codebuddy', 'copilot']);
+const STATS_SERVICE_TYPES = new Set(['relay', 'codebuddy']);
 const EMPTY_STATS_TENANT_ID = -1;
 const statsUsage = createGatewayStatsUsageService({tenantManager: unifiedTenantManager});
 

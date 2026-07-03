@@ -8,7 +8,7 @@
 flowchart TD
     A["src/index.js / src/server.js"] --> B["src/routes/*"]
     B --> C["gateway public boundary<br/>src/services/gateway/index.js"]
-    B --> D["product public boundaries<br/>relay / codebuddy / copilot"]
+    B --> D["product public boundaries<br/>relay / codebuddy"]
     D --> E["providers public boundary<br/>src/services/providers/index.js"]
     D --> F["session public boundary<br/>src/services/session/index.js"]
     D --> G["shared public boundary<br/>src/services/shared/index.js"]
@@ -42,19 +42,19 @@ flowchart TD
 - 拥有跨产品网关能力：API Key 鉴权、Dashboard session、认证模式、本地/LDAP 登录门面、租户管理、用户管理、统计查询和反馈持久化。
 - 可以访问 `db/models`、Sequelize、shared auth internals。
 - 对外只暴露 `src/services/gateway/index.js`。
-- 不拥有 Relay、CodeBuddy、Copilot 的协议运行时，也不持有产品凭据管理细节。
+- 不拥有 Relay、CodeBuddy 的协议运行时，也不持有产品凭据管理细节。
 
-`src/services/relay`、`src/services/codebuddy`、`src/services/copilot`
+`src/services/relay`、`src/services/codebuddy`
 
 - 拥有各自产品接入、请求编排、上游上下文、usage 记录、metadata endpoint、response writer、WebSocket runtime。
 - 对外只暴露各自 `index.js`。
 - 不直接 import gateway singleton。需要租户、鉴权、usage 写入能力时，通过 route runtime 注入。
-- 不直接访问 DB。产品凭据持久化例外只能留在对应产品 service 内部，例如 CodeBuddy/Copilot credential manager。
+- 不直接访问 DB。产品凭据持久化例外只能留在对应产品 service 内部，例如 CodeBuddy credential manager。
 
 `src/services/providers`
 
 - 拥有上游 transport、stream response、upstream manager、网络错误归一化。
-- 不 import routes、gateway、relay、codebuddy、copilot。
+- 不 import routes、gateway、relay、codebuddy。
 - 协议相关能力通过 provider protocol adapter 触达 `#protocol-engine`。
 
 `src/services/session`
@@ -80,7 +80,7 @@ flowchart TD
 允许：
 
 - `routes -> services/gateway/index.js`
-- `routes -> services/{relay,codebuddy,copilot}/index.js`
+- `routes -> services/{relay,codebuddy}/index.js`
 - `index/server -> services/gateway/index.js`
 - `product services -> services/{providers,session,shared}/index.js`
 - `protocol-adapter.js -> #protocol-engine`

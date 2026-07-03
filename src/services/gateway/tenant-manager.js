@@ -241,7 +241,7 @@ class UnifiedTenantManager {
      * 确保租户的增量追踪条目存在
      */
     _usageKey(tenantId, serviceType) {
-        if (!['relay', 'codebuddy', 'copilot'].includes(serviceType)) {
+        if (!['relay', 'codebuddy'].includes(serviceType)) {
             throw new Error(`Unsupported service type: ${serviceType}`);
         }
         return `${tenantId}:${serviceType}`;
@@ -357,8 +357,7 @@ class UnifiedTenantManager {
         // Create service profiles for relay and codebuddy (enabled by default)
         await TenantServiceProfile.bulkCreate([
             {tenant_id: tenant.id, service_type: 'relay', enabled: true},
-            {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true},
-            {tenant_id: tenant.id, service_type: 'copilot', enabled: role === 'superadmin'}
+            {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true}
         ]);
 
         // Reload cache

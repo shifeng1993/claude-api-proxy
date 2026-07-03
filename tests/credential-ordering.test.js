@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {TenantTokenManager} from '../src/services/codebuddy/tenant-token-manager.js';
-import {CopilotCredentialManager} from '../src/services/copilot/credential-manager.js';
 import {models} from '../src/db/models/index.js';
 
 test('CodeBuddy credential move keeps active and disabled state attached to moved credentials', async () => {
@@ -34,26 +33,4 @@ test('CodeBuddy credential move keeps active and disabled state attached to move
     } finally {
         models.TenantCredential.update = originalUpdate;
     }
-});
-
-test('Copilot credential move rewrites sort order for the tenant', async () => {
-    const updates = [];
-    const rows = [
-        {id: 21, tenant_id: 9, update: async values => updates.push([21, values.sort_order])},
-        {id: 22, tenant_id: 9, update: async values => updates.push([22, values.sort_order])},
-        {id: 23, tenant_id: 9, update: async values => updates.push([23, values.sort_order])}
-    ];
-    const model = {
-        async findAll(options) {
-            assert.deepEqual(options.where, {tenant_id: 9});
-            assert.deepEqual(options.order, [['sort_order', 'ASC'], ['id', 'ASC']]);
-            return rows;
-        }
-    };
-    const manager = new CopilotCredentialManager({credentialModel: model, githubApi: {}});
-
-    const moved = await manager.moveCredential(9, 23, 'up');
-
-    assert.equal(moved.id, 23);
-    assert.deepEqual(updates, [[21, 0], [23, 1], [22, 2]]);
 });

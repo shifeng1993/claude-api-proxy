@@ -109,7 +109,7 @@ export async function ensureAdminFromEnv() {
             {password_hash: hash, password_salt: salt, role: 'superadmin'},
             {where: {id: existing.id}}
         );
-        for (const [serviceType, enabled] of [['relay', true], ['codebuddy', true], ['copilot', true]]) {
+        for (const [serviceType, enabled] of [['relay', true], ['codebuddy', true]]) {
             await TenantServiceProfile.findOrCreate({
                 where: {tenant_id: existing.id, service_type: serviceType},
                 defaults: {tenant_id: existing.id, service_type: serviceType, enabled}
@@ -135,8 +135,7 @@ export async function ensureAdminFromEnv() {
 
         await TenantServiceProfile.bulkCreate([
             {tenant_id: tenant.id, service_type: 'relay', enabled: true},
-            {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true},
-            {tenant_id: tenant.id, service_type: 'copilot', enabled: true}
+            {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true}
         ]);
 
         logger.info(`Local admin '${adminUser}' created with unified tenant (id=${tenant.id})`);

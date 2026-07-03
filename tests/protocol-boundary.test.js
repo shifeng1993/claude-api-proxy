@@ -78,8 +78,8 @@ test('protocol engine does not import upper application layers', async () => {
     assert.ok(files.length > 0, 'expected protocol engine files');
 
     const forbiddenImports = [
-        /from\s+['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway)|db)\//,
-        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway)|db)\//
+        /from\s+['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway)|db)\//,
+        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway)|db)\//
     ];
 
     const violations = [];

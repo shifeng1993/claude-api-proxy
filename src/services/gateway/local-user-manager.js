@@ -126,8 +126,7 @@ export async function createLocalUser(input, actorRole = ROLE_ADMIN) {
 
     await TenantServiceProfile.bulkCreate([
         {tenant_id: tenant.id, service_type: 'relay', enabled: true},
-        {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true},
-        {tenant_id: tenant.id, service_type: 'copilot', enabled: false}
+        {tenant_id: tenant.id, service_type: 'codebuddy', enabled: true}
     ]);
 
     logger.info(`Created local user '${username}' role=${role} (unified tenant id=${tenant.id})`);

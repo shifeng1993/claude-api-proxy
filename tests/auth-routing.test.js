@@ -55,7 +55,7 @@ test('session cookies are shared across shifeng1993 subdomains', () => {
     const headers = {};
     const res = {setHeader: (name, value) => { headers[name] = value; }};
 
-    setSessionCookie(res, 'token-value', {headers: {host: 'copilot.shifeng1993.com'}});
+    setSessionCookie(res, 'token-value', {headers: {host: 'relay.shifeng1993.com'}});
 
     assert.match(headers['Set-Cookie'], /Domain=\.shifeng1993\.com/);
     assert.match(headers['Set-Cookie'], /Secure/);
@@ -66,7 +66,7 @@ test('logout clears both shared-domain and host-only session cookies', () => {
     const headers = {};
     const res = {setHeader: (name, value) => { headers[name] = value; }};
 
-    clearSessionCookie(res, {headers: {host: 'copilot.shifeng1993.com'}});
+    clearSessionCookie(res, {headers: {host: 'relay.shifeng1993.com'}});
 
     assert.ok(Array.isArray(headers['Set-Cookie']));
     assert.equal(headers['Set-Cookie'].length, 2);
@@ -80,14 +80,14 @@ test('server allows dashboard pages to call the api namespace with credentials',
     const response = await fetch(`${base}/stats/api/overview`, {
         method: 'OPTIONS',
         headers: {
-            origin: 'https://copilot.shifeng1993.com',
+            origin: 'https://relay.shifeng1993.com',
             'access-control-request-method': 'GET',
             'access-control-request-headers': 'content-type'
         }
     });
 
     assert.equal(response.status, 204);
-    assert.equal(response.headers.get('access-control-allow-origin'), 'https://copilot.shifeng1993.com');
+    assert.equal(response.headers.get('access-control-allow-origin'), 'https://relay.shifeng1993.com');
     assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
     assert.match(response.headers.get('access-control-allow-methods') || '', /GET/);
 });
@@ -96,7 +96,7 @@ test('coding-prefixed protocol routes are normalized before service auth', async
     const base = await startServer(t);
 
     for (const prefix of ['/coding', '/api/coding']) {
-        for (const service of ['relay', 'codebuddy', 'copilot']) {
+        for (const service of ['relay', 'codebuddy']) {
             const response = await fetch(`${base}${prefix}/${service}`, {
                 headers: {accept: 'application/json'}
             });
@@ -185,7 +185,7 @@ test('unauthenticated page routes lead to login and legacy FE routes lead to das
     const loginSlash = await fetch(`${base}/login/`, {redirect: 'manual'});
     assert.equal(loginSlash.status, 200);
 
-    for (const path of ['/relayFE', '/relayFE/anything', '/codebuddyFE', '/codebuddyFE/anything', '/copilotFE', '/copilotFE/anything']) {
+    for (const path of ['/relayFE', '/relayFE/anything', '/codebuddyFE', '/codebuddyFE/anything']) {
         const response = await fetch(base + path, {redirect: 'manual'});
         assert.equal(response.status, 301);
         assert.equal(response.headers.get('location'), '/dashboard');

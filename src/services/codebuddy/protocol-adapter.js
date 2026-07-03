@@ -16,6 +16,7 @@ export {
     mergeConsecutiveAssistantMessages,
     normalizePayload,
     openAIToAnthropic,
+    prepareOpenAIChatUpstreamRequest,
     responsesRequestToChat,
     rewriteOpenAIStream,
     sanitizeAnthropicPayload,

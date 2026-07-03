@@ -35,8 +35,8 @@ test('providers do not import product wrappers or routes', async () => {
     assert.ok(files.length > 0, 'expected provider files');
 
     const forbiddenImports = [
-        /from\s+['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway))\//,
-        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway))\//
+        /from\s+['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway))\//,
+        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway))\//
     ];
 
     const violations = [];

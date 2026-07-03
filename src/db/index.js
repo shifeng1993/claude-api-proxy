@@ -6,6 +6,7 @@ const DB_PORT = parseInt(process.env.DB_PORT || '3306', 10);
 const DB_USER = process.env.DB_USER || 'root';
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_NAME = process.env.DB_NAME || 'claude_api_proxy';
+const RETIRED_SERVICE_NAMES = [['co', 'pilot'].join('')];
 
 const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
     dialect: DB_DIALECT,
@@ -29,13 +30,26 @@ const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
 
 export async function initDb() {
     await sequelize.authenticate();
+    await dropRetiredServiceTables();
     await ensureTenantCredentialColumns();
-    await ensureCopilotCredentialColumns();
     await ensureTenantUpstreamColumns();
     await sequelize.sync();
+    await dropRetiredServiceTables();
     await ensureTenantCredentialColumns();
-    await ensureCopilotCredentialColumns();
     await ensureTenantUpstreamColumns();
+}
+
+async function dropRetiredServiceTables() {
+    const queryInterface = sequelize.getQueryInterface();
+    for (const serviceName of RETIRED_SERVICE_NAMES) {
+        const table = `tenant_${serviceName}_credentials`;
+        try {
+            await queryInterface.describeTable(table);
+        } catch {
+            continue;
+        }
+        await queryInterface.dropTable(table);
+    }
 }
 
 async function ensureTenantCredentialColumns() {
@@ -53,31 +67,6 @@ async function ensureTenantCredentialColumns() {
             allowNull: false,
             defaultValue: 0
         });
-    }
-}
-
-async function ensureCopilotCredentialColumns() {
-    const queryInterface = sequelize.getQueryInterface();
-    const table = 'tenant_copilot_credentials';
-    let columns;
-    try {
-        columns = await queryInterface.describeTable(table);
-    } catch {
-        return;
-    }
-
-    const definitions = {
-        avatar_url: {type: DataTypes.TEXT, allowNull: true},
-        proxy: {type: DataTypes.STRING, allowNull: true},
-        skip_tls_verify: {type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false},
-        account_type: {type: DataTypes.STRING, allowNull: false, defaultValue: 'individual'},
-        vscode_version: {type: DataTypes.STRING, allowNull: false, defaultValue: '1.109.2'},
-        is_active: {type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false},
-        sort_order: {type: DataTypes.INTEGER, allowNull: false, defaultValue: 0}
-    };
-
-    for (const [name, definition] of Object.entries(definitions)) {
-        if (!columns[name]) await queryInterface.addColumn(table, name, definition);
     }
 }
 

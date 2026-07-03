@@ -7,7 +7,6 @@ import {
     sanitizeAnthropicPayload,
     sanitizeAnthropicMessages
 } from '../src/protocol-engine/core/shared.js';
-import {anthropicToOpenAI as copilotAnthropicToOpenAI} from '../src/services/copilot/anthropic-adapter.js';
 import {anthropicToOpenAI as relayAnthropicToOpenAI} from '../src/services/relay/anthropic-adapter.js';
 import {anthropicToOpenAI as codebuddyAnthropicToOpenAI} from '../src/services/codebuddy/anthropic-adapter.js';
 import {createChatToAnthropicStreamBridge} from '../src/protocol-engine/core/stream/canonical-stream.js';
@@ -56,26 +55,8 @@ test('sanitizeAnthropicMessages tolerates non-array input', () => {
     assert.equal(sanitizeAnthropicMessages('x'), 'x');
 });
 
-test('copilot keeps historical thinking separate from assistant content', () => {
-    const converted = copilotAnthropicToOpenAI({
-        model: 'claude-sonnet-4',
-        max_tokens: 128,
-        messages: [{
-            role: 'assistant',
-            content: [
-                {type: 'thinking', thinking: 'hidden chain'},
-                {type: 'text', text: 'visible answer'}
-            ]
-        }]
-    });
-
-    const assistant = converted.messages.find((message) => message.role === 'assistant');
-    assert.equal(assistant.content, 'visible answer');
-    assert.equal(assistant.reasoning_content, 'hidden chain');
-});
-
 test('anthropic adapters keep tool_use-only assistant content as empty string', () => {
-    for (const convert of [copilotAnthropicToOpenAI, relayAnthropicToOpenAI, codebuddyAnthropicToOpenAI]) {
+    for (const convert of [relayAnthropicToOpenAI, codebuddyAnthropicToOpenAI]) {
         const converted = convert({
             model: 'claude-sonnet-4',
             max_tokens: 128,
@@ -236,17 +217,12 @@ test('all service routes keep Anthropic endpoints out of OpenAI namespace', () =
     const routeFiles = [
         ['relay', [
             'src/routes/relay.js',
-            'src/services/relay/anthropic-messages-handler.js'
+            'src/services/relay/protocols/anthropic/messages.js'
         ]],
         ['codebuddy', [
             'src/routes/codebuddy.js',
             'src/services/codebuddy/route-runtime.js',
             'src/services/codebuddy/metadata-handler.js'
-        ]],
-        ['copilot', [
-            'src/routes/copilot.js',
-            'src/services/copilot/route-runtime.js',
-            'src/services/copilot/anthropic-messages-handler.js'
         ]]
     ];
 
@@ -267,7 +243,7 @@ test('all service routes keep Anthropic endpoints out of OpenAI namespace', () =
 test('OpenAI Responses stream fallback returns buffered output', () => {
     const relaySource = [
         'src/routes/relay.js',
-        'src/services/relay/responses-api-handler.js'
+        'src/services/relay/protocols/responses/http.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     assert.match(relaySource, /if \(!chatToResponsesBridge\.finished\)/);
     assert.match(relaySource, /chatToResponsesBridge\.finish\(\)/);
@@ -275,18 +251,11 @@ test('OpenAI Responses stream fallback returns buffered output', () => {
 
     const codebuddySource = [
         'src/routes/codebuddy.js',
-        'src/services/codebuddy/responses-api-handler.js',
-        'src/services/codebuddy/responses-websocket-handler.js'
+        'src/services/codebuddy/protocols/responses/http.js',
+        'src/services/codebuddy/protocols/responses/websocket.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
     assert.match(codebuddySource, /if \(!chatToResponsesBridge\.finished\)/);
     assert.match(codebuddySource, /chatToResponsesBridge\.finish\(\)/);
-
-    const copilotSource = [
-        'src/routes/copilot.js',
-        'src/services/copilot/responses-api-handler.js'
-    ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
-    assert.match(copilotSource, /if \(!chatToResponsesBridge\.finished\)/);
-    assert.match(copilotSource, /chatToResponsesBridge\.finish\(\)/);
 });
 
 test('relay protocol converters preserve tools and cache usage across Chat and Anthropic', () => {
@@ -468,11 +437,11 @@ test('chatRequestToAnthropic preserves file blocks through canonical rendering',
 test('relay routes expose cross-protocol bridges without protocol mismatch rejects', () => {
     const source = [
         'src/routes/relay.js',
-        'src/services/relay/chat-completions-handler.js',
-        'src/services/relay/anthropic-messages-handler.js',
-        'src/services/relay/responses-api-handler.js',
-        'src/services/relay/responses-compact-handler.js',
-        'src/services/relay/responses-websocket-handler.js'
+        'src/services/relay/protocols/chat/completions.js',
+        'src/services/relay/protocols/anthropic/messages.js',
+        'src/services/relay/protocols/responses/http.js',
+        'src/services/relay/protocols/responses/compact.js',
+        'src/services/relay/protocols/responses/websocket.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     for (const requestType of [
@@ -491,8 +460,8 @@ test('relay routes expose cross-protocol bridges without protocol mismatch rejec
 });
 
 test('relay Responses passthrough paths route visible input through continuation state', () => {
-    const responsesApi = readFileSync(join(root, 'src/services/relay/responses-api-handler.js'), 'utf8');
-    const responsesWs = readFileSync(join(root, 'src/services/relay/responses-websocket-handler.js'), 'utf8');
+    const responsesApi = readFileSync(join(root, 'src/services/relay/protocols/responses/http.js'), 'utf8');
+    const responsesWs = readFileSync(join(root, 'src/services/relay/protocols/responses/websocket.js'), 'utf8');
     const continuation = readFileSync(join(root, 'src/services/session/responses-continuation.js'), 'utf8');
 
     assert.match(responsesApi, /prepareResponsesContinuationPayload\(\{\s*conversationStore: relayConversationStore/s);
@@ -501,8 +470,8 @@ test('relay Responses passthrough paths route visible input through continuation
 });
 
 test('relay Responses passthrough paths apply continuation limit before upstream transport', () => {
-    const responsesApi = readFileSync(join(root, 'src/services/relay/responses-api-handler.js'), 'utf8');
-    const responsesWs = readFileSync(join(root, 'src/services/relay/responses-websocket-handler.js'), 'utf8');
+    const responsesApi = readFileSync(join(root, 'src/services/relay/protocols/responses/http.js'), 'utf8');
+    const responsesWs = readFileSync(join(root, 'src/services/relay/protocols/responses/websocket.js'), 'utf8');
     const continuation = readFileSync(join(root, 'src/services/session/responses-continuation.js'), 'utf8');
 
     assert.doesNotMatch(responsesApi, /limitResponsesPassthroughPayload/);
@@ -512,7 +481,7 @@ test('relay Responses passthrough paths apply continuation limit before upstream
 });
 
 test('relay Anthropic passthrough non-stream stats use split input token helper', () => {
-    const source = readFileSync(join(root, 'src/services/relay/anthropic-messages-handler.js'), 'utf8');
+    const source = readFileSync(join(root, 'src/services/relay/protocols/anthropic/messages.js'), 'utf8');
 
     assert.match(
         source,
@@ -530,7 +499,7 @@ test('relay Anthropic stream stats keep the maximum cache hit tokens across usag
 });
 
 test('relay Chat handler does not reference Anthropic payload before it is created', () => {
-    const source = readFileSync(join(root, 'src/services/relay/chat-completions-handler.js'), 'utf8');
+    const source = readFileSync(join(root, 'src/services/relay/protocols/chat/completions.js'), 'utf8');
     const start = source.indexOf('async function handleOpenAIChatCompletions');
     const end = source.indexOf("if (isResponsesWebSocketUpstream(upstream))", start);
     const handler = source.slice(start, end);
@@ -543,7 +512,7 @@ test('relay Chat handler does not reference Anthropic payload before it is creat
 });
 
 test('relay Anthropic passthrough stream records accumulated response into session', () => {
-    const source = readFileSync(join(root, 'src/services/relay/anthropic-messages-handler.js'), 'utf8');
+    const source = readFileSync(join(root, 'src/services/relay/protocols/anthropic/messages.js'), 'utf8');
 
     assert.match(source, /const anthropicAccumulator = createAnthropicStreamAccumulator/);
     assert.match(source, /anthropicAccumulator\.feed\(event, parsed\)/);
@@ -554,7 +523,7 @@ test('relay Anthropic passthrough stream records accumulated response into sessi
 });
 
 test('relay Anthropic via Chat stream records accumulated chat response into session', () => {
-    const source = readFileSync(join(root, 'src/services/relay/anthropic-messages-handler.js'), 'utf8');
+    const source = readFileSync(join(root, 'src/services/relay/protocols/anthropic/messages.js'), 'utf8');
     const requestTypeIndex = source.indexOf("requestType: 'Anthropic'");
     const start = source.lastIndexOf("if (anthropicPayload.stream) {", requestTypeIndex);
     const end = source.indexOf('} else {', requestTypeIndex);
@@ -583,8 +552,8 @@ test('relay OpenAI passthrough stream records accumulated chat response into ses
 test('relay Responses output streams record accumulated responses when completed is missing', () => {
     const source = [
         'src/routes/relay.js',
-        'src/services/relay/chat-completions-handler.js',
-        'src/services/relay/responses-websocket-handler.js'
+        'src/services/relay/protocols/chat/completions.js',
+        'src/services/relay/protocols/responses/websocket.js'
     ].map((file) => readFileSync(join(root, file), 'utf8')).join('\n');
 
     assert.match(source, /createResponsesStreamAccumulator/);
@@ -598,7 +567,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
     const cases = [
         {
             name: 'relay Responses to Chat',
-            file: 'src/services/relay/chat-completions-handler.js',
+            file: 'src/services/relay/protocols/chat/completions.js',
             present: [
                 /createResponsesToChatStreamBridge/,
                 /responsesToChatBridge\.feed\(event\.type,\s*event\.data\)/,
@@ -608,7 +577,7 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'relay Chat to Responses',
-            file: 'src/services/relay/responses-websocket-handler.js',
+            file: 'src/services/relay/protocols/responses/websocket.js',
             present: [
                 /createChatToResponsesStreamBridge/,
                 /chatToResponsesBridge\.feed\(chatChunk\)/,
@@ -618,45 +587,15 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'CodeBuddy Chat to Responses',
-            file: 'src/services/codebuddy/responses-api-handler.js',
+            file: 'src/services/codebuddy/protocols/responses/http.js',
             present: [/createChatToResponsesStreamBridge/, /chatToResponsesBridge\.feed\(data\)/],
             absent: [/chatChunkToResponsesEvents\(/]
-        },
-        {
-            name: 'Copilot Chat to Responses',
-            file: 'src/services/copilot/responses-api-handler.js',
-            present: [/createChatToResponsesStreamBridge/, /chatToResponsesBridge\.feed\(data\)/],
-            absent: [/chatChunkToResponsesEvents\(/]
-        },
-        {
-            name: 'Copilot Responses to Chat',
-            file: 'src/services/copilot/chat-completions-handler.js',
-            present: [/createResponsesToChatStreamBridge/, /responsesToChatBridge\.feed\(event\.type,\s*event\.data\)/],
-            absent: [/responsesEventToChatChunks\(/]
-        },
-        {
-            name: 'Copilot Responses to Responses',
-            file: 'src/services/copilot/responses-api-handler.js',
-            present: [/createResponsesToResponsesStreamBridge/, /responsesToResponsesBridge\.feed\(event\.type,\s*event\.data\)/],
-            absent: [/responsesEventToResponsesEvents\(/]
-        },
-        {
-            name: 'Copilot Chat to Anthropic',
-            file: 'src/services/copilot/anthropic-messages-handler.js',
-            present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(openAIChunk\)/],
-            absent: [/translateStreamChunk\(openAIChunk/]
         },
         {
             name: 'CodeBuddy Anthropic via Chat',
-            file: 'src/services/codebuddy/anthropic-messages-handler.js',
+            file: 'src/services/codebuddy/protocols/anthropic/messages.js',
             present: [/createChatToAnthropicStreamBridge/, /chatToAnthropicBridge\.feed\(data\)/],
             absent: [/new ClaudeStreamState/, /new SSEWriter/]
-        },
-        {
-            name: 'Copilot Responses to Anthropic',
-            file: 'src/services/copilot/anthropic-messages-handler.js',
-            present: [/createResponsesToAnthropicStreamBridge/, /responsesToAnthropicBridge\.feed\(event\.type,\s*event\.data\)/],
-            absent: [/responsesEventToAnthropicEvents\(/]
         },
         {
             name: 'relay Chat to Anthropic',
@@ -666,19 +605,19 @@ test('stream routes use canonical bridge wiring without legacy state machines', 
         },
         {
             name: 'relay Anthropic via Chat',
-            file: 'src/services/relay/anthropic-messages-handler.js',
+            file: 'src/services/relay/protocols/anthropic/messages.js',
             present: [/chatToAnthropicBridge\.feed\(data\)/],
             absent: [/new ClaudeStreamState/, /new SSEWriter/]
         },
         {
             name: 'relay Anthropic to Chat',
-            file: 'src/services/relay/chat-completions-handler.js',
+            file: 'src/services/relay/protocols/chat/completions.js',
             present: [/streamAnthropicSSEToChatChunks/],
             absent: [/anthropicStreamToChatChunks\(/]
         },
         {
             name: 'relay Responses to Responses',
-            file: 'src/services/relay/responses-api-handler.js',
+            file: 'src/services/relay/protocols/responses/http.js',
             present: [/createResponsesToResponsesStreamBridge/],
             absent: [/responsesEventToResponsesEvents\(/]
         }
@@ -711,16 +650,6 @@ test('legacy stream state machine exports stay out of product adapters', () => {
         },
         {
             file: 'src/services/relay/anthropic-adapter.js',
-            absent: [
-                /class SSEWriter/,
-                /class ClaudeStreamState/,
-                /export \{SSEWriter, ClaudeStreamState\}/,
-                /export function createStreamState/,
-                /export function translateStreamChunk/
-            ]
-        },
-        {
-            file: 'src/services/copilot/anthropic-adapter.js',
             absent: [
                 /class SSEWriter/,
                 /class ClaudeStreamState/,

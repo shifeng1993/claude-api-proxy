@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
 import {readdir, stat} from 'node:fs/promises';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
@@ -20,6 +21,21 @@ async function listJsFiles(dir) {
     return nested.flat();
 }
 
+async function listTextFiles(target, extensions = new Set(['.js', '.html', '.md', '.json'])) {
+    const targetStat = await stat(target);
+    if (targetStat.isFile()) {
+        return extensions.has(path.extname(target)) ? [target] : [];
+    }
+    const entries = await readdir(target, {withFileTypes: true});
+    const nested = await Promise.all(entries.map((entry) => {
+        const fullPath = path.join(target, entry.name);
+        return entry.isDirectory()
+            ? listTextFiles(fullPath, extensions)
+            : extensions.has(path.extname(entry.name)) ? [fullPath] : [];
+    }));
+    return nested.flat();
+}
+
 test('product services name protocol shims as adapters instead of translators', async () => {
     const files = await listJsFiles(servicesRoot);
     const forbiddenFiles = files
@@ -29,10 +45,76 @@ test('product services name protocol shims as adapters instead of translators', 
     assert.deepEqual(forbiddenFiles, []);
 });
 
+test('product protocol entry files live under business protocol directories', async () => {
+    const expectedFiles = [
+        'src/protocol-engine/core/chat/index.js',
+        'src/services/relay/protocols/chat/completions.js',
+        'src/services/relay/protocols/chat/outbound.js',
+        'src/services/relay/protocols/anthropic/messages.js',
+        'src/services/relay/protocols/responses/http.js',
+        'src/services/relay/protocols/responses/compact.js',
+        'src/services/relay/protocols/responses/websocket.js',
+        'src/services/codebuddy/protocols/chat/completions.js',
+        'src/services/codebuddy/protocols/chat/outbound.js',
+        'src/services/codebuddy/protocols/anthropic/messages.js',
+        'src/services/codebuddy/protocols/responses/http.js',
+        'src/services/codebuddy/protocols/responses/compact.js',
+        'src/services/codebuddy/protocols/responses/websocket.js',
+    ];
+    const legacyFiles = [
+        'src/protocol-engine/core/chat-upstream.js',
+        'src/services/relay/chat-completions-handler.js',
+        'src/services/relay/outbound-chat.js',
+        'src/services/relay/anthropic-messages-handler.js',
+        'src/services/relay/responses-api-handler.js',
+        'src/services/relay/responses-compact-handler.js',
+        'src/services/relay/responses-websocket-handler.js',
+        'src/services/codebuddy/chat-completions-handler.js',
+        'src/services/codebuddy/outbound-chat.js',
+        'src/services/codebuddy/anthropic-messages-handler.js',
+        'src/services/codebuddy/responses-api-handler.js',
+        'src/services/codebuddy/responses-compact-handler.js',
+        'src/services/codebuddy/responses-websocket-handler.js',
+    ];
+
+    const missingExpected = expectedFiles.filter((file) => !existsSync(path.join(repoRoot, file)));
+    const staleLegacy = legacyFiles.filter((file) => existsSync(path.join(repoRoot, file)));
+
+    assert.deepEqual({missingExpected, staleLegacy}, {missingExpected: [], staleLegacy: []});
+});
+
+test('retired third product surface stays removed', async () => {
+    const retired = ['co', 'pilot'].join('');
+    const removedEntrypoints = [
+        path.join(repoRoot, 'src', 'routes', `${retired}.js`),
+        path.join(repoRoot, 'src', 'routes', `dashboard-${retired}.js`),
+        path.join(repoRoot, 'src', 'services', retired)
+    ];
+    const staleEntrypoints = removedEntrypoints
+        .filter((entry) => existsSync(entry))
+        .map((entry) => path.relative(repoRoot, entry).replaceAll('\\', '/'));
+
+    const scannedRoots = [
+        path.join(repoRoot, 'src'),
+        path.join(repoRoot, 'docs'),
+        path.join(repoRoot, 'README.md'),
+        path.join(repoRoot, 'package.json')
+    ];
+    const scannedFiles = (await Promise.all(scannedRoots.map((target) => listTextFiles(target)))).flat();
+    const staleReferences = [];
+    for (const file of scannedFiles) {
+        const source = await readFile(file, 'utf8');
+        if (source.toLowerCase().includes(retired)) {
+            staleReferences.push(path.relative(repoRoot, file).replaceAll('\\', '/'));
+        }
+    }
+
+    assert.deepEqual({staleEntrypoints, staleReferences}, {staleEntrypoints: [], staleReferences: []});
+});
+
 test('routes do not depend on another product service API for shared helpers', async () => {
     const checkedRoutes = [
         'src/routes/relay.js',
-        'src/routes/copilot.js'
     ];
     const violations = [];
 
@@ -47,7 +129,7 @@ test('routes do not depend on another product service API for shared helpers', a
 });
 
 test('product services receive gateway helpers through injection', async () => {
-    const productServiceDirs = ['relay', 'codebuddy', 'copilot'];
+    const productServiceDirs = ['relay', 'codebuddy'];
     const gatewayImport =
         /from\s+['"][^'"]*(?:services\/gateway|\.\.\/gateway|\.\.\/\.\.\/gateway)[^'"]*['"]/;
     const violations = [];
@@ -66,7 +148,7 @@ test('product services receive gateway helpers through injection', async () => {
 });
 
 test('product services avoid gateway singleton naming leakage', async () => {
-    const productServiceDirs = ['relay', 'codebuddy', 'copilot'];
+    const productServiceDirs = ['relay', 'codebuddy'];
     const violations = [];
 
     for (const dir of productServiceDirs) {
@@ -117,7 +199,6 @@ test('app entry imports authentication through gateway public boundary', async (
 
 test('legacy unused runtime helper files stay removed', async () => {
     const removedFiles = [
-        'src/services/copilot/copilot-ws-client.js',
         'src/services/relay/config.js',
         'src/utils/circular-buffer.js'
     ];
@@ -186,7 +267,6 @@ test('routes use product protocol adapters instead of protocol core directly', a
 test('protocol routes use public service boundaries for providers session and shared helpers', async () => {
     const checkedRoutes = [
         'src/routes/relay.js',
-        'src/routes/copilot.js',
         'src/routes/codebuddy.js'
     ];
     const privateServiceImports = /services\/(?:providers\/(?:upstream-api|stream-response|upstream-manager)|session\/(?:conversation-state|context-compactor|responses-continuation)|shared\/(?:responses-ws-client|responses-ws-server))\.js/;
@@ -224,21 +304,18 @@ test('services import Responses WebSocket shared helpers through the shared boun
 test('product services expose route runtime factories from public boundaries', async () => {
     const relay = await import(pathToFileURL(path.join(servicesRoot, 'relay', 'index.js')).href);
     const codebuddy = await import(pathToFileURL(path.join(servicesRoot, 'codebuddy', 'index.js')).href);
-    const copilot = await import(pathToFileURL(path.join(servicesRoot, 'copilot', 'index.js')).href);
-
+    
     assert.equal(typeof relay.createRelayRouteRuntime, 'function');
     assert.equal(typeof codebuddy.createCodebuddyRouteRuntime, 'function');
-    assert.equal(typeof copilot.createCopilotRouteRuntime, 'function');
 });
 
 test('protocol routes import product services through public boundaries', async () => {
     const checkedRoutes = [
         'src/routes/relay.js',
-        'src/routes/copilot.js',
         'src/routes/codebuddy.js'
     ];
     const privateProductRuntimeImport =
-        /from\s+['"][^'"]*services\/(?:relay|copilot|codebuddy)\/route-runtime\.js['"]/;
+        /from\s+['"][^'"]*services\/(?:relay|codebuddy)\/route-runtime\.js['"]/;
     const violations = [];
 
     for (const route of checkedRoutes) {
@@ -254,11 +331,10 @@ test('protocol routes import product services through public boundaries', async 
 test('dashboard routes import product services through public boundaries', async () => {
     const checkedRoutes = [
         'src/routes/dashboard-codebuddy.js',
-        'src/routes/dashboard-copilot.js',
         'src/routes/dashboard-frontend.js'
     ];
     const privateProductImport =
-        /from\s+['"][^'"]*services\/(?:codebuddy|copilot)\/(?!index\.js['"])[^'"]+['"]/;
+        /from\s+['"][^'"]*services\/(?:codebuddy)\/(?!index\.js['"])[^'"]+['"]/;
     const violations = [];
 
     for (const route of checkedRoutes) {
@@ -290,23 +366,6 @@ test('stats route delegates usage aggregation to gateway service', async () => {
         .then((text) => text.replaceAll('\\', '/'));
 
     assert.doesNotMatch(source, /db\/models|from\s+['"]sequelize['"]|\bTenantDailyUsage\b/);
-});
-
-test('dashboard Copilot route delegates credential persistence to Copilot service', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/dashboard-copilot.js'), 'utf8')
-        .then((text) => text.replaceAll('\\', '/'));
-
-    assert.doesNotMatch(source, /db\/models|TenantCopilotCredential/);
-});
-
-test('dashboard Copilot route delegates credential shaping to Copilot service', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/dashboard-copilot.js'), 'utf8')
-        .then((text) => text.replaceAll('\\', '/'));
-
-    assert.doesNotMatch(
-        source,
-        /ACCOUNT_TYPES|DEFAULT_VSCODE_VERSION|editableValues|copilot_token_expires_at|github_token|credential\.update|credential\.destroy/
-    );
 });
 
 test('feedback admin route delegates feedback persistence to feedback service', async () => {
@@ -623,69 +682,6 @@ test('codebuddy route delegates handler composition to codebuddy runtime service
     assert.deepEqual(violations, []);
 });
 
-test('copilot route delegates support helpers to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    const normalized = source.replaceAll('\\', '/');
-    const forbiddenPatterns = [
-        /\bfunction\s+(?:sendJson|sendOpenAIError|sendAnthropicError|isResponsesProtocolError|sendResponsesProtocolError|upstreamErrorStatus)\b/,
-        /\bfunction\s+(?:extractProxyFromHeaders|getCopilotNetworkOptions|normalizeConversationKey|extractConversationKeyFromPayload|extractConversationKey)\b/,
-        /\basync\s+function\s+ensureCopilotAuth\b/,
-        /\bResponsesWebSocketError\b/,
-        /\bisNetworkError\b/
-    ];
-    const violations = forbiddenPatterns
-        .filter((pattern) => pattern.test(normalized))
-        .map((pattern) => pattern.source);
-
-    assert.deepEqual(violations, []);
-});
-
-test('copilot route delegates metadata handlers to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    const forbiddenPatterns = [
-        /\basync\s+function\s+handleOpenAIModels\b/,
-        /\basync\s+function\s+handleAnthropicCountTokens\b/,
-        /\basync\s+function\s+handleAnthropicModels\b/
-    ];
-    const violations = forbiddenPatterns
-        .filter((pattern) => pattern.test(source))
-        .map((pattern) => pattern.source);
-
-    assert.deepEqual(violations, []);
-});
-
-test('copilot route delegates Chat Completions handler to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.equal(/\basync\s+function\s+handleOpenAIChatCompletions\b/.test(source), false);
-});
-
-test('copilot route delegates Responses Compact handler to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.equal(/\basync\s+function\s+handleResponsesCompact\b/.test(source), false);
-});
-
-test('copilot route delegates Responses API handler to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.equal(/\basync\s+function\s+handleResponsesAPI\b/.test(source), false);
-});
-
-test('copilot route delegates Responses WebSocket handler to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.equal(/\bfunction\s+handleCopilotResponsesWSInContext\b/.test(source), false);
-});
-
-test('copilot route delegates Anthropic Messages handler to copilot services', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.equal(/\basync\s+function\s+handleAnthropicMessages\b/.test(source), false);
-});
-
-test('copilot route delegates handler composition to copilot runtime service', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/routes/copilot.js'), 'utf8');
-    assert.match(source, /createCopilotRouteRuntime/);
-    assert.equal(/\bfunction\s+handleRoot\b/.test(source), false);
-    assert.equal(/\brouteCopilotRequestInContext\b/.test(source), false);
-});
-
 test('relay and codebuddy anthropic adapters delegate request conversion to core protocol', async () => {
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
@@ -708,7 +704,6 @@ test('anthropic adapters do not re-export unrelated stream helpers', async () =>
     const checkedAdapters = [
         'src/services/relay/anthropic-adapter.js',
         'src/services/codebuddy/anthropic-adapter.js',
-        'src/services/copilot/anthropic-adapter.js'
     ];
     const violations = [];
 
@@ -723,7 +718,7 @@ test('anthropic adapters do not re-export unrelated stream helpers', async () =>
 });
 
 test('product services centralize protocol core imports in protocol adapters', async () => {
-    const productRoots = ['codebuddy', 'copilot', 'relay']
+    const productRoots = ['codebuddy', 'relay']
         .map((name) => path.join(servicesRoot, name));
     const files = (await Promise.all(productRoots.map(listJsFiles))).flat();
     const violations = [];
@@ -744,7 +739,6 @@ test('product protocol adapters import the protocol engine public module', async
     const checkedAdapters = [
         'src/services/relay/protocol-adapter.js',
         'src/services/codebuddy/protocol-adapter.js',
-        'src/services/copilot/protocol-adapter.js',
         'src/services/shared/protocol-adapter.js',
         'src/services/providers/protocol-adapter.js',
         'src/services/session/protocol-adapter.js'
@@ -781,24 +775,3 @@ test('shared services centralize protocol core imports in their protocol adapter
     assert.deepEqual(violations, []);
 });
 
-test('copilot anthropic adapter delegates Responses conversions to core protocol', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/services/copilot/anthropic-adapter.js'), 'utf8');
-    const privateResponsesHelpers = /\bfunction\s+(?:anthropicContentToResponsesContent|anthropicMessagesToResponsesInput|anthropicSystemToInstructions|anthropicToolChoiceToResponses)\b/;
-
-    assert.equal(privateResponsesHelpers.test(source), false);
-});
-
-test('copilot anthropic adapter delegates Chat request conversion to core protocol', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/services/copilot/anthropic-adapter.js'), 'utf8');
-    const privateChatHelpers = /\bfunction\s+(?:resolveThinkingConfig|translateMessages|handleUserMessage|handleAssistantMessage)\b/;
-
-    assert.equal(privateChatHelpers.test(source), false);
-});
-
-test('copilot runtime receives usage recording instead of importing gateway singleton', async () => {
-    const source = await readFile(path.join(repoRoot, 'src/services/copilot/runtime.js'), 'utf8')
-        .then((text) => text.replaceAll('\\', '/'));
-
-    assert.doesNotMatch(source, /services\/gateway|\.{1,2}\/gateway/);
-    assert.doesNotMatch(source, /unifiedTenantManager/);
-});

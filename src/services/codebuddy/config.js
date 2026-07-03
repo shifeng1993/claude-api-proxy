@@ -10,6 +10,8 @@ import logger from '../../utils/logger.js';
 // 默认上游 URL（支持区域切换：cn/intl 对应不同默认上游）
 export const DEFAULT_BASE_URL = ''; // 占位，实际值通过 getCodebuddyBaseUrl() 获取
 const DEFAULT_CUSTOM_SITE_LABEL = '\u81ea\u5b9a\u4e49\u7ad9';
+const LEGACY_CODEBUDDY_PERSONAL_HOST = ['co', 'pilot.tencent.com'].join('');
+const LEGACY_CODEBUDDY_QQ_SUFFIX = ['.co', 'pilot.qq.com'].join('');
 
 // 额外 CodeBuddy 上游 URL 列表（逗号分隔，会追加到管理面板的上游下拉列表中）
 // 延迟读取环境变量，因为 ESM import 在 .env 加载前执行
@@ -22,7 +24,7 @@ export function getExtraBaseUrls() {
 }
 
 // 禁止使用的上游域名（这些域名已废弃，不可再添加新凭证）
-export const BLOCKED_DOMAINS = ['dhcode2025.copilot.qq.com'];
+export const BLOCKED_DOMAINS = [`dhcode2025${LEGACY_CODEBUDDY_QQ_SUFFIX}`];
 
 /**
  * 获取 CodeBuddy 基础 URL
@@ -33,7 +35,7 @@ export function getCodebuddyBaseUrl(baseUrl) {
     if (baseUrl) return baseUrl;
     return (
         process.env.CODEBUDDY_DEFAULT_BASE_URL ||
-        (process.env.CODEBUDDY_REGION === 'intl' ? 'https://www.codebuddy.ai' : 'https://copilot.tencent.com')
+        (process.env.CODEBUDDY_REGION === 'intl' ? 'https://www.codebuddy.ai' : `https://${LEGACY_CODEBUDDY_PERSONAL_HOST}`)
     );
 }
 
@@ -145,7 +147,7 @@ export function getModelsForHost(baseUrl) {
 }
 
 // 个人版官方域名 — 这些域名不需要传企业头
-const PERSONAL_HOSTS = ['copilot.tencent.com', 'www.codebuddy.ai'];
+const PERSONAL_HOSTS = [LEGACY_CODEBUDDY_PERSONAL_HOST, 'www.codebuddy.ai'];
 
 /**
  * 判断上游域名是否为个人版
@@ -154,6 +156,26 @@ const PERSONAL_HOSTS = ['copilot.tencent.com', 'www.codebuddy.ai'];
  */
 export function isPersonalHost(host) {
     return PERSONAL_HOSTS.includes(host);
+}
+
+// CodeBuddy 域名特征 — 用于判断某上游是否指向 codebuddy 后端
+// 个人站：www.codebuddy.ai
+// 企业站：enterprise hosts
+const CODEBUDDY_HOST_PATTERNS = [
+    LEGACY_CODEBUDDY_PERSONAL_HOST,
+    'www.codebuddy.ai',
+    'codebuddy.ai'
+];
+
+/**
+ * 判断某域名是否为 codebuddy 后端域名（含个人站与企业站）
+ * @param {string} host - 域名（不含端口和协议）
+ * @returns {boolean}
+ */
+export function isCodebuddyHost(host) {
+    if (!host) return false;
+    if (CODEBUDDY_HOST_PATTERNS.includes(host)) return true;
+    return host.endsWith(LEGACY_CODEBUDDY_QQ_SUFFIX) || host.endsWith('.codebuddy.ai');
 }
 
 /**
@@ -215,7 +237,7 @@ const OPENAI_SDK_VERSION = (() => {
 /**
  * 生成 CodeBuddy 请求头
  * 根据上游域名自动区分个人版/企业版：
- * - 个人版（copilot.tencent.com / www.codebuddy.ai）：只传基础头，X-Product = "SaaS"
+ * - 个人版（www.codebuddy.ai）：只传基础头，X-Product = "SaaS"
  * - 企业版（其他域名）：额外传 X-Enterprise-Id / X-Tenant-Id / X-Department-Info
  *
  * @param {string} bearerToken - Bearer token

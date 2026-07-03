@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayResponsesCompactHandler} from '../src/services/relay/responses-compact-handler.js';
+import {createRelayResponsesCompactHandler} from '../src/services/relay/protocols/responses/compact.js';
 
 function createResponse() {
     return {calls: [], headersSent: false, destroyed: false, writableEnded: false};

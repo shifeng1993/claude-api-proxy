@@ -66,7 +66,7 @@ test('anthropicRequestToChat preserves reasoning and orders tool results by assi
     assert.equal(converted.messages[5].content, 'Continue');
 });
 
-test('anthropicRequestToChat supports Copilot system ordering and tool argument serialization options', () => {
+test('anthropicRequestToChat supports system ordering and tool argument serialization options', () => {
     const converted = anthropicRequestToChat({
         model: 'claude-haiku-4',
         system: [

@@ -24,7 +24,6 @@ import {
     sendCodebuddyOpenAIError as sendOpenAIError
 } from './response-writer.js';
 import {resolveCodebuddyConversationId as resolveConversationId} from './conversation-key.js';
-import {prepareCodebuddyOutboundChatRequest} from './outbound-chat.js';
 import {
     createCodebuddyCredentialResolver,
     createCodebuddyTenantCredentialManagerResolver
@@ -32,11 +31,16 @@ import {
 import {getCodebuddyCredentialService} from './credential-service.js';
 import {createCodebuddyUsageRecorder} from './usage.js';
 import {mapCodebuddyModelName as mapModelName} from './model-mapping.js';
-import {createCodebuddyChatCompletionsHandler} from './chat-completions-handler.js';
-import {createCodebuddyAnthropicMessagesHandler} from './anthropic-messages-handler.js';
-import {createCodebuddyResponsesCompactHandler} from './responses-compact-handler.js';
-import {createCodebuddyResponsesAPIHandler} from './responses-api-handler.js';
-import {createCodebuddyResponsesWebSocketHandler} from './responses-websocket-handler.js';
+import {
+    createCodebuddyChatCompletionsHandler,
+    prepareCodebuddyOutboundChatRequest
+} from './protocols/chat/index.js';
+import {createCodebuddyAnthropicMessagesHandler} from './protocols/anthropic/index.js';
+import {
+    createCodebuddyResponsesAPIHandler,
+    createCodebuddyResponsesCompactHandler,
+    createCodebuddyResponsesWebSocketHandler
+} from './protocols/responses/index.js';
 import {createCodebuddyMetadataHandlers} from './metadata-handler.js';
 import {createCodebuddyCredentialsHandler} from './credentials-handler.js';
 import defaultLogger from '../../utils/logger.js';

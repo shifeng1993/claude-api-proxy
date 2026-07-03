@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCodebuddyResponsesWebSocketHandler} from '../src/services/codebuddy/responses-websocket-handler.js';
+import {createCodebuddyResponsesWebSocketHandler} from '../src/services/codebuddy/protocols/responses/websocket.js';
 import {mapCodebuddyModelName} from '../src/services/codebuddy/model-mapping.js';
 
 async function collect(iterable) {

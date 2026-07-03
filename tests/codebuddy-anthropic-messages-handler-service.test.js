@@ -1,7 +1,7 @@
 import {PassThrough} from 'node:stream';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCodebuddyAnthropicMessagesHandler} from '../src/services/codebuddy/anthropic-messages-handler.js';
+import {createCodebuddyAnthropicMessagesHandler} from '../src/services/codebuddy/protocols/anthropic/messages.js';
 import {mapCodebuddyModelName} from '../src/services/codebuddy/model-mapping.js';
 
 function createResponse() {

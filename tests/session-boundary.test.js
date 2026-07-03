@@ -33,8 +33,8 @@ test('session service does not import upper application layers', async () => {
     assert.ok(files.length > 0, 'expected session service files');
 
     const forbiddenImports = [
-        /from\s+['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway)|db)\//,
-        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|copilot|codebuddy|gateway)|db)\//
+        /from\s+['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway)|db)\//,
+        /import\([^)]*['"][^'"]*(?:routes|services\/(?:relay|codebuddy|gateway)|db)\//
     ];
 
     const violations = [];

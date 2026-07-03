@@ -1,7 +1,7 @@
 import {PassThrough} from 'node:stream';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCodebuddyResponsesAPIHandler} from '../src/services/codebuddy/responses-api-handler.js';
+import {createCodebuddyResponsesAPIHandler} from '../src/services/codebuddy/protocols/responses/http.js';
 import {mapCodebuddyModelName} from '../src/services/codebuddy/model-mapping.js';
 
 function createResponse() {

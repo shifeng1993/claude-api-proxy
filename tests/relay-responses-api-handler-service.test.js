@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayResponsesAPIHandler} from '../src/services/relay/responses-api-handler.js';
+import {createRelayResponsesAPIHandler} from '../src/services/relay/protocols/responses/http.js';
 import {RelayConversationStore} from '../src/services/session/conversation-state.js';
 import {prepareResponsesContinuationPayload} from '../src/services/session/responses-continuation.js';
 

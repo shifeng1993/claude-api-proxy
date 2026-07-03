@@ -57,7 +57,7 @@ test('stats overview filters daily usage by requested service endpoint', async (
     try {
         const req = {
             method: 'GET',
-            url: '/stats/api/overview?service=copilot&startDate=2026-06-07&endDate=2026-06-07',
+            url: '/stats/api/overview?service=codebuddy&startDate=2026-06-07&endDate=2026-06-07',
             headers: {host: 'localhost'},
             socket: {remoteAddress: '127.0.0.1'}
         };
@@ -66,7 +66,7 @@ test('stats overview filters daily usage by requested service endpoint', async (
         assert.equal(await routeStatsRequest(req, res), true);
         assert.equal(res.status, 200);
         assert.ok(serviceFilters.length >= 3);
-        assert.deepEqual([...new Set(serviceFilters)], ['copilot']);
+        assert.deepEqual([...new Set(serviceFilters)], ['codebuddy']);
     } finally {
         TenantDailyUsage.findAll = originalFindAll;
         unifiedTenantManager.isEnabled = originalIsEnabled;

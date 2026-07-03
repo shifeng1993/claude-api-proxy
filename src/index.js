@@ -60,8 +60,7 @@ function getLocalIp() {
             logger.info(`Server running at http://${localIp}:${PORT}`);
             logger.info(`Admin panel: http://${localIp}:${PORT}/dashboard`);
             logger.info(`Relay:    http://${localIp}:${PORT}/relay`);
-            logger.info(`CodeBuddy: http://${localIp}:${PORT}/codebuddy`);
-            logger.info(`Copilot:  http://${localIp}:${PORT}/copilot\n`);
+            logger.info(`CodeBuddy: http://${localIp}:${PORT}/codebuddy\n`);
         });
 
         // Graceful shutdown

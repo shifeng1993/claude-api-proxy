@@ -125,7 +125,7 @@ test('passthrough compatibility stays as normalization without a runtime branch 
 test('Responses WebSocket relay keeps the Anthropic upstream conversion path enabled', () => {
     const relaySource = [
         'src/routes/relay.js',
-        'src/services/relay/responses-websocket-handler.js'
+        'src/services/relay/protocols/responses/websocket.js'
     ].map((file) => readFileSync(join(process.cwd(), file), 'utf8')).join('\n');
 
     assert.equal(relaySource.includes('ResponsesWSViaAnthropic'), true);

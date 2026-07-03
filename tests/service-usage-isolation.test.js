@@ -19,8 +19,8 @@ test('flushes usage deltas to the matching tenant service profile', async () => 
     try {
         unifiedTenantManager.incrementApiCallCount(42, 'relay');
         unifiedTenantManager.incrementTokenUsage(42, 'relay', 10, 20, 3);
-        unifiedTenantManager.incrementApiCallCount(42, 'copilot');
-        unifiedTenantManager.incrementTokenUsage(42, 'copilot', 7, 8, 1);
+        unifiedTenantManager.incrementApiCallCount(42, 'codebuddy');
+        unifiedTenantManager.incrementTokenUsage(42, 'codebuddy', 7, 8, 1);
         await unifiedTenantManager._flushDirtyTenants();
 
         assert.deepEqual(writes, [
@@ -42,7 +42,7 @@ test('flushes usage deltas to the matching tenant service profile', async () => 
                     total_cache_hit_tokens: 1,
                     total_credit: 0
                 },
-                where: {tenant_id: 42, service_type: 'copilot'}
+                where: {tenant_id: 42, service_type: 'codebuddy'}
             }
         ]);
     } finally {

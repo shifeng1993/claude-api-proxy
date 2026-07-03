@@ -17,7 +17,7 @@ function redirect(res, location) {
 }
 
 /**
- * API 鉴权守卫 — /relay/*, /codebuddy/*, /copilot/*
+ * API 鉴权守卫 — /relay/*, /codebuddy/*
  * 成功时注入 req.tenantId
  * @returns {boolean} false = 请求已被响应（鉴权失败），true = 继续处理
  */

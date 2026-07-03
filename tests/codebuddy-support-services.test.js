@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveCodebuddyConversationId} from '../src/services/codebuddy/conversation-key.js';
-import {prepareCodebuddyOutboundChatRequest} from '../src/services/codebuddy/outbound-chat.js';
+import {prepareCodebuddyOutboundChatRequest} from '../src/services/codebuddy/protocols/chat/outbound.js';
 import {
     createCodebuddyCredentialResolver,
     createCodebuddyTenantCredentialManagerResolver
@@ -103,6 +103,65 @@ test('prepareCodebuddyOutboundChatRequest maps model, stream, rules, and message
     assert.equal(result.model, 'upstream-model');
     assert.equal(result.stream, true);
     assert.equal(Array.isArray(result.messages), true);
+});
+
+test('prepareCodebuddyOutboundChatRequest strips Codex-only parameters before upstream', () => {
+    const request = {
+        model: 'client-model',
+        messages: [
+            {role: 'developer', content: 'developer instructions'},
+            {role: 'user', content: 'hello'}
+        ],
+        max_completion_tokens: 256,
+        reasoning: {effort: 'medium'},
+        previous_response_id: 'resp_1',
+        store: false,
+        metadata: {threadId: 'thread-1'},
+        service_tier: 'auto',
+        parallel_tool_calls: true,
+        response_format: {type: 'json_object'},
+        user: 'codex-user',
+        tools: [
+            {
+                type: 'function',
+                function: {
+                    name: 'read_file',
+                    description: 'Read a file',
+                    parameters: {type: 'object'},
+                    strict: true
+                }
+            },
+            {type: 'web_search_preview'}
+        ],
+        tool_choice: 'auto'
+    };
+
+    const result = prepareCodebuddyOutboundChatRequest(request);
+
+    assert.equal(result.max_tokens, 256);
+    assert.equal(result.reasoning_effort, 'medium');
+    assert.equal(result.messages[0].role, 'system');
+    assert.deepEqual(result.tools, [{
+        type: 'function',
+        function: {
+            name: 'read_file',
+            description: 'Read a file',
+            parameters: {type: 'object'}
+        }
+    }]);
+    for (const field of [
+        'max_completion_tokens',
+        'reasoning',
+        'previous_response_id',
+        'store',
+        'metadata',
+        'service_tier',
+        'parallel_tool_calls',
+        'response_format',
+        'user'
+    ]) {
+        assert.equal(field in result, false, `${field} should not be sent to CodeBuddy upstream`);
+    }
 });
 
 test('CodeBuddy credential resolvers use tenant-scoped credentials and managers', async () => {

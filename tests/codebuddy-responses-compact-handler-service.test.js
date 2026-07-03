@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCodebuddyResponsesCompactHandler} from '../src/services/codebuddy/responses-compact-handler.js';
+import {createCodebuddyResponsesCompactHandler} from '../src/services/codebuddy/protocols/responses/compact.js';
 import {mapCodebuddyModelName} from '../src/services/codebuddy/model-mapping.js';
 
 function createResponse() {

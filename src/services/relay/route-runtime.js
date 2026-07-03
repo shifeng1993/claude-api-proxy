@@ -50,12 +50,16 @@ import {
     mapOpenAIModelsToAnthropic
 } from './model-metadata.js';
 import {createRelayMetadataHandlers} from './metadata-endpoints.js';
-import {createRelayChatCompletionsHandler} from './chat-completions-handler.js';
-import {createRelayAnthropicMessagesHandler} from './anthropic-messages-handler.js';
-import {createRelayResponsesAPIHandler} from './responses-api-handler.js';
-import {createRelayResponsesCompactHandler} from './responses-compact-handler.js';
-import {createRelayResponsesWebSocketHandler} from './responses-websocket-handler.js';
-import {prepareRelayOutboundChatRequest} from './outbound-chat.js';
+import {
+    createRelayChatCompletionsHandler,
+    prepareRelayOutboundChatRequest
+} from './protocols/chat/index.js';
+import {createRelayAnthropicMessagesHandler} from './protocols/anthropic/index.js';
+import {
+    createRelayResponsesAPIHandler,
+    createRelayResponsesCompactHandler,
+    createRelayResponsesWebSocketHandler
+} from './protocols/responses/index.js';
 import {createRelayContextCompaction} from './context-compaction.js';
 import {
     estimateRelayAnthropicInputTokens as estimateAnthropicInputTokens,

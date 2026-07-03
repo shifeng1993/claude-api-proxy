@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make Responses WebSocket mode usable and fast across Relay, CodeBuddy, and Copilot while keeping OpenAI's official `/v1/responses` WebSocket protocol as the default.
+Make Responses WebSocket mode usable and fast across Relay and CodeBuddy while keeping OpenAI's official `/v1/responses` WebSocket protocol as the default.
 
 ## Protocol Rules
 

@@ -1,6 +1,6 @@
 # Claude API Proxy
 
-Claude API Proxy 是一个统一的 AI 服务控制台和协议代理。它在同一个控制台里管理 Relay、CodeBuddy、GitHub Copilot、用户账号、使用统计和问题反馈，并在服务端完成 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses、Responses WebSocket 之间的协议转换。
+Claude API Proxy 是一个统一的 AI 服务控制台和协议代理。它在同一个控制台里管理 Relay、CodeBuddy、用户账号、使用统计和问题反馈，并在服务端完成 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses、Responses WebSocket 之间的协议转换。
 
 控制台入口：
 
@@ -14,7 +14,7 @@ http://127.0.0.1:3080/dashboard
 /dashboard#/relay
 ```
 
-旧入口 `/relayFE`、`/codebuddyFE`、`/copilotFE` 会重定向到 `/dashboard`。
+旧入口 `/relayFE`、`/codebuddyFE` 会重定向到 `/dashboard`。
 
 ## 当前能力
 
@@ -25,7 +25,6 @@ http://127.0.0.1:3080/dashboard
 | 多协议桥接 | Relay 客户端协议和上游协议可交叉组合，尽量保持流式边收边转 |
 | 上游连通测试 | Relay 支持单个上游测试和批量测试，Responses WebSocket 上游会等待 `response.completed` 并设置超时 |
 | CodeBuddy 代理 | 管理 CodeBuddy 凭证、自定义上游和模型覆盖 |
-| GitHub Copilot 代理 | 通过 GitHub 设备授权保存凭据，按租户隔离刷新 Copilot Token |
 | 统一登录 | 启动时探测 LDAP；LDAP 不可用或未配置时自动切换为本地账号 |
 | 用户管理 | superadmin 管理管理员和普通用户；admin 可查看同级管理员和普通用户，但只能操作普通用户 |
 | 密码管理 | 管理员保留重置密码；本地用户可在右上角修改自己的密码；env 配置的 superadmin 不允许在页面改密码 |
@@ -38,13 +37,12 @@ http://127.0.0.1:3080/dashboard
 | --- | --- | --- |
 | Relay | `#/relay` | 管理 Relay 上游、协议、WS mode、模型映射、代理、TLS、单个/批量连通测试 |
 | CodeBuddy | `#/codebuddy` | 管理 CodeBuddy 凭证、OAuth 授权、Claude Code 配置 |
-| Copilot | `#/copilot` | 管理 GitHub Copilot 凭据、设备授权、Token 刷新 |
 | 使用统计 | `#/stats/{service}/monthly` | 查看当前用户自己的月度 API 调用和 Token 统计 |
 | 模型分析 | `#/stats/{service}/model-cache` | 查看当前用户自己的模型调用、缓存命中率和积分消耗 |
 | 问题反馈 | `#/feedback` | 提交、查看和处理反馈 |
 | 用户管理 | `#/users` | 管理本地或 LDAP 登录过的用户记录和角色 |
 
-`{service}` 可为 `relay`、`codebuddy`、`copilot`。
+`{service}` 可为 `relay`、`codebuddy`。
 
 ## 登录、角色和密码
 
@@ -163,26 +161,6 @@ ws://127.0.0.1:3080/codebuddy/v1/responses
 
 可通过 `CODEBUDDY_EXTRA_BASE_URLS` 增加自定义上游，通过 `CODEBUDDY_MODEL_OVERRIDES` 为不同上游动态配置模型列表，并为每个模型声明 `tools`、`vision` 能力。
 
-### GitHub Copilot
-
-| 协议 | HTTP 入口 |
-| --- | --- |
-| Anthropic Messages | `POST /copilot/anthropic/v1/messages` |
-| Anthropic Count Tokens | `POST /copilot/anthropic/v1/messages/count_tokens` |
-| Anthropic Models | `GET /copilot/anthropic/v1/models` |
-| OpenAI Chat Completions | `POST /copilot/v1/chat/completions` |
-| OpenAI Responses | `POST /copilot/v1/responses` |
-| Responses Compact | `POST /copilot/v1/responses/compact` |
-| OpenAI Models | `GET /copilot/v1/models` |
-
-Responses WebSocket 使用：
-
-```text
-ws://127.0.0.1:3080/copilot/v1/responses
-```
-
-Copilot 凭据按租户隔离。每条凭据可单独配置代理、TLS 校验、VS Code 版本、启用状态和活跃顺序。
-
 ## 使用统计和反馈
 
 使用统计已经合并到 `/dashboard`：
@@ -299,7 +277,6 @@ src/
     gateway/                租户、会话和 API Key 鉴权
     relay/                  Relay 上游管理和请求
     codebuddy/              CodeBuddy 凭证、配置和调用
-    copilot/                GitHub/Copilot 授权和调用
     shared/                 本地账号、LDAP 探测和 WS 支持
   protocol-engine/           协议转换核心和 Canonical Session/Stream 渲染
   templates/                控制台 HTML 模板

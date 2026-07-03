@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayResponsesWebSocketHandler} from '../src/services/relay/responses-websocket-handler.js';
+import {createRelayResponsesWebSocketHandler} from '../src/services/relay/protocols/responses/websocket.js';
 import {
     RelayConversationStore,
     RelayStateMissingError

@@ -1,4 +1,5 @@
 export * from './canonical/session.js';
+export * from './chat/index.js';
 export * from './shared.js';
 export * from './responses.js';
 export * from './stream/canonical-stream.js';

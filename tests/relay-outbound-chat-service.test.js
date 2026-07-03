@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
     cloneRelayJson,
     prepareRelayOutboundChatRequest
-} from '../src/services/relay/outbound-chat.js';
+} from '../src/services/relay/protocols/chat/outbound.js';
 
 test('cloneRelayJson returns a deep clone without sharing nested objects', () => {
     const source = {messages: [{role: 'user', content: [{type: 'text', text: 'hi'}]}]};

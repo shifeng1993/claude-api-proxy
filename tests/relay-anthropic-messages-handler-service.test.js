@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayAnthropicMessagesHandler} from '../src/services/relay/anthropic-messages-handler.js';
+import {createRelayAnthropicMessagesHandler} from '../src/services/relay/protocols/anthropic/messages.js';
 
 function createResponse() {
     return {calls: [], headersSent: false};

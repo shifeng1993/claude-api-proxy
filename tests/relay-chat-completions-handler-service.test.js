@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayChatCompletionsHandler} from '../src/services/relay/chat-completions-handler.js';
+import {createRelayChatCompletionsHandler} from '../src/services/relay/protocols/chat/completions.js';
 
 function createResponse() {
     return {calls: [], headersSent: false, destroyed: false, writableEnded: false};
