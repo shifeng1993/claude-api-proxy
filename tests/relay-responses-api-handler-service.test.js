@@ -219,6 +219,95 @@ test('handleResponsesAPI deltas visible full history before forwarding to Respon
     }
 });
 
+test('handleResponsesAPI disables continuation when Responses upstream opts out', async () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 42;
+    const conversationKey = 'tenant:42:conv';
+    let capturedContinuationOptions = null;
+    let capturedResponsesMeta = null;
+
+    try {
+        store.saveChatRequest({
+            tenantId,
+            conversationKey,
+            request: {model: 'gpt-test-resolved', messages: [{role: 'user', content: 'hi'}]}
+        });
+        store.recordResponsesResponse({
+            tenantId,
+            conversationKey,
+            response: {
+                id: 'resp_1',
+                model: 'gpt-test-resolved',
+                output: [{
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{type: 'output_text', text: 'answer'}]
+                }]
+            }
+        });
+
+        const deps = createBaseDeps({
+            authenticateAndGetUpstream: async () => ({
+                upstream: {index: 0, disable_responses_continuation: true},
+                tenantId,
+                upstreamManager: {resolveModel: (model) => `${model}-resolved`}
+            }),
+            isResponsesUpstream: () => true,
+            relayConversationStore: store,
+            parseBody: async () => JSON.stringify({
+                model: 'gpt-test',
+                input: [{role: 'user', content: [{type: 'input_text', text: 'latest question'}]}],
+                stream: false
+            }),
+            prepareResponsesContinuationPayload: (options) => {
+                capturedContinuationOptions = options;
+                return {
+                    request: options.request,
+                    conversationKey: options.conversationKey,
+                    lastResponseId: 'resp_1',
+                    autoLink: false,
+                    skipInputItemLimit: false,
+                    deltaApplied: false,
+                    deltaAttempted: false,
+                    emptyDelta: false,
+                    deltaPreviousResponseId: null,
+                    deltaCoveredLength: 0,
+                    chainReset: false,
+                    chainInputLength: null,
+                    chainLimit: null,
+                    truncated: false,
+                    originalLength: 1,
+                    retainedLength: 1,
+                    droppedCount: 0
+                };
+            },
+            createResponses: (payload, upstream, meta) => {
+                capturedResponsesMeta = meta;
+                return {payload};
+            },
+            callUpstream: async (upstream, invoke) => {
+                await invoke(upstream);
+                return {
+                    response: {
+                        body: '{"id":"resp_2","usage":{"input_tokens":1,"output_tokens":2}}'
+                    }
+                };
+            },
+            readResponseBody: async (body) => body,
+            extractInputTokens: (usage) => usage?.input_tokens || 0
+        });
+        const handleResponsesAPI = createRelayResponsesAPIHandler(deps);
+        const res = createResponse();
+
+        await handleResponsesAPI({headers: {}}, res);
+
+        assert.equal(capturedContinuationOptions.disableContinuation, true);
+        assert.equal(capturedResponsesMeta.skipInputItemLimit, true);
+    } finally {
+        store.dispose();
+    }
+});
+
 test('handleResponsesAPI rejects empty Chat fallback without calling upstream', async () => {
     const res = createResponse();
     const RelayStateMissingError = class RelayStateMissingError extends Error {};

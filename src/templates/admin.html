@@ -571,13 +571,14 @@ async function regenerateKey(){if(!confirm('重新生成后，旧 API Key 会立
 function mapTestResults(results,key='index'){const out={};(results||[]).forEach(r=>{const id=r?.[key]??r?.index;if(id!==undefined&&id!==null)out[id]=r;});return out;}
 function testResultBadge(result){if(!result)return '';if(result.pending)return '<span class="badge">测试中...</span>';return `<span class="badge ${result.success?'on':'off'}">${result.success?'测试通过':'测试失败'}</span>`;}
 function renderTestResultMessage(result){if(!result)return '';const message=result.message||result.error||'';return message?`<p class="test-result ${result.success?'ok':'bad'}">${esc(message)}</p>`:'';}
+function isResponsesContinuationProtocol(protocol){return protocol==='responses'||protocol==='responses_ws';}
 function showBatchTestToast(results){const ok=(results||[]).filter(r=>r.success).length;toast(`批量测试完成：${ok}/${(results||[]).length} 可用`,ok===(results||[]).length?'success':'error');}
 function renderRelay(){document.getElementById('tabBody').innerHTML=`<div class="content-with-anchor">${renderAnchorNav([['section-relay-list','上游配置列表'],['section-guide','使用指南'],['section-custom-stats','自定义统计面板']])}<div id="section-relay-list" class="card"><div class="card-head"><div><h2>Relay 上游</h2><div class="muted">请求仅发送到当前活跃上游，可手动切换使用的配置。</div></div><div class="actions"><button class="btn" id="relayBatchTestBtn" ${S.relayTesting?'disabled':''} onclick="testAllUpstreams()">${S.relayTesting?'测试中...':'批量测试'}</button><button class="btn btn-primary" onclick="openUpstream()">添加上游</button></div></div><div class="list" id="relayList"><div class="empty">正在加载...</div></div></div>${serviceInsights('relay')}</div>`;}
 async function loadRelay(){try{const d=await api(`/dashboard/tenants/${S.tenant.id}/upstreams`);S.upstreams=d.upstreams||[];S.relayTestResults={};renderRelayList();}catch(e){document.getElementById('relayList').innerHTML='<div class="empty">'+esc(e.message)+'</div>';}}
 function renderRelayList(){
     const el=document.getElementById('relayList');if(!el)return;
     if(!S.upstreams.length){el.innerHTML='<div class="empty">还没有上游。添加第一个上游后，Relay 即可开始转发请求。</div>';return;}
-    el.innerHTML=S.upstreams.map((u,i)=>{const result=S.relayTestResults[i];const protocol=esc(u.protocol||'openai');const responsesInfo=u.protocol==='responses_ws'?`${u.disable_responses_continuation?' · 本跳发送完整 input':' · 本跳 continuation'}`:'';return `<div class="item ${u.is_active?'active':''}"><div><h3>${esc(u.name||'未命名')} ${u.is_active?'<span class="badge on">活跃</span>':''} ${testResultBadge(result)}</h3><p>${esc(u.base_url)} · ${protocol}${responsesInfo}</p><p>${u.enabled?'已启用':'已停用'} · Key ${esc(u.api_key_preview||'未配置')}${u.proxy?' · 代理 '+esc(u.proxy):''}</p>${renderTestResultMessage(result)}</div><div class="actions">
+    el.innerHTML=S.upstreams.map((u,i)=>{const result=S.relayTestResults[i];const protocol=esc(u.protocol||'openai');const responsesInfo=isResponsesContinuationProtocol(u.protocol)?`${u.disable_responses_continuation?' · 本跳发送完整 input':' · 本跳 continuation'}`:'';return `<div class="item ${u.is_active?'active':''}"><div><h3>${esc(u.name||'未命名')} ${u.is_active?'<span class="badge on">活跃</span>':''} ${testResultBadge(result)}</h3><p>${esc(u.base_url)} · ${protocol}${responsesInfo}</p><p>${u.enabled?'已启用':'已停用'} · Key ${esc(u.api_key_preview||'未配置')}${u.proxy?' · 代理 '+esc(u.proxy):''}</p>${renderTestResultMessage(result)}</div><div class="actions">
         ${!u.is_active&&u.enabled?`<button class="btn btn-sm" onclick="setActive(${i})">设为活跃</button>`:''}
         <button class="btn btn-sm" ${(S.relayTesting&&S.relayTestResults[i]?.pending)||S.relaySingleTesting===i?'disabled':''} onclick="testUpstream(${i})">${(S.relayTesting&&S.relayTestResults[i]?.pending)||S.relaySingleTesting===i?'测试中...':'测试'}</button>
         <button class="btn btn-sm" onclick="openUpstream(${i})">编辑</button>
@@ -586,7 +587,7 @@ function renderRelayList(){
     </div></div>`;}).join('');
     return;
     if(!S.upstreams.length){el.innerHTML='<div class="empty">还没有上游。添加第一个上游后，Relay 即可开始转发请求。</div>';return;}
-    el.innerHTML=S.upstreams.map((u,i)=>`<div class="item ${u.is_active?'active':''}"><div><h3>${esc(u.name||'未命名')} ${u.is_active?'<span class="badge on">活跃</span>':''}</h3><p>${esc(u.base_url)} · ${esc(u.protocol||'openai')}${u.protocol==='responses_ws'?(u.disable_responses_continuation?' · 本跳发送完整 input':' · 本跳 continuation'):''}</p><p>${u.enabled?'已启用':'已停用'} · Key ${esc(u.api_key_preview||'未配置')}${u.proxy?' · 代理 '+esc(u.proxy):''}</p></div><div class="actions">
+    el.innerHTML=S.upstreams.map((u,i)=>`<div class="item ${u.is_active?'active':''}"><div><h3>${esc(u.name||'未命名')} ${u.is_active?'<span class="badge on">活跃</span>':''}</h3><p>${esc(u.base_url)} · ${esc(u.protocol||'openai')}${isResponsesContinuationProtocol(u.protocol)?(u.disable_responses_continuation?' · 本跳发送完整 input':' · 本跳 continuation'):''}</p><p>${u.enabled?'已启用':'已停用'} · Key ${esc(u.api_key_preview||'未配置')}${u.proxy?' · 代理 '+esc(u.proxy):''}</p></div><div class="actions">
         ${!u.is_active&&u.enabled?`<button class="btn btn-sm" onclick="setActive(${i})">设为活跃</button>`:''}
         <button class="btn btn-sm" onclick="openUpstream(${i})">编辑</button>
         <button class="btn btn-sm" onclick="cloneUpstream(${i})">复制</button><button class="btn btn-sm" ${i===0?'disabled':''} onclick="moveUpstream(${i},'up')">上移</button>
@@ -599,7 +600,7 @@ function openUpstream(index=null){
     syncUpstreamResponsesOptionsVisibility(false);fillModelMappings(u.model_map||{});document.getElementById('upstreamModal').classList.add('show');
 }
 function syncUpstreamResponsesOptionsVisibility(enableIncrementalByDefault=false){
-    const show=upProtocol.value==='responses_ws';
+    const show=isResponsesContinuationProtocol(upProtocol.value);
     upEnableResponsesIncrementalField.style.display=show?'block':'none';
     if(show&&enableIncrementalByDefault)upEnableResponsesIncremental.checked=true;
 }
@@ -638,7 +639,7 @@ function getRelayWsModeForSave(){
 }
 async function saveUpstream(){
     let modelMap;try{modelMap=readModelMappings();}catch(e){return toast(e.message,'error');}
-    const body={name:upName.value.trim(),protocol:upProtocol.value,ws_mode:getRelayWsModeForSave(),base_url:upUrl.value.trim(),api_key:upKey.value.trim(),proxy:upProxy.value.trim(),skip_tls_verify:upTls.checked,disable_responses_continuation:upProtocol.value==='responses_ws'?!upEnableResponsesIncremental.checked:false,model_map:modelMap,enabled:S.editingUpstream===null?true:S.upstreams[S.editingUpstream].enabled};
+    const body={name:upName.value.trim(),protocol:upProtocol.value,ws_mode:getRelayWsModeForSave(),base_url:upUrl.value.trim(),api_key:upKey.value.trim(),proxy:upProxy.value.trim(),skip_tls_verify:upTls.checked,disable_responses_continuation:isResponsesContinuationProtocol(upProtocol.value)?!upEnableResponsesIncremental.checked:false,model_map:modelMap,enabled:S.editingUpstream===null?true:S.upstreams[S.editingUpstream].enabled};
     if(!body.base_url)return toast('请填写 Base URL','error');
     try{const suffix=S.editingUpstream===null?'':`/${S.editingUpstream}`;await api(`/dashboard/tenants/${S.tenant.id}/upstreams${suffix}`,{method:S.editingUpstream===null?'POST':'PUT',body:JSON.stringify(body)});closeModal('upstreamModal');await loadRelay();toast('上游配置已保存');}catch(e){toast(e.message,'error');}
 }

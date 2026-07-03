@@ -483,9 +483,13 @@ test('prepareResponsesContinuationPayload does not ignore relay thinking when te
         logger: {info() {}}
     });
 
-    // thinking 文本与 summary 不一致 → 不忽略私有字段 → mismatch 安全降级
-    assert.equal(result.deltaApplied, false);
-    assert.equal(result.autoLink, false);
+    // Covered reasoning is represented by previous_response_id; only the new user item is sent.
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ]);
 });
 
 test('prepareResponsesContinuationPayload preserves redacted thinking field when not expressible by summary', () => {
@@ -545,9 +549,13 @@ test('prepareResponsesContinuationPayload preserves redacted thinking field when
         logger: {info() {}}
     });
 
-    // redacted_thinking 无 summary 文本对应 → 保留私有字段 → mismatch 安全降级
-    assert.equal(result.deltaApplied, false);
-    assert.equal(result.autoLink, false);
+    // Covered redacted thinking stays in the previous response state.
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ]);
 });
 
 test('prepareResponsesContinuationPayload preserves semantic relay private fields when matching covered history', () => {
@@ -601,10 +609,12 @@ test('prepareResponsesContinuationPayload preserves semantic relay private field
         logger: {info() {}}
     });
 
-    assert.equal(result.request.previous_response_id, undefined);
-    assert.deepEqual(result.request.input, fullHistoryInput);
-    assert.equal(result.deltaApplied, false);
-    assert.equal(result.autoLink, false);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ]);
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
 });
 
 test('prepareResponsesContinuationPayload sends full input when continuation is disabled', () => {
@@ -1299,7 +1309,7 @@ test('prepareResponsesContinuationPayload matches Ark tool history with volatile
     assert.deepEqual(result.request.input, fullHistoryInput.slice(2));
 });
 
-test('prepareResponsesContinuationPayload disables websocket auto-link when stored input is not a prefix', () => {
+test('prepareResponsesContinuationPayload uses last response id for fresh input without prefix matching', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';
     const conversationKey = 'conv-a';
@@ -1340,11 +1350,69 @@ test('prepareResponsesContinuationPayload disables websocket auto-link when stor
     });
 
     assert.equal(result.deltaAttempted, true);
-    assert.equal(result.deltaApplied, false);
-    assert.equal(result.autoLink, false);
-    assert.equal('previous_response_id' in result.request, false);
-    assert.match(logs.join('\n'), /delta input mismatch; websocket auto-link disabled/);
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'unrelated fresh history'}]}
+    ]);
+    assert.match(logs.join('\n'), /using previous_response_id/);
     assert.match(logs.join('\n'), /upstream input items=1/);
+});
+
+test('prepareResponsesContinuationPayload trims full history to fresh suffix when continuation is enabled', () => {
+    const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
+    const tenantId = 'tenant-a';
+    const conversationKey = 'conv-a';
+    const logs = [];
+
+    store.saveChatRequest({
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'client-model',
+            messages: [{role: 'user', content: 'first question'}]
+        }
+    });
+    store.recordResponsesResponse({
+        tenantId,
+        conversationKey,
+        response: {
+            id: 'resp_1',
+            model: 'client-model',
+            output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{type: 'output_text', text: 'first answer'}]
+            }]
+        }
+    });
+
+    const result = prepareResponsesContinuationPayload({
+        conversationStore: store,
+        tenantId,
+        conversationKey,
+        request: {
+            model: 'glm-5.2',
+            input: [
+                {role: 'user', content: [{type: 'input_text', text: 'rewritten first question'}]},
+                {role: 'assistant', content: [{type: 'output_text', text: 'first answer'}]},
+                {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+            ]
+        },
+        requestType: 'AnthropicViaResponsesWebSocket',
+        logger: {info: (message) => logs.push(message)}
+    });
+
+    assert.equal(result.deltaAttempted, true);
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ]);
+    assert.match(logs.join('\n'), /delta input items 3->1 using previous_response_id/);
+    assert.match(logs.join('\n'), /previous_response_id=resp_1/);
 });
 
 test('prepareResponsesContinuationPayload tolerates clients omitting already-covered assistant output', () => {
@@ -1397,7 +1465,7 @@ test('prepareResponsesContinuationPayload tolerates clients omitting already-cov
     assert.equal(result.autoLink, true);
 });
 
-test('prepareResponsesContinuationPayload does not delta when covered assistant output diverges', () => {
+test('prepareResponsesContinuationPayload does not require covered assistant output to match before continuing', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';
     const conversationKey = 'conv-a';
@@ -1440,12 +1508,15 @@ test('prepareResponsesContinuationPayload does not delta when covered assistant 
         logger: {info() {}}
     });
 
-    assert.equal('previous_response_id' in result.request, false);
-    assert.equal(result.deltaApplied, false);
-    assert.equal(result.autoLink, false);
+    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.deepEqual(result.request.input, [
+        {role: 'user', content: [{type: 'input_text', text: 'second question'}]}
+    ]);
+    assert.equal(result.deltaApplied, true);
+    assert.equal(result.autoLink, true);
 });
 
-test('prepareResponsesContinuationPayload selects an older matching response snapshot for branched history', () => {
+test('prepareResponsesContinuationPayload uses latest response id unless a branch id is explicit', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';
     const conversationKey = 'conv-a';
@@ -1510,7 +1581,7 @@ test('prepareResponsesContinuationPayload selects an older matching response sna
         logger: {info() {}}
     });
 
-    assert.equal(result.request.previous_response_id, 'resp_branch_a');
+    assert.equal(result.request.previous_response_id, 'resp_branch_b');
     assert.deepEqual(result.request.input, [
         {role: 'user', content: [{type: 'input_text', text: 'follow branch A'}]}
     ]);
@@ -1646,7 +1717,7 @@ test('prepareResponsesContinuationPayload treats latest full coverage as empty e
     assert.deepEqual(result.request.input, exactLatestInput);
 });
 
-test('prepareResponsesContinuationPayload does not skip previous user turns when matching snapshots', () => {
+test('prepareResponsesContinuationPayload uses latest response id without scanning older snapshots', () => {
     const store = new RelayConversationStore({ttlMs: 60_000, cleanupIntervalMs: 0});
     const tenantId = 'tenant-a';
     const conversationKey = 'conv-a';
@@ -1715,13 +1786,13 @@ test('prepareResponsesContinuationPayload does not skip previous user turns when
         logger: {info() {}}
     });
 
-    assert.equal(result.request.previous_response_id, 'resp_1');
+    assert.equal(result.request.previous_response_id, 'resp_2');
     assert.deepEqual(result.request.input, [
         {role: 'user', content: [{type: 'input_text', text: 'branch after first'}]}
     ]);
 });
 
-test('prepareResponsesContinuationPayload writes mismatch diagnostics when enabled', () => {
+test('prepareResponsesContinuationPayload writes direct continuation diagnostics when enabled', () => {
     const diagDir = fs.mkdtempSync(path.join(os.tmpdir(), 'responses-continuation-diag-'));
     const diagFile = path.join(diagDir, 'diagnostics.jsonl');
     const env = setDiagnosticEnv({enabled: '1', file: diagFile});
@@ -1764,17 +1835,17 @@ test('prepareResponsesContinuationPayload writes mismatch diagnostics when enabl
             logger: {info() {}}
         });
 
-        assert.equal(result.deltaApplied, false);
+        assert.equal(result.deltaApplied, true);
         assert.equal(fs.existsSync(diagFile), true);
         const records = fs.readFileSync(diagFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         assert.equal(records.length, 1);
-        assert.equal(records[0].decision, 'mismatch');
+        assert.equal(records[0].decision, 'delta_applied');
         assert.equal(records[0].conversationKey, conversationKey);
         assert.equal(records[0].requestType, 'AnthropicViaResponsesWebSocket');
+        assert.equal(records[0].previousResponseId, 'resp_1');
         assert.equal(records[0].currentInput.itemCount, 1);
-        assert.equal(records[0].candidates[0].responseId, 'resp_1');
+        assert.deepEqual(records[0].candidates, []);
         assert.equal('fullInput' in records[0].currentInput, false);
-        assert.equal('fullInput' in records[0].candidates[0], false);
     } finally {
         restoreDiagnosticEnv(env);
         fs.rmSync(diagDir, {recursive: true, force: true});

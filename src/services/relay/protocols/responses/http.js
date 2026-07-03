@@ -200,7 +200,8 @@ export function createRelayResponsesAPIHandler({
                     tenantId,
                     conversationKey,
                     request: wsPayload,
-                    requestType: 'ResponsesWebSocketPassthrough'
+                    requestType: 'ResponsesWebSocketPassthrough',
+                    disableContinuation: upstream.disable_responses_continuation === true
                 });
                 const stateConversationKey = continuation.conversationKey || conversationKey;
                 const wsResult = await createResponsesWebSocket(continuation.request, upstream, {
@@ -211,6 +212,7 @@ export function createRelayResponsesAPIHandler({
                     sessionId: stateConversationKey,
                     rejectUnauthorized: !upstream.skip_tls_verify,
                     autoLink: false,
+                    skipInputItemLimit: upstream.disable_responses_continuation === true || continuation.skipInputItemLimit === true,
                     ...tenantMeta
                 });
 
@@ -267,7 +269,8 @@ export function createRelayResponsesAPIHandler({
                     tenantId,
                     conversationKey,
                     request: responsesPayload,
-                    requestType: 'ResponsesPassthrough'
+                    requestType: 'ResponsesPassthrough',
+                    disableContinuation: upstream.disable_responses_continuation === true
                 });
                 const stateConversationKey = continuation.conversationKey || conversationKey;
                 const relayMeta = {
@@ -283,6 +286,7 @@ export function createRelayResponsesAPIHandler({
                             requestType: 'ResponsesPassthrough',
                             stream: responsesReq.stream,
                             originalModel: responsesReq.model,
+                            skipInputItemLimit: upstream.disable_responses_continuation === true || continuation.skipInputItemLimit === true,
                             ...relayMeta
                         }
                     )

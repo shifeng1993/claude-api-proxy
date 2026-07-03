@@ -1,5 +1,4 @@
 import {
-    createResponsesInputDelta,
     limitResponsesInputItems,
     resolveResponsesInputItemsLimit
 } from './protocol-adapter.js';
@@ -81,27 +80,36 @@ export function prepareResponsesContinuationPayload({
             droppedCount: limited.droppedCount
         };
     }
-    const delta = createContinuationDelta(prepared.request, prepared);
-    const chainReset = getContinuationChainReset(delta);
+    const continuation = createDirectContinuationRequest(prepared.request, prepared);
+    const chainReset = getDirectContinuationChainReset(continuation);
     const outboundRequest = chainReset
         ? stripResponsesContinuationFields(prepared.request)
-        : delta.request;
-    const previousResponseId = !chainReset && delta.deltaApplied
-        ? delta.previousResponseId
-        : delta.deltaAttempted
-            ? null
-            : prepared.lastResponseId;
+        : continuation.request;
+    const previousResponseId = !chainReset && continuation.applied
+        ? continuation.previousResponseId
+        : null;
     const limited = limitResponsesInputItems(outboundRequest, {previousResponseId});
-    const outboundDeltaApplied = delta.deltaApplied && !chainReset;
-    const diagnosticDelta = chainReset
+    const outboundDeltaApplied = continuation.applied && !chainReset;
+    const diagnosticDelta = {
+        request: continuation.request,
+        deltaAttempted: continuation.attempted,
+        deltaApplied: outboundDeltaApplied,
+        emptyDelta: continuation.emptyDelta,
+        candidates: [],
+        originalLength: continuation.originalLength,
+        retainedLength: continuation.retainedLength,
+        coveredLength: continuation.droppedCount,
+        previousInputLength: continuation.previousInputLength,
+        previousResponseId: continuation.previousResponseId,
+        directContinuation: continuation.applied === true,
+        ...(chainReset
         ? {
-            ...delta,
-            deltaApplied: false,
             chainReset: true,
             chainInputLength: chainReset.chainInputLength,
             chainLimit: chainReset.limit
         }
-        : delta;
+        : {})
+    };
 
     if (limited.truncated) {
         log.info(
@@ -118,7 +126,7 @@ export function prepareResponsesContinuationPayload({
             + ` exceeds limit ${chainReset.limit}; resetting previous_response_id`
             + `${requestType ? ` requestType=${requestType}` : ''}`
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
-            + ` previous_response_id=${delta.previousResponseId}`
+            + ` previous_response_id=${continuation.previousResponseId}`
         );
         log.info(
             `Responses continuation: upstream input items=${countResponsesInputItems(limited.payload?.input)}`
@@ -129,12 +137,13 @@ export function prepareResponsesContinuationPayload({
             + ` previous_response_id=none`
             + ` autoLink=false chainReset=true`
         );
-    } else if (delta.deltaApplied) {
+    } else if (continuation.applied) {
         log.info(
-            `Responses continuation: delta input items ${delta.originalLength}->${delta.retainedLength}`
+            `Responses continuation: delta input items ${continuation.originalLength}->${continuation.retainedLength}`
+            + ` using previous_response_id`
             + `${requestType ? ` requestType=${requestType}` : ''}`
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
-            + ` previous_response_id=${delta.previousResponseId}`
+            + ` previous_response_id=${continuation.previousResponseId}`
         );
         log.info(
             `Responses continuation: upstream input items=${countResponsesInputItems(limited.payload?.input)}`
@@ -145,27 +154,15 @@ export function prepareResponsesContinuationPayload({
             + ` previous_response_id=${normalizeResponseId(limited.payload?.previous_response_id) || 'none'}`
             + ` autoLink=true`
         );
-    } else if (delta.emptyDelta) {
+    } else if (continuation.emptyDelta) {
         log.info(
             `Responses continuation: delta input empty; websocket auto-link disabled`
             + `${requestType ? ` requestType=${requestType}` : ''}`
             + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
-            + ` previous_response_id=${delta.previousResponseId || prepared.lastResponseId}`
-        );
-    } else if (delta.deltaAttempted) {
-        log.info(
-            `Responses continuation: delta input mismatch; websocket auto-link disabled`
-            + ` upstream input items=${countResponsesInputItems(limited.payload?.input)}`
-            + ` source_input_items=${countResponsesInputItems(prepared.request?.input)}`
-            + ` retained_input_items=${limited.retainedLength}`
-            + `${requestType ? ` requestType=${requestType}` : ''}`
-            + `${stateConversationKey ? ` conversationKey=${stateConversationKey}` : ''}`
-            + ` previous_response_id=${delta.previousResponseId || prepared.lastResponseId}`
-            + ` upstream_previous_response_id=${normalizeResponseId(limited.payload?.previous_response_id) || 'none'}`
-            + ` autoLink=false`
+            + ` previous_response_id=${continuation.previousResponseId || prepared.lastResponseId}`
         );
     }
-    const autoLink = !chainReset && !(delta.deltaAttempted && !delta.deltaApplied);
+    const autoLink = !chainReset && continuation.applied;
 
     writeContinuationDiagnostic({
         tenantId,
@@ -185,10 +182,10 @@ export function prepareResponsesContinuationPayload({
         autoLink,
         skipInputItemLimit: false,
         deltaApplied: outboundDeltaApplied,
-        deltaAttempted: delta.deltaAttempted,
-        emptyDelta: delta.emptyDelta === true,
-        deltaPreviousResponseId: delta.previousResponseId || null,
-        deltaCoveredLength: delta.coveredLength,
+        deltaAttempted: continuation.attempted,
+        emptyDelta: continuation.emptyDelta === true,
+        deltaPreviousResponseId: continuation.previousResponseId || null,
+        deltaCoveredLength: continuation.droppedCount,
         chainReset: Boolean(chainReset),
         chainInputLength: chainReset?.chainInputLength || null,
         chainLimit: chainReset?.limit || null,
@@ -199,137 +196,116 @@ export function prepareResponsesContinuationPayload({
     };
 }
 
-function createContinuationDelta(request, prepared) {
-    const candidates = getContinuationCandidates(request, prepared);
-    const deltaAttempted = Boolean(
-        candidates.length > 0
-        && Array.isArray(request?.input)
-    );
-    if (!deltaAttempted) {
+function createDirectContinuationRequest(request, prepared) {
+    const previousResponseId = normalizeResponseId(request?.previous_response_id)
+        || normalizeResponseId(prepared?.lastResponseId);
+    const originalLength = countResponsesInputItems(request?.input);
+
+    if (!previousResponseId) {
         return {
             request,
-            deltaAttempted: false,
-            deltaApplied: false,
+            attempted: false,
+            applied: false,
             emptyDelta: false,
-            candidates,
-            originalLength: Array.isArray(request?.input) ? request.input.length : 0,
-            retainedLength: Array.isArray(request?.input) ? request.input.length : 0,
-            coveredLength: 0,
+            originalLength,
+            retainedLength: originalLength,
+            droppedCount: 0,
             previousInputLength: 0,
             previousResponseId: null
         };
     }
 
-    const best = selectBestContinuationDelta(request.input, candidates);
-    if (!best) {
+    const input = extractDirectContinuationInput(request?.input);
+    const retainedLength = countResponsesInputItems(input);
+    const emptyDelta = Array.isArray(input) && input.length === 0;
+    if (emptyDelta) {
         return {
-            request,
-            deltaAttempted: true,
-            deltaApplied: false,
-            emptyDelta: false,
-            candidates,
-            originalLength: request.input.length,
-            retainedLength: request.input.length,
-            coveredLength: 0,
-            previousInputLength: candidates[0]?.input?.length || 0,
-            previousResponseId: candidates[0]?.responseId || null
-        };
-    }
-    if (best.emptyDelta) {
-        return {
-            request,
-            deltaAttempted: true,
-            deltaApplied: false,
+            request: stripResponsesContinuationFields(request),
+            attempted: true,
+            applied: false,
             emptyDelta: true,
-            candidates,
-            originalLength: best.originalLength,
-            retainedLength: best.retainedLength,
-            coveredLength: best.coveredLength,
-            previousInputLength: best.previousInputLength,
-            previousResponseId: best.responseId
+            originalLength,
+            retainedLength,
+            droppedCount: originalLength,
+            previousInputLength: resolvePreviousInputLength(prepared, previousResponseId),
+            previousResponseId
         };
     }
 
     return {
         request: {
             ...request,
-            input: best.input,
-            previous_response_id: request.previous_response_id || best.responseId
+            input,
+            previous_response_id: previousResponseId
         },
-        deltaAttempted: true,
-        deltaApplied: true,
+        attempted: true,
+        applied: true,
         emptyDelta: false,
-        candidates,
-        originalLength: best.originalLength,
-        retainedLength: best.retainedLength,
-        coveredLength: best.coveredLength,
-        previousInputLength: best.previousInputLength,
-        previousResponseId: best.responseId
+        originalLength,
+        retainedLength,
+        droppedCount: Math.max(originalLength - retainedLength, 0),
+        previousInputLength: Math.max(
+            resolvePreviousInputLength(prepared, previousResponseId),
+            Math.max(originalLength - retainedLength, 0)
+        ),
+        previousResponseId
     };
 }
 
-function selectBestContinuationDelta(input, candidates) {
-    let best = null;
+function extractDirectContinuationInput(input) {
+    if (!Array.isArray(input)) return input;
+    if (input.length <= 0) return input;
 
-    for (const candidate of candidates) {
-        const delta = createResponsesInputDelta(input, candidate.input);
-        if (!delta.deltaApplied) continue;
-
-        const matched = {
-            ...delta,
-            responseId: candidate.responseId,
-            previousInputLength: delta.coveredLength,
-            emptyDelta: delta.retainedLength <= 0
-        };
-        if (!best || matched.coveredLength > best.coveredLength) {
-            best = matched;
-        }
-    }
-
-    return best;
+    const freshStart = findDirectContinuationFreshStart(input);
+    if (freshStart === null) return [];
+    return freshStart > 0 ? input.slice(freshStart) : input;
 }
 
-function getContinuationCandidates(request, prepared) {
-    const explicitPreviousResponseId = normalizeResponseId(request?.previous_response_id);
-    const snapshots = Array.isArray(prepared?.responseInputSnapshots)
-        ? prepared.responseInputSnapshots
-        : [];
-    const candidates = [];
-    const seen = new Set();
-
-    const addCandidate = (responseId, input) => {
-        const normalizedResponseId = normalizeResponseId(responseId);
-        if (!normalizedResponseId || seen.has(normalizedResponseId) || !Array.isArray(input) || input.length <= 0) return;
-        seen.add(normalizedResponseId);
-        candidates.push({responseId: normalizedResponseId, input});
-    };
-
-    if (explicitPreviousResponseId) {
-        const explicitSnapshot = snapshots.find((snapshot) =>
-            normalizeResponseId(snapshot?.responseId) === explicitPreviousResponseId
-        );
-        addCandidate(explicitSnapshot?.responseId, explicitSnapshot?.input);
-        if (normalizeResponseId(prepared?.lastResponseId) === explicitPreviousResponseId) {
-            addCandidate(prepared.lastResponseId, prepared.lastResponseInput);
+function findDirectContinuationFreshStart(input) {
+    let sawOutputBoundary = false;
+    const endsWithCoveredOutput = isCoveredContinuationOutputItem(input.at(-1));
+    for (let index = input.length - 1; index >= 0; index--) {
+        if (!isCoveredContinuationOutputItem(input[index])) continue;
+        sawOutputBoundary = true;
+        const suffix = input.slice(index + 1);
+        if (
+            suffix.some(isFreshContinuationInputItem)
+            && (!endsWithCoveredOutput || suffix.some(isToolContinuationResultItem))
+        ) {
+            return index + 1;
         }
-        return candidates;
     }
-
-    for (const snapshot of snapshots) {
-        addCandidate(snapshot?.responseId, snapshot?.input);
+    if (!sawOutputBoundary && input.length > 1 && input.at(-1)?.role === 'user') {
+        return input.length - 1;
     }
-    addCandidate(prepared?.lastResponseId, prepared?.lastResponseInput);
-    return candidates;
+    return sawOutputBoundary ? null : 0;
 }
 
-function getContinuationChainReset(delta) {
-    if (!delta?.deltaApplied) return null;
-    const previousInputLength = Number.isFinite(delta.previousInputLength)
-        ? delta.previousInputLength
+function resolvePreviousInputLength(prepared, previousResponseId) {
+    const normalizedPreviousResponseId = normalizeResponseId(previousResponseId);
+    if (!normalizedPreviousResponseId) return 0;
+
+    if (
+        normalizeResponseId(prepared?.lastResponseId) === normalizedPreviousResponseId
+        && Array.isArray(prepared?.lastResponseInput)
+    ) {
+        return prepared.lastResponseInput.length;
+    }
+
+    const snapshot = (prepared?.responseInputSnapshots || []).find((item) =>
+        normalizeResponseId(item?.responseId) === normalizedPreviousResponseId
+    );
+    return Array.isArray(snapshot?.input) ? snapshot.input.length : 0;
+}
+
+function getDirectContinuationChainReset(continuation) {
+    if (!continuation?.applied) return null;
+    const previousInputLength = Number.isFinite(continuation.previousInputLength)
+        ? continuation.previousInputLength
         : 0;
-    const sourceDeltaInputLength = Number.isFinite(delta.retainedLength)
-        ? delta.retainedLength
-        : countResponsesInputItems(delta.request?.input);
+    const sourceDeltaInputLength = Number.isFinite(continuation.retainedLength)
+        ? continuation.retainedLength
+        : countResponsesInputItems(continuation.request?.input);
     const deltaInputLength = Math.min(sourceDeltaInputLength, resolveResponsesInputItemsLimit());
     const chainInputLength = previousInputLength + deltaInputLength;
     const limit = RESPONSES_PROVIDER_INPUT_ITEMS_LIMIT;
@@ -337,10 +313,27 @@ function getContinuationChainReset(delta) {
     return {
         previousInputLength,
         deltaInputLength,
-        sourceDeltaInputLength,
         chainInputLength,
         limit
     };
+}
+
+function isCoveredContinuationOutputItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (item.role === 'assistant') return item.partial !== true;
+    return item.type === 'reasoning' || item.type === 'function_call' || item.type === 'output_text';
+}
+
+function isFreshContinuationInputItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (item.role === 'user' || item.role === 'tool') return true;
+    if (item.role === 'assistant' && item.partial === true) return true;
+    return item.type === 'function_call_output' || item.type === 'input_text';
+}
+
+function isToolContinuationResultItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    return item.role === 'tool' || item.type === 'function_call_output';
 }
 
 function normalizeResponseId(value) {

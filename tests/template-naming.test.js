@@ -295,9 +295,13 @@ test('unified admin console includes all service management surfaces', () => {
     assert.match(adminHtml, /id="upEnableResponsesIncrementalField"[^>]*><input id="upEnableResponsesIncremental"[^>]*> 本跳启用 Responses continuation（使用 previous_response_id 只发送新增输入）<\/label>/);
     assert.match(adminHtml, /onchange="syncUpstreamResponsesOptionsVisibility\(true\)"/);
     assert.match(adminHtml, /syncUpstreamResponsesOptionsVisibility\(false\);/);
+    assert.match(adminHtml, /function isResponsesContinuationProtocol\(protocol\)/);
+    assert.match(adminHtml, /return protocol==='responses'\|\|protocol==='responses_ws';/);
     assert.match(adminHtml, /function syncUpstreamResponsesOptionsVisibility\(enableIncrementalByDefault=false\)/);
+    assert.match(adminHtml, /const show=isResponsesContinuationProtocol\(upProtocol\.value\);/);
     assert.match(adminHtml, /if\(show&&enableIncrementalByDefault\)upEnableResponsesIncremental\.checked=true;/);
-    assert.match(adminHtml, /disable_responses_continuation:upProtocol\.value==='responses_ws'\?!upEnableResponsesIncremental\.checked:false/);
+    assert.match(adminHtml, /disable_responses_continuation:isResponsesContinuationProtocol\(upProtocol\.value\)\?!upEnableResponsesIncremental\.checked:false/);
+    assert.match(adminHtml, /const responsesInfo=isResponsesContinuationProtocol\(u\.protocol\)\?/);
     assert.match(adminHtml, /本跳 continuation/);
     assert.match(adminHtml, /本跳发送完整 input/);
     assert.doesNotMatch(adminHtml, /每轮消息裁剪为增量/);
