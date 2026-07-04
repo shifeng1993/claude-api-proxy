@@ -415,7 +415,7 @@ export function extractStableContent(systemContent) {
         // 剥离纯记账行，其余（env/git/memory 等）保留原值
         const result = normalizeDynamicLine(trimmed);
         if (result.action === 'drop') continue;
-        stableLines.push(line);
+        stableLines.push(normalizeCodeAgentTodayDateLine(line));
     }
 
     let result = stableLines.join('\n');
@@ -465,6 +465,15 @@ function normalizeDynamicLine(line) {
 
     // ── 以下行全在前缀范围外，保留原值不影响缓存 ──
     return {action: 'keep'};
+}
+
+// Anthropic 的 Claude Code 客户端会用撇号变体和日期分隔符编码客户端地域/时区痕迹。
+// 这里只归一化它生成的 "Today's date is ..." 行，避免影响无关用户文本。
+function normalizeCodeAgentTodayDateLine(line) {
+    return line.replace(
+        /\b([Tt]oday)[\u2018\u2019\u02bc\u02b9']s(\s+date\s+is\s+)(\d{4})[-/](\d{2})[-/](\d{2})\b/g,
+        "$1's$2$3-$4-$5"
+    );
 }
 
 /**
