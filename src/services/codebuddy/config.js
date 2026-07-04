@@ -115,7 +115,8 @@ export function getHostModelOverrides() {
                         id: String(model.id || '').trim(),
                         name: String(model.name || model.id || '').trim(),
                         tools: modelCapability(model, ['tools', 'tool', 'supportsTools', 'supports_tool'], true),
-                        vision: modelCapability(model, ['vision', 'supportsVision', 'supports_vision'], false)
+                        vision: modelCapability(model, ['vision', 'supportsVision', 'supports_vision'], false),
+                        maxOutputTokens: model.maxOutputTokens ?? model.max_output_tokens ?? null
                     }))
                     .filter(model => model.id)
                 : [];
@@ -132,7 +133,7 @@ export function getHostModelOverrides() {
  * 根据上游域名获取可用模型列表
  * 优先级：特定站点覆盖 > 个人/企业分类
  * @param {string} [baseUrl] - 上游基础 URL
- * @returns {Array<{id: string, name: string, tools: boolean, vision: boolean}>}
+ * @returns {Array<{id: string, name: string, tools: boolean, vision: boolean, maxOutputTokens: number|null}>}
  */
 export function getModelsForHost(baseUrl) {
     const resolved = getCodebuddyBaseUrl(baseUrl);
@@ -144,6 +145,27 @@ export function getModelsForHost(baseUrl) {
     }
 
     return isPersonalHost(host) ? PERSONAL_MODELS : ENTERPRISE_MODELS;
+}
+
+/**
+ * 获取某模型的推荐 maxOutputTokens（用于缺失 max_tokens 时兜底）
+ * 从 .env CODEBUDDY_MODEL_OVERRIDES 中按 model id 匹配。
+ * glm-5.2 等 onlyReasoning 模型要求 max_tokens 必填，缺失会触发上游 400。
+ * @param {string} model - 模型 id
+ * @returns {number|null}
+ */
+export function getModelMaxOutputTokens(model) {
+    if (!model) return null;
+    const target = String(model).toLowerCase();
+    const overrides = getHostModelOverrides();
+    for (const models of Object.values(overrides)) {
+        for (const m of models) {
+            if (m.id && m.id.toLowerCase() === target && m.maxOutputTokens != null) {
+                return m.maxOutputTokens;
+            }
+        }
+    }
+    return null;
 }
 
 // 个人版官方域名 — 这些域名不需要传企业头

@@ -658,7 +658,7 @@ function renderCodebuddyModelGuide(){
     const options=S.codebuddyOptions||[];
     if(!options.length){el.className='empty';el.textContent='\u6682\u65e0\u53ef\u7528\u6a21\u578b\u914d\u7f6e';return;}
     el.className='guide-model-list';
-    el.innerHTML=options.map(o=>{const rows=(o.models||[]).map(m=>`<tr><td><code>${esc(m.id)}</code></td><td>${esc(m.name||m.id)}</td><td>${m.tools?'\u662f':'-'}</td><td>${m.vision?'\u662f':'-'}</td></tr>`).join('')||`<tr><td colspan="4" class="muted">\u6682\u65e0\u6a21\u578b</td></tr>`;return `<div class="guide-model-site"><strong>${esc(o.host)} (${esc(codebuddyOptionLabel(o))})</strong><div class="table-wrap"><table><thead><tr><th>Model</th><th>Name</th><th>\u5de5\u5177</th><th>\u89c6\u89c9</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;}).join('');
+    el.innerHTML=options.map(o=>{const rows=(o.models||[]).map(m=>`<tr><td><code>${esc(m.id)}</code></td><td>${esc(m.name||m.id)}</td><td>${m.tools?'\u662f':'-'}</td><td>${m.vision?'\u662f':'-'}</td><td>${m.maxOutputTokens?esc(m.maxOutputTokens.toLocaleString()):'-'}</td></tr>`).join('')||`<tr><td colspan="5" class="muted">\u6682\u65e0\u6a21\u578b</td></tr>`;return `<div class="guide-model-site"><strong>${esc(o.host)} (${esc(codebuddyOptionLabel(o))})</strong><div class="table-wrap"><table><thead><tr><th>Model</th><th>Name</th><th>\u5de5\u5177</th><th>\u89c6\u89c9</th><th>\u8f93\u51fa\u4e0a\u9650</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;}).join('');
 }
 function renderCredentialList(){
     const el=document.getElementById('credentialList');if(!el)return;if(!S.credentials.length){el.innerHTML='<div class="empty">暂无凭证。点击“添加凭证”完成 CodeBuddy 登录授权。</div>';return;}
