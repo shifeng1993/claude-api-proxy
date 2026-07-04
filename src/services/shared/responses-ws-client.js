@@ -174,12 +174,12 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
         payload = {...payload, previous_response_id: autoPreviousResponseId};
     }
 
-    // 引用 previous_response_id（显式或 auto-link）时强制 store:true：
-    // 否则上游不保存本轮 response，下一轮续接必然 404 PreviousResponseNotFound。
-    // normalizeResponsesPayload 不覆盖此路径（auto-link 在其之后注入），需在此补齐。
-    if (payload.previous_response_id) {
-        payload = {...payload, store: true};
-    }
+    // 强制 store:true：responses_ws 上游的 previous_response_id 续接依赖服务端存储。
+    // codex 等客户端默认 store:false，首响不存则后续引用必 404。
+    // 首响（无 previous_response_id）才是建立存储的那一轮，必须 store:true，
+    // 故此处无条件强制，覆盖首响与续接轮。auto-link 注入 id 发生在本函数内，
+    // normalizeResponsesPayload 不覆盖 ws 路径，需在此补齐。
+    payload = {...payload, store: true};
 
     const onMessage = (raw) => {
         let parsed;

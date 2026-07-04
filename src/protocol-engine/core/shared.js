@@ -797,13 +797,14 @@ export function normalizeResponsesPayload(payload, meta = {}) {
         }
     }
 
-    // 带 previous_response_id 时强制 store:true：
-    // codex 等客户端默认 store:false，若原样透传，上游不会保存该 response，
-    // 下一轮用 previous_response_id 引用必然 404 PreviousResponseNotFound。
-    // 只要本请求引用了历史 response，就必须让上游存住本轮 response 以供后续续接。
-    if (ordered.previous_response_id) {
-        ordered.store = true;
-    }
+    // 强制 store:true：
+    // responses 协议的 previous_response_id 续接依赖上游服务端存储。
+    // codex 等客户端默认 store:false，若原样透传，首响不会被上游保存，
+    // 后续轮次用 previous_response_id 引用必然 404 PreviousResponseNotFound。
+    // 首响（不带 previous_response_id）才是建立存储的那一轮，必须 store:true；
+    // 续接轮（带 previous_response_id）同样需要存住本轮以供再后续引用。
+    // 本函数仅服务于 responses HTTP 上游，强制 true 安全。
+    ordered.store = true;
 
     return ordered;
 }
