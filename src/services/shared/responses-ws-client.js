@@ -174,6 +174,13 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
         payload = {...payload, previous_response_id: autoPreviousResponseId};
     }
 
+    // 引用 previous_response_id（显式或 auto-link）时强制 store:true：
+    // 否则上游不保存本轮 response，下一轮续接必然 404 PreviousResponseNotFound。
+    // normalizeResponsesPayload 不覆盖此路径（auto-link 在其之后注入），需在此补齐。
+    if (payload.previous_response_id) {
+        payload = {...payload, store: true};
+    }
+
     const onMessage = (raw) => {
         let parsed;
         try {

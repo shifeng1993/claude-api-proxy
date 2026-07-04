@@ -797,6 +797,14 @@ export function normalizeResponsesPayload(payload, meta = {}) {
         }
     }
 
+    // 带 previous_response_id 时强制 store:true：
+    // codex 等客户端默认 store:false，若原样透传，上游不会保存该 response，
+    // 下一轮用 previous_response_id 引用必然 404 PreviousResponseNotFound。
+    // 只要本请求引用了历史 response，就必须让上游存住本轮 response 以供后续续接。
+    if (ordered.previous_response_id) {
+        ordered.store = true;
+    }
+
     return ordered;
 }
 
