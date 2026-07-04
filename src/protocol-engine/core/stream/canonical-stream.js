@@ -571,7 +571,7 @@ export function createCanonicalToAnthropicStreamState({model = 'unknown'} = {}) 
         contentBlockOpen: false,
         contentBlockIndex: 0,
         currentBlockType: null,
-        pendingReasoningText: '',
+        thinkingHasSignature: false,
         toolCalls: new Map(),
         finished: false
     };
@@ -957,14 +957,20 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
 
     const closeCurrentBlock = () => {
         if (!state.contentBlockOpen) return;
+        // thinking 块若无真实签名（codebuddy 等 chat 上游 reasoning 没有签名来源），
+        // 注入占位签名使块满足 Anthropic 流式签名要求，保留 thinking 展示。
+        if (state.currentBlockType === 'thinking' && !state.thinkingHasSignature) {
+            events.push({
+                type: 'content_block_delta',
+                index: state.contentBlockIndex,
+                delta: {type: 'signature_delta', signature: generateId()}
+            });
+        }
         events.push({type: 'content_block_stop', index: state.contentBlockIndex});
         state.contentBlockIndex++;
         state.contentBlockOpen = false;
         state.currentBlockType = null;
-    };
-
-    const dropUnsignedReasoning = () => {
-        state.pendingReasoningText = '';
+        state.thinkingHasSignature = false;
     };
 
     const ensureBlock = (type, contentBlock) => {
@@ -977,24 +983,6 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
         });
         state.contentBlockOpen = true;
         state.currentBlockType = type;
-    };
-
-    const emitSignedReasoning = (signature) => {
-        if (!signature) return;
-        ensureBlock('thinking', {type: 'thinking', thinking: ''});
-        if (state.pendingReasoningText) {
-            events.push({
-                type: 'content_block_delta',
-                index: state.contentBlockIndex,
-                delta: {type: 'thinking_delta', thinking: state.pendingReasoningText}
-            });
-        }
-        events.push({
-            type: 'content_block_delta',
-            index: state.contentBlockIndex,
-            delta: {type: 'signature_delta', signature}
-        });
-        state.pendingReasoningText = '';
     };
 
     const ensureToolBlock = (event) => {
@@ -1042,17 +1030,29 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
         }
 
         if (event.type === 'reasoning_delta') {
-            state.pendingReasoningText += event.text || '';
+            ensureBlock('thinking', {type: 'thinking', thinking: ''});
+            events.push({
+                type: 'content_block_delta',
+                index: state.contentBlockIndex,
+                delta: {type: 'thinking_delta', thinking: event.text || ''}
+            });
             continue;
         }
 
         if (event.type === 'reasoning_signature') {
-            emitSignedReasoning(event.signature);
+            if (event.signature) {
+                ensureBlock('thinking', {type: 'thinking', thinking: ''});
+                events.push({
+                    type: 'content_block_delta',
+                    index: state.contentBlockIndex,
+                    delta: {type: 'signature_delta', signature: event.signature}
+                });
+                state.thinkingHasSignature = true;
+            }
             continue;
         }
 
         if (event.type === 'text_delta') {
-            dropUnsignedReasoning();
             ensureBlock('text', {type: 'text', text: ''});
             events.push({
                 type: 'content_block_delta',
@@ -1063,13 +1063,11 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
         }
 
         if (event.type === 'tool_call_start') {
-            dropUnsignedReasoning();
             ensureToolBlock(event);
             continue;
         }
 
         if (event.type === 'tool_call_arguments_delta') {
-            dropUnsignedReasoning();
             const toolCall = ensureToolBlock(event);
             const partialJson = event.argumentsDelta || '';
             toolCall.finalArgs += partialJson;
@@ -1083,7 +1081,6 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
         }
 
         if (event.type === 'tool_call_arguments_done') {
-            dropUnsignedReasoning();
             const toolCall = ensureToolBlock(event);
             if (typeof event.argumentsText === 'string') toolCall.finalArgs = event.argumentsText;
             const pendingArgs = pendingToolArguments(toolCall);
@@ -1099,7 +1096,6 @@ export function renderCanonicalStreamEventsToAnthropicEvents(canonicalEvents = [
         }
 
         if (event.type === 'completed') {
-            dropUnsignedReasoning();
             closeCurrentBlock();
             state.finished = true;
             const usage = event.chatUsage

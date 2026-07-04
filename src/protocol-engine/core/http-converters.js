@@ -258,14 +258,15 @@ export function responsesResponseToAnthropic(responsesRes = {}) {
 }
 
 function responsesReasoningToAnthropicContent(item = {}) {
-    if (!Array.isArray(item.x_relay_anthropic_thinking)) return [];
-    return item.x_relay_anthropic_thinking
+    const relayThinking = Array.isArray(item.x_relay_anthropic_thinking) ? item.x_relay_anthropic_thinking : [];
+    const blocks = relayThinking
         .map((block) => {
-            if (block?.type === 'thinking' && block.signature) {
+            if (block?.type === 'thinking') {
+                // 透传真实签名；无签名时注入占位签名（chat 上游 reasoning 无签名来源）
                 return {
                     type: 'thinking',
                     thinking: block.thinking || '',
-                    signature: block.signature
+                    signature: block.signature || generateId()
                 };
             }
             if (block?.type === 'redacted_thinking') {
@@ -277,6 +278,22 @@ function responsesReasoningToAnthropicContent(item = {}) {
             return null;
         })
         .filter(Boolean);
+
+    if (blocks.some((block) => block.type === 'thinking')) {
+        return blocks;
+    }
+
+    // 无 x_relay_anthropic_thinking thinking 块时，从 summary 恢复 thinking（占位签名）
+    if (Array.isArray(item.summary)) {
+        const summaryText = item.summary
+            .filter((summary) => summary?.type === 'summary_text' && summary.text)
+            .map((summary) => summary.text)
+            .join('\n\n');
+        if (summaryText) {
+            return [{type: 'thinking', thinking: summaryText, signature: generateId()}];
+        }
+    }
+    return blocks;
 }
 
 function anthropicContentToResponsesContent(content, textType = 'input_text') {

@@ -14,12 +14,12 @@ test('CodeBuddy model overrides are read from environment JSON', () => {
 
     try {
         assert.deepEqual(getHostModelOverrides()['custom-codebuddy.example.com'], [
-            {id: 'custom:glm51', name: 'GLM-5.1', tools: true, vision: false},
-            {id: 'custom:kimi', name: 'Kimi Custom', tools: true, vision: true}
+            {id: 'custom:glm51', name: 'GLM-5.1', tools: true, vision: false, maxOutputTokens: null},
+            {id: 'custom:kimi', name: 'Kimi Custom', tools: true, vision: true, maxOutputTokens: null}
         ]);
         assert.deepEqual(getModelsForHost('https://custom-codebuddy.example.com'), [
-            {id: 'custom:glm51', name: 'GLM-5.1', tools: true, vision: false},
-            {id: 'custom:kimi', name: 'Kimi Custom', tools: true, vision: true}
+            {id: 'custom:glm51', name: 'GLM-5.1', tools: true, vision: false, maxOutputTokens: null},
+            {id: 'custom:kimi', name: 'Kimi Custom', tools: true, vision: true, maxOutputTokens: null}
         ]);
     } finally {
         if (saved === undefined) delete process.env.CODEBUDDY_MODEL_OVERRIDES;
@@ -51,7 +51,7 @@ test('CodeBuddy custom site labels and admin model options are environment-drive
         const options = getCodebuddyAdminOptions();
         assert.equal(options[0].label, 'Private Model Hub');
         assert.deepEqual(options[0].models, [
-            {id: 'private:sonnet', name: 'Private Sonnet', tools: true, vision: true}
+            {id: 'private:sonnet', name: 'Private Sonnet', tools: true, vision: true, maxOutputTokens: null}
         ]);
     } finally {
         for (const [key, value] of Object.entries(saved)) {

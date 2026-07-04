@@ -334,7 +334,7 @@ test('canonical stream bridge renders Chat reasoning text and tools as Responses
     assert.equal(completed.output[2].arguments, '{"path":"README.md"}');
 });
 
-test('canonical stream bridge omits unsigned Chat reasoning when rendering Anthropic events', () => {
+test('canonical stream bridge renders unsigned Chat reasoning as Anthropic thinking', () => {
     const bridge = createChatToAnthropicStreamBridge({model: 'claude-test'});
     const events = [];
 
@@ -400,6 +400,10 @@ test('canonical stream bridge omits unsigned Chat reasoning when rendering Anthr
         'message_start',
         'content_block_start',
         'content_block_delta',
+        'content_block_delta',
+        'content_block_stop',
+        'content_block_start',
+        'content_block_delta',
         'content_block_stop',
         'content_block_start',
         'content_block_delta',
@@ -409,18 +413,22 @@ test('canonical stream bridge omits unsigned Chat reasoning when rendering Anthr
         'message_stop'
     ]);
     assert.equal(events[0].message.id, 'chatcmpl_1');
-    assert.equal(events[1].content_block.type, 'text');
-    assert.deepEqual(events[2].delta, {type: 'text_delta', text: 'hello'});
-    assert.deepEqual(events[4].content_block, {
+    assert.equal(events[1].content_block.type, 'thinking');
+    assert.deepEqual(events[2].delta, {type: 'thinking_delta', thinking: 'think'});
+    assert.equal(events[3].delta.type, 'signature_delta');
+    assert.ok(events[3].delta.signature);
+    assert.equal(events[5].content_block.type, 'text');
+    assert.deepEqual(events[6].delta, {type: 'text_delta', text: 'hello'});
+    assert.deepEqual(events[8].content_block, {
         type: 'tool_use',
         id: 'call_1',
         name: 'read_file',
         input: {}
     });
-    assert.deepEqual(events[5].delta, {type: 'input_json_delta', partial_json: '{"path"'});
-    assert.deepEqual(events[6].delta, {type: 'input_json_delta', partial_json: ':"README.md"}'});
-    assert.equal(events[8].delta.stop_reason, 'tool_use');
-    assert.deepEqual(events[8].usage, {
+    assert.deepEqual(events[9].delta, {type: 'input_json_delta', partial_json: '{"path"'});
+    assert.deepEqual(events[10].delta, {type: 'input_json_delta', partial_json: ':"README.md"}'});
+    assert.equal(events[12].delta.stop_reason, 'tool_use');
+    assert.deepEqual(events[12].usage, {
         input_tokens: 3,
         output_tokens: 4,
         cache_read_input_tokens: 0
@@ -519,7 +527,7 @@ test('Responses to Anthropic stream bridge replays real thinking signatures with
     assert.deepEqual(signatureEvents.map((event) => event.delta.signature), ['sig_real']);
 });
 
-test('Responses to Anthropic stream bridge drops unsigned reasoning summaries', () => {
+test('Responses to Anthropic stream bridge renders unsigned reasoning summaries as thinking', () => {
     const bridge = createResponsesToAnthropicStreamBridge({model: 'claude-test'});
     const events = [];
 
@@ -550,11 +558,15 @@ test('Responses to Anthropic stream bridge drops unsigned reasoning summaries', 
 
     assert.equal(
         events.some((event) => event.content_block?.type === 'thinking'),
-        false
+        true
+    );
+    assert.deepEqual(
+        events.find((event) => event.delta?.type === 'thinking_delta').delta,
+        {type: 'thinking_delta', thinking: 'unsigned thought'}
     );
     assert.equal(
-        events.some((event) => event.delta?.type === 'thinking_delta'),
-        false
+        events.some((event) => event.delta?.type === 'signature_delta'),
+        true
     );
     assert.equal(
         events.some((event) => event.content_block?.type === 'text'),

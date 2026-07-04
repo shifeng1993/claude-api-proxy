@@ -249,7 +249,7 @@ test('sanitizeResponsesInput preserves relay Anthropic private fields for relay 
     });
 });
 
-test('responsesResponseToAnthropic omits unsigned reasoning summaries from Anthropic thinking', () => {
+test('responsesResponseToAnthropic renders unsigned reasoning summaries as Anthropic thinking', () => {
     const converted = responsesResponseToAnthropic({
         id: 'resp_123',
         model: 'gpt-test',
@@ -280,14 +280,16 @@ test('responsesResponseToAnthropic omits unsigned reasoning summaries from Anthr
 
     assert.equal(converted.id, 'msg_123');
     assert.equal(converted.stop_reason, 'tool_use');
-    assert.deepEqual(converted.content, [
-        {type: 'text', text: 'I will read it.'},
-        {type: 'tool_use', id: 'call_1', name: 'read_file', input: {path: 'README.md'}}
-    ]);
-    assert.equal(
-        converted.content.some((block) => block.type === 'thinking'),
-        false
-    );
+    assert.deepEqual(converted.content.map((block) => block.type), ['text', 'thinking', 'tool_use']);
+    const thinking = converted.content.find((block) => block.type === 'thinking');
+    assert.equal(thinking.thinking, 'Need file.');
+    assert.ok(thinking.signature);
+    assert.deepEqual(converted.content.find((block) => block.type === 'tool_use'), {
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'read_file',
+        input: {path: 'README.md'}
+    });
     assert.deepEqual(converted.usage, {
         input_tokens: 10,
         output_tokens: 5,

@@ -821,6 +821,20 @@ export function openAIToAnthropic(openAIResponse, options = {}) {
     const message = choice.message || {};
     const content = [];
 
+    // 恢复 reasoning_content → thinking 块（chat 上游 reasoning 无签名来源，注入占位签名）
+    const reasoningText = message.reasoning_content
+        || (typeof message.thinking === 'string' ? message.thinking : null)
+        || (typeof message.thinking === 'object' && message.thinking !== null ? message.thinking.content : null)
+        || (typeof message.reasoning === 'string' ? message.reasoning : null)
+        || (typeof message.thought === 'string' ? message.thought : null);
+    if (reasoningText) {
+        content.push({
+            type: 'thinking',
+            thinking: reasoningText,
+            signature: generateId()
+        });
+    }
+
     if (message.content) {
         content.push({
             type: 'text',
