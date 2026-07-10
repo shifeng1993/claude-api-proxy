@@ -72,6 +72,148 @@ function definedFields(value) {
     );
 }
 
+// 解析 data: URL（data:[<mediatype>][;base64],<data>），用于把 data URL 还原成 Anthropic base64 source
+function parseDataUrl(url) {
+    if (typeof url !== 'string' || !url.startsWith('data:')) return null;
+    const commaIndex = url.indexOf(',');
+    if (commaIndex < 0) return null;
+    const header = url.slice(5, commaIndex);
+    const data = url.slice(commaIndex + 1);
+    const mediaType = header.split(';')[0] || 'image/png';
+    return {mediaType, data};
+}
+
+// 把图片 URL 转成 Anthropic image source：data URL 解析为 base64 source
+// （标准 Anthropic API 不接受 data: URL 作 url source），http(s) URL 保持 url 透传
+function urlToAnthropicSource(url) {
+    if (!url) return undefined;
+    const dataUrl = parseDataUrl(url);
+    if (dataUrl) {
+        return definedFields({type: 'base64', media_type: dataUrl.mediaType, data: dataUrl.data});
+    }
+    return {type: 'url', url};
+}
+
+// canonical image block 可能以 url（含 data: URL）或裸 dataRef（base64）承载图片数据，
+// 输出给 Chat/Responses 时需统一成完整可用的 URL：data URL 原样返回，裸 base64 补 data: 前缀
+function canonicalImageDataURL(block = {}) {
+    if (block.url) return block.url;
+    if (block.dataRef) {
+        return `data:${block.mediaType || 'image/png'};base64,${block.dataRef}`;
+    }
+    return '';
+}
+
+// 把原始（未规范化）的图片 part 转成 data URL，兼容 anthropic image / chat image_url / responses input_image
+function rawImagePartToURL(part) {
+    if (!part || typeof part !== 'object') return '';
+    if (part.type === 'image') {
+        return part.source?.data
+            ? `data:${part.source.media_type};base64,${part.source.data}`
+            : (part.source?.url || '');
+    }
+    if (part.type === 'image_url') {
+        return part.image_url?.url || part.image_url || '';
+    }
+    if (part.type === 'input_image') {
+        return part.image_url || part.url || '';
+    }
+    return '';
+}
+
+function isImagePart(part) {
+    return part?.type === 'image' || part?.type === 'image_url' || part?.type === 'input_image';
+}
+
+// canonical tool_result.content 保留客户端原始格式（字符串或 content 数组），
+// 可能内嵌 anthropic image 或 chat image_url。Responses 的 function_call_output.output
+// 仅接受字符串，因此含图片时把文本合并为 output，图片提取为独立 user input item。
+function canonicalToolResultToResponsesOutput(content) {
+    if (typeof content === 'string') return {output: content, imageItems: []};
+    if (!Array.isArray(content)) {
+        return {output: content == null ? '' : JSON.stringify(content || ''), imageItems: []};
+    }
+    const imageItems = [];
+    const textParts = [];
+    for (const part of content) {
+        if (typeof part === 'string') {
+            textParts.push(part);
+            continue;
+        }
+        if (!part || typeof part !== 'object') continue;
+        if (isImagePart(part)) {
+            const url = rawImagePartToURL(part);
+            if (url) imageItems.push({type: 'input_image', image_url: url});
+        } else if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+            textParts.push(part.text || '');
+        }
+    }
+    const output = imageItems.length > 0 ? textParts.join('\n').trim() : JSON.stringify(content);
+    return {output, imageItems};
+}
+
+// canonical tool_result.content 渲染为 Chat tool message content：
+// 字符串原样返回；纯文本数组（无图片）合并为字符串以保持标量；含图片则转成 image_url 数组
+function canonicalToolResultContentToChat(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : String(content);
+    }
+    if (!content.some(isImagePart)) {
+        return content
+            .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+            .join('\n')
+            .trim();
+    }
+    return content
+        .map((part) => {
+            if (typeof part === 'string') return {type: 'text', text: part};
+            if (!part || typeof part !== 'object') return null;
+            if (isImagePart(part)) {
+                return {type: 'image_url', image_url: {url: rawImagePartToURL(part)}};
+            }
+            if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+                return {type: 'text', text: part.text || ''};
+            }
+            return null;
+        })
+        .filter(Boolean);
+}
+
+// canonical tool_result.content 渲染为 Anthropic tool_result content：
+// 字符串原样返回；纯文本数组（无图片）合并为字符串保持标量；含图片则转成
+// Anthropic 原生 content 数组（text + image block），避免 JSON.stringify 把图片压扁。
+// Anthropic tool_result.content 协议支持 image block，故可内联无需像 Responses 那样提取独立 item
+function canonicalToolResultContentToAnthropic(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : JSON.stringify(content || '');
+    }
+    if (!content.some(isImagePart)) {
+        return content
+            .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+            .join('\n')
+            .trim();
+    }
+    return content
+        .map((part) => {
+            if (typeof part === 'string') return {type: 'text', text: part};
+            if (!part || typeof part !== 'object') return null;
+            if (part.type === 'image' && part.source) {
+                return {type: 'image', source: clone(part.source)};
+            }
+            if (isImagePart(part)) {
+                const source = urlToAnthropicSource(rawImagePartToURL(part));
+                return source ? {type: 'image', source} : null;
+            }
+            if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+                return {type: 'text', text: part.text || ''};
+            }
+            return null;
+        })
+        .filter(Boolean);
+}
+
 function contentToBlocks(content, defaultTextType = 'text') {
     if (typeof content === 'string') return [textBlock(content)].filter(Boolean);
     if (!Array.isArray(content)) {
@@ -738,7 +880,7 @@ function blocksToChatContent(blocks) {
     if (contentBlocks.every((block) => block.type === 'text')) return blocksToText(contentBlocks);
     return contentBlocks.map((block) => {
         if (block.type === 'text') return {type: 'text', text: block.text || ''};
-        if (block.type === 'image') return {type: 'image_url', image_url: {url: block.url || block.dataRef || ''}};
+        if (block.type === 'image') return {type: 'image_url', image_url: {url: canonicalImageDataURL(block)}};
         return {type: 'file', file: block.url || block.dataRef || block.filename || ''};
     });
 }
@@ -753,7 +895,7 @@ export function renderCanonicalToChat(session = {}) {
                 messages.push({
                     role: 'tool',
                     tool_call_id: toolTargetId(mapping, 'chat'),
-                    content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    content: canonicalToolResultContentToChat(block.content)
                 });
             }
             continue;
@@ -796,7 +938,7 @@ function blocksToResponsesContent(blocks, textType) {
         .filter((block) => block.type === 'text' || block.type === 'image' || block.type === 'file')
         .map((block) => {
             if (block.type === 'text') return {type: textType, text: block.text || ''};
-            if (block.type === 'image') return {type: 'input_image', image_url: block.url || block.dataRef || ''};
+            if (block.type === 'image') return {type: 'input_image', image_url: canonicalImageDataURL(block)};
             return {type: 'input_file', file_data: block.dataRef || block.url || ''};
         });
 }
@@ -855,11 +997,15 @@ export function renderCanonicalToResponses(session = {}) {
                 });
             } else if (block.type === 'tool_result') {
                 const mapping = findToolMapping(session, {canonicalToolCallId: block.canonicalToolCallId});
+                const {output, imageItems} = canonicalToolResultToResponsesOutput(block.content);
                 input.push({
                     type: 'function_call_output',
                     call_id: toolTargetId(mapping, 'responses'),
-                    output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    output
                 });
+                if (imageItems.length > 0) {
+                    input.push({role: 'user', content: imageItems});
+                }
             }
         }
     }
@@ -890,9 +1036,9 @@ function blocksToAnthropicContent(blocks) {
             const source = block.anthropicSource
                 ? clone(block.anthropicSource)
                 : block.url
-                    ? {type: 'url', url: block.url}
+                    ? urlToAnthropicSource(block.url)
                     : definedFields({type: 'base64', media_type: block.mediaType, data: block.dataRef || ''});
-            content.push({type: 'image', source, ...(block.anthropic ? clone(block.anthropic) : {})});
+            if (source) content.push({type: 'image', source, ...(block.anthropic ? clone(block.anthropic) : {})});
         } else if (block.type === 'file') {
             content.push({type: 'text', text: block.url || block.filename || block.dataRef || ''});
         } else if (block.type === 'anthropic_content') {
@@ -990,9 +1136,11 @@ function anthropicToolResultBlock(session, block) {
     return {
         type: 'tool_result',
         tool_use_id: toolTargetId(mapping, 'anthropic'),
+        // anthropicContent（Anthropic 原生/中继来源）直接保留；否则把 content 渲染成
+        // Anthropic 原生格式——含图片时输出 text+image block 数组，而非 JSON.stringify 压扁
         content: block.anthropicContent !== undefined
             ? clone(block.anthropicContent)
-            : typeof block.content === 'string' ? block.content : JSON.stringify(block.content || ''),
+            : canonicalToolResultContentToAnthropic(block.content),
         ...(block.isError ? {is_error: true} : {}),
         ...(block.anthropic ? clone(block.anthropic) : {})
     };

@@ -337,14 +337,38 @@ function anthropicMessagesToResponsesInput(messages) {
             const otherBlocks = message.content.filter((block) => block?.type !== 'tool_result');
 
             for (const block of toolResults) {
+                const content = block.content;
+                const imageBlocks = Array.isArray(content)
+                    ? content.filter((b) => b?.type === 'image')
+                    : [];
+                // Responses API 的 function_call_output.output 协议只接受字符串：
+                // 含图片时把文本部分作为 output，图片提取为紧随其后的独立 user input item，
+                // 否则旧逻辑直接 JSON.stringify 会把 image block 压成无效字符串导致上游 400
+                let output;
+                if (typeof content === 'string') {
+                    output = content;
+                } else if (imageBlocks.length > 0) {
+                    output = (Array.isArray(content) ? content : [])
+                        .filter((b) => typeof b === 'string' || b?.type === 'text')
+                        .map((b) => (typeof b === 'string' ? b : b.text || ''))
+                        .join('\n');
+                } else {
+                    output = JSON.stringify(content || '');
+                }
                 const item = {
                     type: 'function_call_output',
                     call_id: block.tool_use_id || '',
-                    output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    output
                 };
                 const relayToolResult = relayAnthropicToolResult(block);
                 if (relayToolResult) item.x_relay_anthropic_tool_result = relayToolResult;
                 input.push(item);
+                if (imageBlocks.length > 0) {
+                    input.push({
+                        role: 'user',
+                        content: anthropicContentToResponsesContent(imageBlocks)
+                    });
+                }
             }
 
             if (otherBlocks.length > 0) {
@@ -577,6 +601,37 @@ function anthropicSystemToChatContent(system, options = {}) {
         .join('\n\n');
 }
 
+
+/**
+ * 将 Anthropic tool_result 的 content 转成 OpenAI tool message 的 content。
+ * - 字符串：原样透传（兼容绝大多数纯文本工具返回）
+ * - 含图片等多模态块：用 mapContent 转成 image_url 数组，避免旧逻辑直接
+ *   JSON.stringify 把 image block 压成无效字符串导致上游 400（Claude Code
+ *   用 Read 工具读取图片文件即走此路径）
+ * - 纯文本数组：合并为字符串，保持 tool message content 为标量以最大化兼容
+ */
+function mapToolResultContentToChat(content) {
+    if (typeof content === 'string') {
+        return prependToolThinkingHint(content);
+    }
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : String(content);
+    }
+    const mapped = mapContent(content);
+    if (typeof mapped === 'string') {
+        return prependToolThinkingHint(mapped);
+    }
+    const hasImage = mapped.some((block) => block?.type === 'image_url');
+    if (!hasImage) {
+        const text = mapped
+            .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+            .join('\n')
+            .trim();
+        return prependToolThinkingHint(text);
+    }
+    return mapped;
+}
+
 function handleAnthropicUserMessage(message, previousAssistantMessage = null, options = {}) {
     const messages = [];
 
@@ -589,13 +644,7 @@ function handleAnthropicUserMessage(message, previousAssistantMessage = null, op
         if (toolResults.length > 0) {
             const resultMap = new Map();
             for (const block of toolResults) {
-                let content = '';
-                if (typeof block.content === 'string') {
-                    content = block.content;
-                } else if (block.content != null) {
-                    content = JSON.stringify(block.content);
-                }
-                resultMap.set(block.tool_use_id, prependToolThinkingHint(content));
+                resultMap.set(block.tool_use_id, mapToolResultContentToChat(block.content));
             }
 
             if (options.orderToolResultsByAssistant !== false && previousAssistantMessage?.tool_calls) {

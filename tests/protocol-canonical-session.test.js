@@ -288,3 +288,186 @@ test('canonical renderers normalize tool definitions and tool choice for target 
     }]);
     assert.deepEqual(responses.tool_choice, {type: 'function', name: 'list_files'});
 });
+
+test('renderCanonicalToAnthropic converts data URL image to base64 source instead of url source', () => {
+    const session = canonicalFromChatRequest({
+        model: 'gpt-test',
+        messages: [{
+            role: 'user',
+            content: [
+                {type: 'text', text: 'describe this'},
+                {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}}
+            ]
+        }]
+    });
+
+    const anthropic = renderCanonicalToAnthropic(session);
+    const image = anthropic.messages[0].content.find((block) => block.type === 'image');
+    assert.deepEqual(image.source, {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='});
+});
+
+test('renderCanonicalToChat and renderCanonicalToResponses prefix bare dataRef image with data URL', () => {
+    const session = {
+        turns: [{
+            role: 'user',
+            blocks: [{type: 'image', mediaType: 'image/jpeg', dataRef: 'cmF3YmFzZQ=='}]
+        }],
+        toolMappings: []
+    };
+
+    const chat = renderCanonicalToChat(session);
+    assert.deepEqual(chat.messages[0].content, [
+        {type: 'image_url', image_url: {url: 'data:image/jpeg;base64,cmF3YmFzZQ=='}}
+    ]);
+
+    const responses = renderCanonicalToResponses(session);
+    assert.deepEqual(responses.input[0].content, [
+        {type: 'input_image', image_url: 'data:image/jpeg;base64,cmF3YmFzZQ=='}
+    ]);
+});
+
+test('renderCanonicalToResponses extracts tool_result image into a separate user input item', () => {
+    const session = canonicalFromAnthropicRequest({
+        model: 'claude-test',
+        messages: [
+            {role: 'user', content: 'read the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {path: 'a.png'}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const responses = renderCanonicalToResponses(session);
+    const fco = responses.input.find((item) => item.type === 'function_call_output');
+    assert.equal(fco.output, 'screenshot captured');
+    const userImage = responses.input.find((item) => item.role === 'user' && Array.isArray(item.content) && item.content.some((p) => p.type === 'input_image'));
+    assert.ok(userImage, 'expected a user input item carrying the extracted image');
+    assert.deepEqual(userImage.content, [
+        {type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8='}
+    ]);
+});
+
+test('renderCanonicalToChat renders tool_result image as image_url array', () => {
+    const session = canonicalFromAnthropicRequest({
+        model: 'claude-test',
+        messages: [
+            {role: 'user', content: 'read the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {path: 'a.png'}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const chat = renderCanonicalToChat(session);
+    const toolMessage = chat.messages.find((m) => m.role === 'tool');
+    assert.deepEqual(toolMessage.content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}}
+    ]);
+});
+
+test('renderCanonicalToAnthropic renders tool_result image as inline image block on Chat-origin roundtrip', () => {
+    const session = canonicalFromChatRequest({
+        model: 'gpt-test',
+        messages: [
+            {
+                role: 'assistant',
+                content: '',
+                tool_calls: [{
+                    id: 'call_chat_1',
+                    type: 'function',
+                    function: {name: 'read_image', arguments: '{"path":"a.png"}'}
+                }]
+            },
+            {
+                role: 'tool',
+                tool_call_id: 'call_chat_1',
+                content: [
+                    {type: 'text', text: 'screenshot captured'},
+                    {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}}
+                ]
+            }
+        ]
+    });
+
+    const anthropic = renderCanonicalToAnthropic(session);
+    const toolResult = anthropic.messages
+        .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+        .find((block) => block?.type === 'tool_result');
+    assert.ok(toolResult, 'expected a tool_result block');
+    assert.deepEqual(toolResult.content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+    ]);
+});
+
+test('renderCanonicalToAnthropic keeps tool_result image as native block when Anthropic content is relayed', () => {
+    const session = canonicalFromAnthropicRequest({
+        model: 'claude-test',
+        messages: [
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const anthropic = renderCanonicalToAnthropic(session);
+    const toolResult = anthropic.messages
+        .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+        .find((block) => block?.type === 'tool_result');
+    assert.deepEqual(toolResult.content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+    ]);
+});
+
+test('renderCanonicalToAnthropic merges text-only tool_result content into scalar string', () => {
+    const session = canonicalFromChatRequest({
+        model: 'gpt-test',
+        messages: [
+            {
+                role: 'assistant',
+                content: '',
+                tool_calls: [{id: 'call_chat_1', type: 'function', function: {name: 'grep', arguments: '{}'}}]
+            },
+            {
+                role: 'tool',
+                tool_call_id: 'call_chat_1',
+                content: [{type: 'text', text: 'line 1'}, {type: 'text', text: 'line 2'}]
+            }
+        ]
+    });
+
+    const anthropic = renderCanonicalToAnthropic(session);
+    const toolResult = anthropic.messages
+        .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+        .find((block) => block?.type === 'tool_result');
+    assert.equal(toolResult.content, 'line 1\nline 2');
+});

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     anthropicRequestToResponses,
+    anthropicRequestToChat,
     responsesResponseToAnthropic
 } from '../src/protocol-engine/core/http-converters.js';
 import {sanitizeResponsesInput} from '../src/protocol-engine/core/responses.js';
@@ -295,4 +296,65 @@ test('responsesResponseToAnthropic renders unsigned reasoning summaries as Anthr
         output_tokens: 5,
         cache_read_input_tokens: 3
     });
+});
+
+test('anthropicRequestToResponses extracts tool_result image into a separate user input item', () => {
+    const converted = anthropicRequestToResponses({
+        model: 'claude-sonnet-4',
+        messages: [
+            {role: 'user', content: 'read the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {path: 'a.png'}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const fco = converted.input.find((item) => item.type === 'function_call_output');
+    assert.equal(fco.output, 'screenshot captured');
+    assert.deepEqual(fco.x_relay_anthropic_tool_result.content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+    ]);
+
+    const userImage = converted.input.find((item) => item.role === 'user' && Array.isArray(item.content) && item.content.some((p) => p.type === 'input_image'));
+    assert.ok(userImage, 'expected a user input item carrying the extracted image');
+    assert.deepEqual(userImage.content, [
+        {type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8='}
+    ]);
+});
+
+test('anthropicRequestToChat renders tool_result image as image_url array', () => {
+    const converted = anthropicRequestToChat({
+        model: 'claude-sonnet-4',
+        messages: [
+            {role: 'user', content: 'read the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {path: 'a.png'}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const toolMessage = converted.messages.find((m) => m.role === 'tool');
+    assert.deepEqual(toolMessage.content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}}
+    ]);
 });
