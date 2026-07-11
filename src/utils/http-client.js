@@ -171,6 +171,7 @@ export function request(url, options = {}) {
             agent: agent || undefined,
             rejectUnauthorized
         };
+        if (options.signal) requestOptions.signal = options.signal;
 
         let hardTimeout = null;
         const clearHardTimeout = () => {

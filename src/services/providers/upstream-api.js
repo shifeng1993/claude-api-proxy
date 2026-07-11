@@ -290,7 +290,8 @@ export async function createChatCompletions(payload, upstream, meta = {}) {
             promptCacheKey: normalizedPayload.prompt_cache_key,
             ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
         }),
-        timeout: 300000
+        timeout: 300000,
+        signal: meta.signal
     });
 
     // 非 2xx 时读取响应体并抛出异常
@@ -343,7 +344,8 @@ export async function createResponses(payload, upstream, meta = {}, endpoint = '
             promptCacheKey: normalizedPayload.prompt_cache_key,
             ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
         }),
-        timeout: 300000
+        timeout: 300000,
+        signal: meta.signal
     });
 
     if (response.status < 200 || response.status >= 300) {
@@ -428,7 +430,8 @@ export async function createAnthropicMessages(payload, upstream, meta = {}, requ
             promptCacheKey: payload.prompt_cache_key,
             ...(meta.tenantName ? {tenantName: meta.tenantName, tenantUsername: meta.tenantUsername} : {})
         }),
-        timeout: 300000
+        timeout: 300000,
+        signal: meta.signal
     });
 
     if (response.status < 200 || response.status >= 300) {

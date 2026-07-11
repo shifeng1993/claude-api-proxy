@@ -78,7 +78,7 @@ export function createRelayResponsesAPIHandler({
                     RelayStateMissingError
                 });
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const stateConversationKey = hydrated.conversationKey || conversationKey;
                 const invocation = await invokeWithRelayContextCompaction({
                     chatRequest: chatReq,
@@ -144,6 +144,9 @@ export function createRelayResponsesAPIHandler({
                             }
                             res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
                         }
+                        if (res.writableNeedDrain) {
+                            await new Promise(resolve => res.once('drain', resolve));
+                        }
                     }
                     const sourceChatResponse = sourceChatAccumulator.toChatResponse();
                     const responseForState = completedResponse || responsesAccumulator.toResponsesResponse();
@@ -192,7 +195,7 @@ export function createRelayResponsesAPIHandler({
 
             if (isResponsesWebSocketUpstream(upstream)) {
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const wsPayload = {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, upstream.index)};
                 const conversationKey = extractConversationKey(req, wsPayload, {tenantId});
                 const continuation = prepareResponsesContinuationPayload({
@@ -238,6 +241,9 @@ export function createRelayResponsesAPIHandler({
                                 responsesAccumulator.feed(responseEvent.event, responseEvent.data);
                                 res.write(`event: ${responseEvent.event}\ndata: ${JSON.stringify(responseEvent.data)}\n\n`);
                             }
+                            if (res.writableNeedDrain) {
+                                await new Promise(resolve => res.once('drain', resolve));
+                            }
                         }
                         releaseResponsesWebSocketConnection(wsResult.conn);
                     } catch (error) {
@@ -261,7 +267,7 @@ export function createRelayResponsesAPIHandler({
 
             if (isResponsesUpstream(upstream)) {
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const conversationKey = extractConversationKey(req, responsesReq, {tenantId});
                 const responsesPayload = {...responsesReq, model: upstreamManager.resolveModel(responsesReq.model, upstream.index)};
                 const continuation = prepareResponsesContinuationPayload({
@@ -325,6 +331,10 @@ export function createRelayResponsesAPIHandler({
                                 continue;
                             }
                         }
+                        if (res.writableNeedDrain) {
+                            response.body.pause();
+                            res.once('drain', () => response.body.resume());
+                        }
                     });
 
                     response.body.on('end', () => {
@@ -343,6 +353,9 @@ export function createRelayResponsesAPIHandler({
 
                     response.body.on('error', (err) => {
                         logger.error('Relay Responses passthrough stream error:', err);
+                        if (!res.writableEnded && !res.destroyed) {
+                            res.write(`event: error\ndata: ${JSON.stringify({type: 'error', error: {message: err?.message || 'Upstream stream failed'}})}\n\n`);
+                        }
                         res.end();
                     });
                     return;
@@ -377,7 +390,7 @@ export function createRelayResponsesAPIHandler({
             });
 
             const tenant = await tenantDirectory.getTenant(tenantId);
-            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
             const conversationKey = hydrated.conversationKey || responsesConversationKey || extractConversationKey(req, chatReq, {tenantId});
             const relayMeta = {
                 ...tenantMeta,
@@ -466,6 +479,10 @@ export function createRelayResponsesAPIHandler({
                         }
                     }
                     if (start > 0) buffer = buffer.subarray(start);
+                    if (res.writableNeedDrain) {
+                        response.body.pause();
+                        res.once('drain', () => response.body.resume());
+                    }
                 });
 
                 response.body.on('end', () => {
@@ -486,6 +503,9 @@ export function createRelayResponsesAPIHandler({
 
                 response.body.on('error', (err) => {
                     logger.error('Relay Responses stream error:', err);
+                    if (!res.writableEnded && !res.destroyed) {
+                        res.write(`event: error\ndata: ${JSON.stringify({type: 'error', error: {message: err?.message || 'Upstream stream failed'}})}\n\n`);
+                    }
                     res.end();
                 });
             } else {

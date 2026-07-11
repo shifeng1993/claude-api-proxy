@@ -62,7 +62,7 @@ export function createRelayResponsesCompactHandler({
                     stream: false
                 });
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const {response} = await callUpstream(upstream, (up) =>
                     createAnthropicMessages(
                         anthropicPayload,
@@ -103,7 +103,7 @@ export function createRelayResponsesCompactHandler({
                     stream: false
                 });
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const limitedRequest = limitResponsesPassthroughPayload(responsesPayload, {
                     requestType: 'ResponsesCompactWebSocket',
                     conversationKey
@@ -126,7 +126,7 @@ export function createRelayResponsesCompactHandler({
 
             if (isResponsesUpstream(upstream)) {
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 const conversationKey = extractConversationKey(req, compactReq, {tenantId});
                 const relayMeta = {
                     ...tenantMeta,
@@ -166,7 +166,7 @@ export function createRelayResponsesCompactHandler({
             mergeConsecutiveAssistantMessages(chatReq.messages);
 
             const tenant = await tenantDirectory.getTenant(tenantId);
-            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
             const conversationKey = extractConversationKey(req, chatReq, {tenantId});
             const relayMeta = {
                 ...tenantMeta,

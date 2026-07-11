@@ -68,7 +68,7 @@ export function createRelayAnthropicMessagesHandler({
             const body = await parseBody(req);
             const anthropicPayload = sanitizeAnthropicPayload(JSON.parse(body));
             const tenant = await tenantDirectory.getTenant(tenantId);
-            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
             const relayStatsModel = upstreamManager.resolveModel(anthropicPayload.model, upstream.index);
             const baseConversationKey = extractConversationKey(req, anthropicPayload, {tenantId});
             const openAIPayload = anthropicToOpenAI(anthropicPayload, relayStatsModel);
@@ -130,6 +130,10 @@ export function createRelayAnthropicMessagesHandler({
                                 continue;
                             }
                         }
+                        if (res.writableNeedDrain) {
+                            response.body.pause();
+                            res.once('drain', () => response.body.resume());
+                        }
                     });
 
                     response.body.on('end', () => {
@@ -154,6 +158,10 @@ export function createRelayAnthropicMessagesHandler({
 
                     response.body.on('error', (err) => {
                         logger.error(`Relay Anthropic passthrough stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
+                        writeAnthropicEvent(res, {
+                            type: 'error',
+                            error: {type: 'api_error', message: err?.message || 'Upstream stream failed'}
+                        });
                         res.end();
                     });
                     return;
@@ -394,6 +402,10 @@ export function createRelayAnthropicMessagesHandler({
                         }
                     }
                     if (start > 0) buffer = buffer.subarray(start);
+                    if (res.writableNeedDrain) {
+                        response.body.pause();
+                        res.once('drain', () => response.body.resume());
+                    }
                 });
 
                 response.body.on('end', () => {

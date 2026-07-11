@@ -440,7 +440,7 @@ export function createRelayResponsesWebSocketHandler({
                 const {upstream, tenantId, upstreamManager} = upstreamContext;
 
                 const tenant = await tenantDirectory.getTenant(tenantId);
-                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+                const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
                 req.relayResolvedModel = upstreamManager.resolveModel(payload.model, upstream.index);
 
                 yield* relayWSHandleRequest(payload, upstream, upstreamManager, tenantId, tenantMeta, signal, req);

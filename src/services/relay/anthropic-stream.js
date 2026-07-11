@@ -36,6 +36,9 @@ export async function streamRelayResponsesEventsAsAnthropic(
                 writeAnthropicEvent(res, anthropicEvent);
             }
         }
+        if (res.writableNeedDrain) {
+            await new Promise(resolve => res.once('drain', resolve));
+        }
     }
 
     return usage;

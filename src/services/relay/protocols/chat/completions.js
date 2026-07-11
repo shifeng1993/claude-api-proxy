@@ -72,7 +72,7 @@ export function createRelayChatCompletionsHandler({
             const openAIPayload = JSON.parse(body);
 
             const tenant = await tenantDirectory.getTenant(tenantId);
-            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username};
+            const tenantMeta = {tenantName: tenant?.name, tenantUsername: tenant?.username, signal: req.signal};
             const relayStatsModel = upstreamManager.resolveModel(openAIPayload.model, upstream.index);
             const baseConversationKey = extractConversationKey(req, openAIPayload, {tenantId});
 
@@ -116,6 +116,9 @@ export function createRelayChatCompletionsHandler({
                         if (chatChunk.usage) finalUsage = chatChunk.usage;
                         chatAccumulator.feed(chatChunk);
                         res.write(`data: ${JSON.stringify(chatChunk)}\n\n`);
+                        if (res.writableNeedDrain) {
+                            await new Promise(resolve => res.once('drain', resolve));
+                        }
                     }
                     const chatResponse = chatAccumulator.toChatResponse();
                     if (chatResponse) {
@@ -209,6 +212,9 @@ export function createRelayChatCompletionsHandler({
                             const chunks = responsesToChatBridge.feed(event.type, event.data);
                             for (const chatChunk of chunks) {
                                 res.write(`data: ${JSON.stringify(chatChunk)}\n\n`);
+                            }
+                            if (res.writableNeedDrain) {
+                                await new Promise(resolve => res.once('drain', resolve));
                             }
                         }
                         releaseResponsesWebSocketConnection(wsResult.conn);
@@ -306,6 +312,10 @@ export function createRelayChatCompletionsHandler({
                                 res.write('data: [DONE]\n\n');
                             }
                         }
+                        if (res.writableNeedDrain) {
+                            response.body.pause();
+                            res.once('drain', () => response.body.resume());
+                        }
                     });
 
                     response.body.on('end', () => {
@@ -330,6 +340,10 @@ export function createRelayChatCompletionsHandler({
 
                     response.body.on('error', (err) => {
                         logger.error(`Relay Responses->Chat stream error${tenantInfo ? `, ${tenantInfo}` : ''}:`, err);
+                        if (!res.writableEnded && !res.destroyed) {
+                            res.write(`data: ${JSON.stringify({error: {message: err?.message || 'Upstream stream failed', type: 'api_error'}})}\n\n`);
+                            res.write('data: [DONE]\n\n');
+                        }
                         res.end();
                     });
                     return;

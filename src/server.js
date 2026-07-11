@@ -207,6 +207,11 @@ function handleHealthCheck(res) {
  */
 export function createServer() {
     const server = http.createServer(async (req, res) => {
+        const abortController = new AbortController();
+        req.signal = abortController.signal;
+        req.on('close', () => {
+            if (!res.writableEnded) abortController.abort();
+        });
         const corsApplied = applyCorsHeaders(req, res);
         if (req.method === 'OPTIONS' && corsApplied) {
             res.writeHead(204);
@@ -359,6 +364,9 @@ export function createServer() {
     const wss = new WebSocketServer({noServer: true});
 
     server.on('upgrade', (req, socket, head) => {
+        const abortController = new AbortController();
+        req.signal = abortController.signal;
+        socket.on('close', () => abortController.abort());
         let pathname;
         try {
             pathname = normalizeRequestUrl(req);
