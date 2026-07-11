@@ -142,6 +142,9 @@ async function startAuth(req, res, tenantId) {
     if (BLOCKED_DOMAINS.includes(host)) {
         return sendJson(res, 400, {error: `域名 ${host} 已废弃，不允许添加凭证`});
     }
+    if (!isAllowedCodebuddyHost(host)) {
+        return sendJson(res, 400, {error: `域名 ${host} 不在允许的站点列表内`});
+    }
 
     const nonce = randomBytes(8).toString('hex');
     const response = await fetch(`${baseUrl}/v2/plugin/auth/state?platform=CLI&nonce=${nonce}`, {
@@ -267,6 +270,9 @@ async function saveBrowserAuth(req, res, tenantId) {
     if (BLOCKED_DOMAINS.includes(host)) {
         return sendJson(res, 400, {status: 'error', message: `Domain ${host} is blocked`});
     }
+    if (!isAllowedCodebuddyHost(host)) {
+        return sendJson(res, 400, {status: 'error', message: `Domain ${host} is not in the allowed site list`});
+    }
 
     const saved = await saveCodebuddyCredential(tenantId, baseUrl, tokenData || {}, accountInfo || {});
     return sendJson(res, saved ? 200 : 500, {
@@ -284,6 +290,10 @@ export function getCodebuddyAdminOptions() {
         label: isPersonalHost(new URL(url).host) ? '\u4e2a\u4eba\u7ad9' : getCodebuddyCustomSiteLabel(url),
         models: getModelsForHost(url)
     }));
+}
+
+function isAllowedCodebuddyHost(host) {
+    return getCodebuddyAdminOptions().some(option => option.host === host);
 }
 
 export async function handleCodebuddyAdminRoute(req, res, tenantId, subPath) {
