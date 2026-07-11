@@ -692,7 +692,7 @@ function handleAnthropicAssistantMessage(message, options = {}) {
 
     const toolUseBlocks = message.content.filter((block) => block?.type === 'tool_use');
     const textBlocks = message.content.filter((block) => block?.type === 'text');
-    const thinkingBlocks = message.content.filter((block) => block?.type === 'thinking');
+    const thinkingBlocks = message.content.filter((block) => block?.type === 'thinking' || block?.type === 'redacted_thinking');
 
     const allText = textBlocks
         .map((block) => block.text)
@@ -705,11 +705,19 @@ function handleAnthropicAssistantMessage(message, options = {}) {
     };
 
     const reasoningText = thinkingBlocks
-        .map((block) => block.thinking)
+        .map((block) => block.thinking || '')
         .filter(Boolean)
         .join('\n\n');
     if (reasoningText) {
         result.reasoning_content = reasoningText;
+    } else if (thinkingBlocks.length > 0) {
+        // thinking 已被脱敏为 redacted_thinking（无纯文本）时，给空串满足字段存在要求。
+        result.reasoning_content = '';
+    } else if (toolUseBlocks.length > 0) {
+        // DeepSeek 等模型默认开启思考模式：一旦 assistant 进行过工具调用，
+        // 后续轮次必须回传 reasoning_content，否则 API 返回 400。
+        // 即使客户端未回传 thinking block（被裁剪/未开启），也补一个空串占位。
+        result.reasoning_content = '';
     }
 
     if (toolUseBlocks.length > 0) {
