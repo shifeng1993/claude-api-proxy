@@ -18,6 +18,7 @@ import {
 } from '../services/gateway/index.js';
 import {sendNotFoundPage, wantsHtml} from './not-found.js';
 import logger from '../utils/logger.js';
+import {readJsonBody} from '../utils/helpers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOGIN_PAGE = readFileSync(join(__dirname, '..', 'templates', 'login.html'), 'utf8');
@@ -56,17 +57,7 @@ export async function resolveLoginRole({authMode, username, displayName, resultR
 }
 
 function readBody(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', c => chunks.push(c));
-        req.on('end', () => {
-            try {
-                const body = Buffer.concat(chunks).toString('utf8');
-                resolve(body ? JSON.parse(body) : {});
-            } catch (e) { reject(e); }
-        });
-        req.on('error', reject);
-    });
+    return readJsonBody(req, {maxBytes: 1024 * 1024});
 }
 
 export async function routeAuthRequest(req, res) {
@@ -121,7 +112,7 @@ export async function routeAuthRequest(req, res) {
             });
         } catch (error) {
             logger.error('登录失败:', error);
-            return sendJson(res, 500, {error: error.message});
+            return sendJson(res, error.status || 500, {error: error.message});
         }
     }
 

@@ -18,6 +18,7 @@ import {handleAdminUsers} from './dashboard-users.js';
 import {getCodebuddyAdminOptions, handleCodebuddyAdminRoute} from './dashboard-codebuddy.js';
 import {getCodebuddyCustomSiteLabels} from '../services/codebuddy/index.js';
 import {sendNotFoundPage, wantsHtml} from './not-found.js';
+import {readJsonBody} from '../utils/helpers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ADMIN_PAGE = readFileSync(join(__dirname, '..', 'templates', 'admin.html'), 'utf8');
@@ -29,19 +30,7 @@ function sendJson(res, status, data) {
 }
 
 function readRequestBody(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', chunk => chunks.push(chunk));
-        req.on('end', () => {
-            try {
-                const body = Buffer.concat(chunks).toString('utf8');
-                resolve(body ? JSON.parse(body) : {});
-            } catch (error) {
-                reject(error);
-            }
-        });
-        req.on('error', reject);
-    });
+    return readJsonBody(req, {maxBytes: 1024 * 1024});
 }
 
 function tenantView(tenant, includePlainKey = false) {

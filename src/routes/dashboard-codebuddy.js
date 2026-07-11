@@ -1,5 +1,6 @@
 import {randomBytes, randomUUID} from 'crypto';
 import logger from '../utils/logger.js';
+import {readJsonBody} from '../utils/helpers.js';
 import {unifiedTenantManager} from '../services/gateway/index.js';
 import {
     BLOCKED_DOMAINS,
@@ -28,19 +29,7 @@ function sendJson(res, status, data) {
 }
 
 function readRequestBody(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', chunk => chunks.push(chunk));
-        req.on('end', () => {
-            try {
-                const body = Buffer.concat(chunks).toString('utf8');
-                resolve(body ? JSON.parse(body) : {});
-            } catch (error) {
-                reject(error);
-            }
-        });
-        req.on('error', reject);
-    });
+    return readJsonBody(req, {maxBytes: 1024 * 1024});
 }
 
 function authHeaders(baseUrl, polling = false) {
@@ -359,7 +348,7 @@ export async function handleCodebuddyAdminRoute(req, res, tenantId, subPath) {
         return false;
     } catch (error) {
         logger.error(`CodeBuddy admin route failed (${subPath}):`, error);
-        sendJson(res, 500, {error: error.message});
+        sendJson(res, error.status || 500, {error: error.message});
         return true;
     }
 }

@@ -6,6 +6,7 @@
  */
 
 import logger from '../utils/logger.js';
+import {readJsonBody} from '../utils/helpers.js';
 import {
     getAuthMode,
     listManagedUsers,
@@ -22,19 +23,7 @@ function sendJson(res, status, data) {
 }
 
 function readRequestBody(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', c => chunks.push(c));
-        req.on('end', () => {
-            try {
-                const body = Buffer.concat(chunks).toString('utf8');
-                resolve(body ? JSON.parse(body) : {});
-            } catch (e) {
-                reject(e);
-            }
-        });
-        req.on('error', reject);
-    });
+    return readJsonBody(req, {maxBytes: 1024 * 1024});
 }
 
 function userTenant(username) {
@@ -157,7 +146,7 @@ export async function handleAdminUsers(req, res, pathSuffix, currentUsername, cu
         return false; // 未匹配
     } catch (error) {
         logger.error(`Admin users route error (${method} ${pathSuffix}):`, error);
-        sendJson(res, 500, {error: error.message});
+        sendJson(res, error.status || 500, {error: error.message});
         return true;
     }
 }
