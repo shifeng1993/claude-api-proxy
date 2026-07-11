@@ -9,6 +9,21 @@ import logger from '../../utils/logger.js';
 const REQUIRED_ENV = ['LDAP_SERVER', 'LDAP_BIND_DN', 'LDAP_BIND_PASSWORD', 'LDAP_BASE_DN'];
 
 /**
+ * 按 RFC 4515 转义 LDAP 过滤器中的特殊字符，防止 LDAP 注入
+ * ldapjs 未内置 escapeFilter，需手动转义
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeLdapFilter(value) {
+    return String(value)
+        .replace(/\\/g, '\\5c')
+        .replace(/\*/g, '\\2a')
+        .replace(/\(/g, '\\28')
+        .replace(/\)/g, '\\29')
+        .replace(/\x00/g, '\\00');
+}
+
+/**
  * 检查 LDAP 环境变量是否齐全
  * @returns {boolean}
  */
@@ -87,8 +102,9 @@ export async function ldapAuthenticate(username, password) {
         await bindAsync(client, process.env.LDAP_BIND_DN, process.env.LDAP_BIND_PASSWORD);
         logger.info(`LDAP service bind successful for user lookup: ${username}`);
 
-        // 搜索用户
-        const filter = process.env.LDAP_FILTER?.replace('{userNo}', username) || `(sAMAccountName=${username})`;
+        // 搜索用户（对用户名做 RFC 4515 转义，防止 LDAP 注入）
+        const safeUsername = escapeLdapFilter(username);
+        const filter = process.env.LDAP_FILTER?.replace('{userNo}', safeUsername) || `(sAMAccountName=${safeUsername})`;
         const entries = await searchAsync(client, process.env.LDAP_BASE_DN, {
             scope: 'sub',
             filter,
@@ -98,7 +114,7 @@ export async function ldapAuthenticate(username, password) {
         client = null;
 
         if (entries.length === 0) {
-            return { success: false, message: '用户不存在' };
+            return { success: false, message: '用户名或密码错误' };
         }
 
         const userEntry = entries[0];
@@ -123,7 +139,7 @@ export async function ldapAuthenticate(username, password) {
         logger.error(`LDAP authentication error: ${err.message}`);
         client?.unbind();
         if (err.message?.includes('No Such Object') || err.message?.includes('NoSuchObject')) {
-            return { success: false, message: '用户不存在' };
+            return { success: false, message: '用户名或密码错误' };
         }
         return { success: false, message: '认证服务异常，请稍后重试' };
     }
