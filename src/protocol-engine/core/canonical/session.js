@@ -72,6 +72,140 @@ function definedFields(value) {
     );
 }
 
+function parseDataUrl(url) {
+    if (typeof url !== 'string' || !url.startsWith('data:')) return null;
+    const commaIndex = url.indexOf(',');
+    if (commaIndex < 0) return null;
+    const header = url.slice(5, commaIndex);
+    const data = url.slice(commaIndex + 1);
+    const mediaType = header.split(';')[0] || 'image/png';
+    return {mediaType, data};
+}
+
+function urlToAnthropicSource(url) {
+    if (!url) return undefined;
+    const dataUrl = parseDataUrl(url);
+    if (dataUrl) {
+        return definedFields({type: 'base64', media_type: dataUrl.mediaType, data: dataUrl.data});
+    }
+    return {type: 'url', url};
+}
+
+function normalizeImageURL(value) {
+    if (typeof value === 'string') return value;
+    if (!value || typeof value !== 'object') return '';
+    return value.url || value.uri || value.href || '';
+}
+
+function canonicalImageDataURL(block = {}) {
+    if (block.url) return block.url;
+    if (block.dataRef) {
+        return `data:${block.mediaType || 'image/png'};base64,${block.dataRef}`;
+    }
+    return '';
+}
+
+function rawImagePartToURL(part) {
+    if (!part || typeof part !== 'object') return '';
+    if (part.type === 'image') {
+        return part.source?.data
+            ? `data:${part.source.media_type || 'image/png'};base64,${part.source.data}`
+            : normalizeImageURL(part.source?.url);
+    }
+    if (part.type === 'image_url') {
+        return normalizeImageURL(part.image_url);
+    }
+    if (part.type === 'input_image') {
+        return normalizeImageURL(part.image_url || part.url);
+    }
+    return '';
+}
+
+function isImagePart(part) {
+    return part?.type === 'image' || part?.type === 'image_url' || part?.type === 'input_image';
+}
+
+function canonicalToolResultToResponsesOutput(content) {
+    if (typeof content === 'string') return {output: content, imageItems: []};
+    if (!Array.isArray(content)) {
+        return {output: content == null ? '' : JSON.stringify(content || ''), imageItems: []};
+    }
+
+    const imageItems = [];
+    const textParts = [];
+    for (const part of content) {
+        if (typeof part === 'string') {
+            textParts.push(part);
+            continue;
+        }
+        if (!part || typeof part !== 'object') continue;
+        if (isImagePart(part)) {
+            const url = rawImagePartToURL(part);
+            if (url) imageItems.push({type: 'input_image', image_url: url});
+        } else if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+            textParts.push(part.text || '');
+        }
+    }
+    const output = imageItems.length > 0 ? textParts.join('\n').trim() : JSON.stringify(content);
+    return {output, imageItems};
+}
+
+function canonicalToolResultContentToChat(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : String(content);
+    }
+    if (!content.some(isImagePart)) {
+        return content
+            .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+            .join('\n')
+            .trim();
+    }
+    return content
+        .map((part) => {
+            if (typeof part === 'string') return {type: 'text', text: part};
+            if (!part || typeof part !== 'object') return null;
+            if (isImagePart(part)) {
+                return {type: 'image_url', image_url: {url: rawImagePartToURL(part)}};
+            }
+            if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+                return {type: 'text', text: part.text || ''};
+            }
+            return null;
+        })
+        .filter(Boolean);
+}
+
+function canonicalToolResultContentToAnthropic(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : JSON.stringify(content || '');
+    }
+    if (!content.some(isImagePart)) {
+        return content
+            .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+            .join('\n')
+            .trim();
+    }
+    return content
+        .map((part) => {
+            if (typeof part === 'string') return {type: 'text', text: part};
+            if (!part || typeof part !== 'object') return null;
+            if (part.type === 'image' && part.source) {
+                return {type: 'image', source: clone(part.source)};
+            }
+            if (isImagePart(part)) {
+                const source = urlToAnthropicSource(rawImagePartToURL(part));
+                return source ? {type: 'image', source} : null;
+            }
+            if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+                return {type: 'text', text: part.text || ''};
+            }
+            return null;
+        })
+        .filter(Boolean);
+}
+
 function contentToBlocks(content, defaultTextType = 'text') {
     if (typeof content === 'string') return [textBlock(content)].filter(Boolean);
     if (!Array.isArray(content)) {
@@ -89,13 +223,15 @@ function contentToBlocks(content, defaultTextType = 'text') {
             return redactedThinkingBlock(part.data);
         }
         if (part.type === 'image_url') {
-            return {type: 'image', url: part.image_url?.url || part.image_url || ''};
+            return {type: 'image', url: normalizeImageURL(part.image_url)};
         }
         if (part.type === 'image' || part.type === 'input_image') {
             return {
                 type: 'image',
                 mediaType: part.source?.media_type || part.media_type,
-                url: part.source?.url || part.image_url || part.url,
+                url: part.type === 'image'
+                    ? normalizeImageURL(part.source?.url || part.url)
+                    : normalizeImageURL(part.image_url || part.url),
                 dataRef: part.source?.data || part.file_id
             };
         }
@@ -738,7 +874,7 @@ function blocksToChatContent(blocks) {
     if (contentBlocks.every((block) => block.type === 'text')) return blocksToText(contentBlocks);
     return contentBlocks.map((block) => {
         if (block.type === 'text') return {type: 'text', text: block.text || ''};
-        if (block.type === 'image') return {type: 'image_url', image_url: {url: block.url || block.dataRef || ''}};
+        if (block.type === 'image') return {type: 'image_url', image_url: {url: canonicalImageDataURL(block)}};
         return {type: 'file', file: block.url || block.dataRef || block.filename || ''};
     });
 }
@@ -753,7 +889,7 @@ export function renderCanonicalToChat(session = {}) {
                 messages.push({
                     role: 'tool',
                     tool_call_id: toolTargetId(mapping, 'chat'),
-                    content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    content: canonicalToolResultContentToChat(block.content)
                 });
             }
             continue;
@@ -796,7 +932,7 @@ function blocksToResponsesContent(blocks, textType) {
         .filter((block) => block.type === 'text' || block.type === 'image' || block.type === 'file')
         .map((block) => {
             if (block.type === 'text') return {type: textType, text: block.text || ''};
-            if (block.type === 'image') return {type: 'input_image', image_url: block.url || block.dataRef || ''};
+            if (block.type === 'image') return {type: 'input_image', image_url: canonicalImageDataURL(block)};
             return {type: 'input_file', file_data: block.dataRef || block.url || ''};
         });
 }
@@ -855,11 +991,15 @@ export function renderCanonicalToResponses(session = {}) {
                 });
             } else if (block.type === 'tool_result') {
                 const mapping = findToolMapping(session, {canonicalToolCallId: block.canonicalToolCallId});
+                const {output, imageItems} = canonicalToolResultToResponsesOutput(block.content);
                 input.push({
                     type: 'function_call_output',
                     call_id: toolTargetId(mapping, 'responses'),
-                    output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    output
                 });
+                if (imageItems.length > 0) {
+                    input.push({role: 'user', content: imageItems});
+                }
             }
         }
     }
@@ -890,9 +1030,9 @@ function blocksToAnthropicContent(blocks) {
             const source = block.anthropicSource
                 ? clone(block.anthropicSource)
                 : block.url
-                    ? {type: 'url', url: block.url}
+                    ? urlToAnthropicSource(block.url)
                     : definedFields({type: 'base64', media_type: block.mediaType, data: block.dataRef || ''});
-            content.push({type: 'image', source, ...(block.anthropic ? clone(block.anthropic) : {})});
+            if (source) content.push({type: 'image', source, ...(block.anthropic ? clone(block.anthropic) : {})});
         } else if (block.type === 'file') {
             content.push({type: 'text', text: block.url || block.filename || block.dataRef || ''});
         } else if (block.type === 'anthropic_content') {
@@ -992,7 +1132,7 @@ function anthropicToolResultBlock(session, block) {
         tool_use_id: toolTargetId(mapping, 'anthropic'),
         content: block.anthropicContent !== undefined
             ? clone(block.anthropicContent)
-            : typeof block.content === 'string' ? block.content : JSON.stringify(block.content || ''),
+            : canonicalToolResultContentToAnthropic(block.content),
         ...(block.isError ? {is_error: true} : {}),
         ...(block.anthropic ? clone(block.anthropic) : {})
     };
