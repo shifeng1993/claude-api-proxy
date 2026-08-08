@@ -18,6 +18,8 @@ export function extractConversationKeyFromPayload(payload) {
         payload.sessionId,
         metadata?.session_id,
         metadata?.sessionId,
+        payload.conversation,
+        metadata?.conversation,
         payload.conversation_id,
         payload.conversationId,
         metadata?.conversation_id,
@@ -29,7 +31,7 @@ export function extractConversationKeyFromPayload(payload) {
     ];
 
     for (const candidate of candidates) {
-        const normalized = normalizeConversationKey(candidate);
+        const normalized = normalizeConversationCandidate(candidate);
         if (normalized) return normalized;
     }
     return undefined;
@@ -37,6 +39,7 @@ export function extractConversationKeyFromPayload(payload) {
 
 export function extractConversationKey(req, payload, meta = {}) {
     const headerCandidates = [
+        req.headers['x-claude-code-session-id'],
         req.headers['x-session-id'],
         req.headers['x-conversation-id'],
         req.headers['x-chat-id'],
@@ -45,7 +48,7 @@ export function extractConversationKey(req, payload, meta = {}) {
 
     for (const candidate of headerCandidates) {
         const value = Array.isArray(candidate) ? candidate[0] : candidate;
-        const normalized = normalizeConversationKey(value);
+        const normalized = normalizeConversationCandidate(value);
         if (normalized) return normalized;
     }
 
@@ -63,4 +66,15 @@ export function extractConversationKey(req, payload, meta = {}) {
         ? {...payload, messages: payload?.messages || payload?.input}
         : {messages: payload?.messages || payload?.input};
     return buildConversationAnchorKey(anchorPayload, keyMeta);
+}
+
+function normalizeConversationCandidate(value) {
+    if (typeof value === 'object' && value !== null) {
+        return normalizeConversationKey(
+            value.id
+            || value.conversation_id
+            || value.conversationId
+        );
+    }
+    return normalizeConversationKey(value);
 }

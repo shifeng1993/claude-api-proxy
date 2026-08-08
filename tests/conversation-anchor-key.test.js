@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildConversationAnchorKey} from '../src/protocol-engine/core/shared.js';
+import {extractConversationKey} from '../src/services/relay/conversation-key.js';
 
 const basePayload = {
     model: 'glm-5.1',
@@ -163,4 +164,32 @@ test('anchor key only depends on first user message + tenantId', () => {
     const keyB = buildConversationAnchorKey(payloadB, {tenantId: 't1'});
 
     assert.equal(keyA, keyB, 'same first user msg + same tenantId should produce same key');
+});
+
+test('Relay uses Claude Code session header before prompt-based fallback', () => {
+    const payloadA = {model: 'opus', messages: [{role: 'user', content: 'same system reminder'}]};
+    const payloadB = {model: 'opus', messages: [{role: 'user', content: 'same system reminder'}]};
+
+    const keyA = extractConversationKey({
+        headers: {'x-claude-code-session-id': 'claude-session-a'}
+    }, payloadA, {tenantId: 'tenant-1'});
+    const keyB = extractConversationKey({
+        headers: {'x-claude-code-session-id': 'claude-session-b'}
+    }, payloadB, {tenantId: 'tenant-1'});
+
+    assert.equal(keyA, 'claude-session-a');
+    assert.equal(keyB, 'claude-session-b');
+});
+
+test('Relay accepts Responses conversation fields reserved for Codex clients', () => {
+    const request = {headers: {}};
+
+    assert.equal(
+        extractConversationKey(request, {conversation: 'conv-codex-1'}, {tenantId: 'tenant-1'}),
+        'conv-codex-1'
+    );
+    assert.equal(
+        extractConversationKey(request, {conversation: {id: 'conv-codex-2'}}, {tenantId: 'tenant-1'}),
+        'conv-codex-2'
+    );
 });
