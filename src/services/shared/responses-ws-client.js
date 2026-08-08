@@ -139,6 +139,7 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
     let streamDone = false;
     let streamError = null;
     let responseCompleted = false;
+    let requestResponseId = null;
     let closeCode = null;
     let closeReason = '';
 
@@ -190,13 +191,22 @@ export async function* sendResponsesWebSocketRequest(socketOrConnection, payload
             return;
         }
 
-        if (connection && parsed.type === 'response.created' && parsed.response?.id) {
-            connection.lastResponseId = parsed.response.id;
+        if (parsed.type === 'response.created' && parsed.response?.id) {
+            requestResponseId = parsed.response.id;
+            if (connection) connection.lastResponseId = requestResponseId;
         }
 
         if (parsed.type === 'error') {
-            if (connection && referencedPreviousResponseId && connection.lastResponseId === referencedPreviousResponseId) {
-                connection.lastResponseId = null;
+            if (connection) {
+                if (requestResponseId && connection.lastResponseId === requestResponseId) {
+                    connection.lastResponseId = null;
+                } else if (
+                    !requestResponseId
+                    && referencedPreviousResponseId
+                    && connection.lastResponseId === referencedPreviousResponseId
+                ) {
+                    connection.lastResponseId = null;
+                }
             }
             streamDone = true;
             streamError = new ResponsesWebSocketError(parsed);

@@ -194,6 +194,27 @@ test('sendResponsesWebSocketRequest surfaces upstream error events', async () =>
     );
 });
 
+test('sendResponsesWebSocketRequest clears a response id created by a failed request', async () => {
+    const socket = new FakeWebSocket([
+        {type: 'response.created', response: {id: 'resp_failed'}},
+        {type: 'error', status: 400, error: {message: 'invalid image payload', code: 'bad_request'}}
+    ]);
+    const connection = {ws: socket, contextKey: 'thread-1', lastResponseId: 'resp_previous'};
+
+    await assert.rejects(
+        async () => {
+            for await (const _event of sendResponsesWebSocketRequest(connection, {
+                model: 'kimi-k3',
+                input: 'retry after failed image'
+            })) {
+            }
+        },
+        (error) => error instanceof ResponsesWebSocketError && error.status === 400
+    );
+
+    assert.equal(connection.lastResponseId, null);
+});
+
 test('sendResponsesWebSocketRequest infers rate limit from legacy server_error messages', async () => {
     const socket = new FakeWebSocket([
         {
