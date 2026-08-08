@@ -337,14 +337,35 @@ function anthropicMessagesToResponsesInput(messages) {
             const otherBlocks = message.content.filter((block) => block?.type !== 'tool_result');
 
             for (const block of toolResults) {
+                const content = block.content;
+                const imageBlocks = Array.isArray(content)
+                    ? content.filter((part) => part?.type === 'image')
+                    : [];
+                let output;
+                if (typeof content === 'string') {
+                    output = content;
+                } else if (imageBlocks.length > 0) {
+                    output = (Array.isArray(content) ? content : [])
+                        .filter((part) => typeof part === 'string' || part?.type === 'text')
+                        .map((part) => typeof part === 'string' ? part : part.text || '')
+                        .join('\n');
+                } else {
+                    output = JSON.stringify(content || '');
+                }
                 const item = {
                     type: 'function_call_output',
                     call_id: block.tool_use_id || '',
-                    output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')
+                    output
                 };
                 const relayToolResult = relayAnthropicToolResult(block);
                 if (relayToolResult) item.x_relay_anthropic_tool_result = relayToolResult;
                 input.push(item);
+                if (imageBlocks.length > 0) {
+                    input.push({
+                        role: 'user',
+                        content: anthropicContentToResponsesContent(imageBlocks)
+                    });
+                }
             }
 
             if (otherBlocks.length > 0) {
@@ -577,6 +598,30 @@ function anthropicSystemToChatContent(system, options = {}) {
         .join('\n\n');
 }
 
+function mapToolResultContentToChat(content) {
+    if (typeof content === 'string') {
+        return prependToolThinkingHint(content);
+    }
+    if (!Array.isArray(content) || content.length === 0) {
+        return content == null ? '' : String(content);
+    }
+
+    const mapped = mapContent(content);
+    if (typeof mapped === 'string') {
+        return prependToolThinkingHint(mapped);
+    }
+
+    const hasImage = mapped.some((part) => part?.type === 'image_url');
+    if (!hasImage) {
+        const text = mapped
+            .map((part) => typeof part?.text === 'string' ? part.text : '')
+            .join('\n')
+            .trim();
+        return prependToolThinkingHint(text);
+    }
+    return mapped;
+}
+
 function handleAnthropicUserMessage(message, previousAssistantMessage = null, options = {}) {
     const messages = [];
 
@@ -589,13 +634,7 @@ function handleAnthropicUserMessage(message, previousAssistantMessage = null, op
         if (toolResults.length > 0) {
             const resultMap = new Map();
             for (const block of toolResults) {
-                let content = '';
-                if (typeof block.content === 'string') {
-                    content = block.content;
-                } else if (block.content != null) {
-                    content = JSON.stringify(block.content);
-                }
-                resultMap.set(block.tool_use_id, prependToolThinkingHint(content));
+                resultMap.set(block.tool_use_id, mapToolResultContentToChat(block.content));
             }
 
             if (options.orderToolResultsByAssistant !== false && previousAssistantMessage?.tool_calls) {

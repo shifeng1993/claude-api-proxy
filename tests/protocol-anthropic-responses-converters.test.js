@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    anthropicRequestToChat,
     anthropicRequestToResponses,
     responsesResponseToAnthropic
 } from '../src/protocol-engine/core/http-converters.js';
@@ -295,4 +296,58 @@ test('responsesResponseToAnthropic renders unsigned reasoning summaries as Anthr
         output_tokens: 5,
         cache_read_input_tokens: 3
     });
+});
+
+test('anthropicRequestToResponses extracts tool_result images into a user input item', () => {
+    const converted = anthropicRequestToResponses({
+        model: 'kimi-k3',
+        messages: [
+            {role: 'user', content: 'inspect the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {path: 'screen.png'}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    const output = converted.input.find((item) => item.type === 'function_call_output');
+    assert.equal(output.output, 'screenshot captured');
+    const imageItem = converted.input.find((item) =>
+        item.role === 'user' && item.content?.some((part) => part.type === 'input_image')
+    );
+    assert.deepEqual(imageItem.content, [{type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8='}]);
+});
+
+test('anthropicRequestToChat renders tool_result images as image_url content', () => {
+    const converted = anthropicRequestToChat({
+        model: 'kimi-k3',
+        messages: [
+            {role: 'user', content: 'inspect the screenshot'},
+            {role: 'assistant', content: [{type: 'tool_use', id: 'toolu_1', name: 'read_image', input: {}}]},
+            {
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: 'toolu_1',
+                    content: [
+                        {type: 'text', text: 'screenshot captured'},
+                        {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'aGVsbG8='}}
+                    ]
+                }]
+            }
+        ]
+    });
+
+    assert.deepEqual(converted.messages.find((message) => message.role === 'tool').content, [
+        {type: 'text', text: 'screenshot captured'},
+        {type: 'image_url', image_url: {url: 'data:image/png;base64,aGVsbG8='}}
+    ]);
 });
