@@ -180,6 +180,27 @@ test('sendResponsesWebSocketRequest can preserve oversized input when item limit
     assert.equal(socket.sent[0].input.at(-1).content, 'message 599');
 });
 
+test('Responses WebSocket transport preserves base64 and remote input_image URLs', async () => {
+    const socket = new FakeWebSocket([{type: 'response.completed', response: {id: 'resp_image'}}]);
+
+    for await (const _event of sendResponsesWebSocketRequest(socket, {
+        model: 'kimi-k3',
+        input: [{
+            role: 'user',
+            content: [
+                {type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8='},
+                {type: 'input_image', image_url: 'https://example.test/remote.png'}
+            ]
+        }]
+    })) {
+    }
+
+    assert.deepEqual(socket.sent[0].input[0].content, [
+        {type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8='},
+        {type: 'input_image', image_url: 'https://example.test/remote.png'}
+    ]);
+});
+
 test('sendResponsesWebSocketRequest surfaces upstream error events', async () => {
     const socket = new FakeWebSocket([
         {type: 'error', status: 400, error: {message: 'bad request', code: 'bad_request'}}
